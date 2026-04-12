@@ -1,0 +1,48 @@
+[tool.poetry]
+name = "ai-hedge-fund-production"
+version = "1.0.0"
+description = "Production AI-powered hedge fund trading system"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [
+    { include = "src", from = "." },
+]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+langchain = "^0.3.7"
+langchain-openai = "^0.3.5"
+langchain-ollama = "0.3.6"
+pandas = "^2.1.0"
+numpy = "^1.24.0"
+python-dotenv = "1.0.0"
+pydantic = "^2.4.2"
+pydantic-settings = "^2.0.0"
+yfinance = "^0.2.40"
+alpaca-py = "^0.19.0"
+requests = "^2.31.0"
+structlog = "^24.1.0"
+python-dateutil = "^2.8.2"
+lxml = "^6.0.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+pytest-mock = "^3.11.0"
+black = "^23.7.0"
+isort = "^5.12.0"
+
+[tool.poetry.group.optional.dependencies]
+redis = {version = "^5.0.0", optional = true}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
+

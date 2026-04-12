@@ -1,0 +1,290 @@
+"""Alpaca broker integration for paper trading"""
+
+from typing import Dict, List, Optional
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
+from src.config.settings import settings
+from src.portfolio.models import Portfolio, Position
+from src.portfolio.manager import PortfolioDecision
+import structlog
+
+logger = structlog.get_logger()
+
+
+class AlpacaBroker:
+    """Alpaca broker integration (alpaca-py SDK)"""
+
+    def __init__(self):
+        """Initialize Alpaca client for paper trading"""
+        paper_base_url = "https://paper-api.alpaca.markets/v2"
+        if settings.alpaca_base_url != paper_base_url:
+            logger.warning(
+                "Alpaca base_url not set to paper trading endpoint, overriding",
+                provided_url=settings.alpaca_base_url,
+                using_url=paper_base_url,
+            )
+
+        self.client = TradingClient(
+            api_key=settings.alpaca_api_key,
+            secret_key=settings.alpaca_secret_key,
+            paper=True,
+        )
+        logger.info("Initialized Alpaca broker for paper trading", base_url=paper_base_url)
+
+    def get_account(self) -> Dict:
+        """Get account information"""
+        try:
+            account = self.client.get_account()
+            return {
+                "cash": float(account.cash),
+                "buying_power": float(account.buying_power),
+                "portfolio_value": float(account.portfolio_value),
+                "equity": float(account.equity),
+            }
+        except Exception as e:
+            logger.error("Error fetching account", error=str(e))
+            raise
+
+    def get_positions(self) -> Dict[str, Dict]:
+        """Get current positions"""
+        try:
+            positions = self.client.get_all_positions()
+            position_dict = {}
+
+            for pos in positions:
+                qty = abs(int(float(pos.qty)))
+                side = getattr(pos.side, "value", str(pos.side)).lower() if hasattr(pos, "side") else ("long" if int(float(pos.qty)) >= 0 else "short")
+                if side not in ("long", "short"):
+                    side = "long"
+                position_dict[pos.symbol] = {
+                    "qty": qty,
+                    "avg_entry_price": float(pos.avg_entry_price),
+                    "market_value": float(pos.market_value),
+                    "side": side,
+                }
+
+            return position_dict
+        except Exception as e:
+            logger.error("Error fetching positions", error=str(e))
+            raise
+
+    def get_open_orders(self, limit: int = 50) -> List[Dict]:
+        """Get open (pending) orders from Alpaca."""
+        try:
+            req = GetOrdersRequest(status="open", limit=limit)
+            orders = self.client.get_orders(req)
+            return [
+                {
+                    "id": str(o.id),
+                    "symbol": o.symbol,
+                    "side": getattr(o.side, "value", str(o.side)).lower(),
+                    "qty": int(float(o.qty)) if o.qty else 0,
+                    "status": getattr(o.status, "value", str(o.status)).lower(),
+                    "submitted_at": str(o.submitted_at) if hasattr(o, "submitted_at") and o.submitted_at else None,
+                    "type": getattr(o.type, "value", str(o.type)).lower() if hasattr(o, "type") else "market",
+                }
+                for o in (orders or [])
+            ]
+        except Exception as e:
+            logger.error("Error fetching open orders", error=str(e))
+            return []
+
+    def get_recent_orders(self, limit: int = 20) -> List[Dict]:
+        """Get recently closed/filled orders from Alpaca."""
+        try:
+            req = GetOrdersRequest(status="closed", limit=limit)
+            orders = self.client.get_orders(req)
+            return [
+                {
+                    "id": str(o.id),
+                    "symbol": o.symbol,
+                    "side": getattr(o.side, "value", str(o.side)).lower(),
+                    "qty": int(float(o.qty)) if o.qty else 0,
+                    "status": getattr(o.status, "value", str(o.status)).lower(),
+                    "filled_at": str(o.filled_at) if hasattr(o, "filled_at") and o.filled_at else None,
+                    "submitted_at": str(o.submitted_at) if hasattr(o, "submitted_at") and o.submitted_at else None,
+                }
+                for o in (orders or [])
+            ]
+        except Exception as e:
+            logger.error("Error fetching recent orders", error=str(e))
+            return []
+
+    def execute_order(
+        self,
+        ticker: str,
+        decision: PortfolioDecision,
+    ) -> Optional[Dict]:
+        """
+        Execute a trading order
+
+        Args:
+            ticker: Stock ticker symbol
+            decision: Portfolio decision to execute
+
+        Returns:
+            Order information if successful, None otherwise
+        """
+        if decision.action == "hold" or decision.quantity == 0:
+            logger.info("Skipping hold order", ticker=ticker)
+            return None
+
+        try:
+            if decision.action in ["buy", "cover"]:
+                side = OrderSide.BUY
+            elif decision.action in ["sell", "short"]:
+                side = OrderSide.SELL
+            else:
+                logger.warning("Unknown action", ticker=ticker, action=decision.action)
+                return None
+
+            order_data = MarketOrderRequest(
+                symbol=ticker,
+                qty=decision.quantity,
+                side=side,
+                time_in_force=TimeInForce.DAY,
+            )
+
+            order = self.client.submit_order(order_data=order_data)
+
+            logger.info(
+                "Order submitted",
+                ticker=ticker,
+                action=decision.action,
+                quantity=decision.quantity,
+                order_id=str(order.id),
+            )
+
+            return {
+                "order_id": str(order.id),
+                "symbol": order.symbol,
+                "qty": int(order.qty),
+                "side": str(order.side) if hasattr(order.side, "value") else order.side,
+                "status": str(order.status) if hasattr(order.status, "value") else order.status,
+            }
+
+        except Exception as e:
+            logger.error("Order execution failed", ticker=ticker, error=str(e))
+            return None
+    
+    def execute_decisions(
+        self,
+        decisions: Dict[str, PortfolioDecision],
+        rate_limit: int = 200,  # Alpaca limit: 200 requests/minute
+    ) -> Dict[str, Optional[Dict]]:
+        """
+        Execute multiple trading decisions with rate limiting
+        
+        Args:
+            decisions: Dictionary mapping ticker to PortfolioDecision
+            rate_limit: Maximum requests per minute (default: 200 for Alpaca)
+        
+        Returns:
+            Dictionary mapping ticker to order result
+        """
+        import time
+        
+        logger.info("Executing trading decisions", decision_count=len(decisions))
+        
+        results = {}
+        non_hold_decisions = {t: d for t, d in decisions.items() if d.action != "hold" and d.quantity > 0}
+        
+        if not non_hold_decisions:
+            logger.info("No trades to execute (all holds)")
+            return results
+        
+        # Calculate delay between requests to respect rate limit
+        # Add 10% buffer to be safe
+        delay_seconds = 60.0 / (rate_limit * 0.9)  # ~0.33 seconds between requests
+        
+        logger.info(
+            "Executing trades with rate limiting",
+            trade_count=len(non_hold_decisions),
+            delay_seconds=round(delay_seconds, 3),
+            estimated_time_minutes=round(len(non_hold_decisions) * delay_seconds / 60, 1)
+        )
+        
+        # Execute sells first to free cash / buying power for subsequent buys.
+        priority = {"sell": 0, "short": 0, "cover": 1, "buy": 2}
+        ordered = sorted(
+            non_hold_decisions.items(),
+            key=lambda kv: (priority.get(kv[1].action, 99), kv[0]),
+        )
+
+        executed = 0
+        for i, (ticker, decision) in enumerate(ordered, 1):
+            result = self.execute_order(ticker, decision)
+            results[ticker] = result
+            
+            if result:
+                executed += 1
+            
+            # Rate limiting: wait between requests (except for last one)
+            if i < len(ordered):
+                time.sleep(delay_seconds)
+            
+            # Log progress for large batches
+            if len(ordered) > 50 and i % 50 == 0:
+                logger.info(
+                    "Execution progress",
+                    completed=i,
+                    total=len(ordered),
+                    pct=round(i / len(ordered) * 100, 1)
+                )
+        
+        logger.info(
+            "Trading execution complete",
+            executed_count=executed,
+            total_decisions=len(decisions),
+            failed_count=len(ordered) - executed
+        )
+        return results
+    
+    def sync_portfolio(self) -> Portfolio:
+        """
+        Sync portfolio state from Alpaca
+        
+        Returns:
+            Portfolio object with current state
+        """
+        try:
+            account = self.get_account()
+            positions = self.get_positions()
+            
+            portfolio = Portfolio(
+                cash=account['cash'],
+                margin_requirement=0.5,  # Default margin requirement
+                margin_used=0.0,  # Calculate if needed
+            )
+            
+            for ticker, pos_data in positions.items():
+                if pos_data['side'] == 'long':
+                    portfolio.positions[ticker] = Position(
+                        long=pos_data['qty'],
+                        short=0,
+                        long_cost_basis=pos_data['avg_entry_price'],
+                        short_cost_basis=0.0,
+                        short_margin_used=0.0,
+                    )
+                elif pos_data['side'] == 'short':
+                    portfolio.positions[ticker] = Position(
+                        long=0,
+                        short=pos_data['qty'],
+                        long_cost_basis=0.0,
+                        short_cost_basis=pos_data['avg_entry_price'],
+                        short_margin_used=pos_data['market_value'] * 0.5,  # Estimate
+                    )
+            
+            logger.info(
+                "Portfolio synced from broker",
+                cash=round(portfolio.cash, 2),
+                position_count=len(portfolio.positions),
+                positions={t: {"long": p.long, "short": p.short} for t, p in portfolio.positions.items()},
+            )
+            return portfolio
+        
+        except Exception as e:
+            logger.error("Portfolio sync failed", error=str(e))
+            raise
+
