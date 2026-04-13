@@ -1,112 +1,278 @@
-# AI Hedge Fund - Production System
+# Aletheia Capital — AI Hedge Fund
 
-A production-ready AI-powered hedge fund trading system using multiple specialized agents.
+An AI-powered hedge fund that uses 22 specialized investment agents to analyze 500+ stocks weekly, make autonomous trading decisions, and execute via Alpaca paper trading. Built for automated weekly operation via GitHub Actions.
 
-## Features
+## How It Works
 
-- **Multi-Agent System**: 21 specialized investment agents (Warren Buffett, Ben Graham, Peter Lynch, etc.)
-- **Free Data Sources**: Yahoo Finance with caching support
-- **Free LLM Integration**: Multi-model support (DeepSeek, Groq, Ollama)
-- **Risk Management**: Volatility and correlation-adjusted position limits
-- **Portfolio Management**: Intelligent trade execution within risk constraints
-- **Weekly Trading**: Automated weekly rebalancing and opportunity detection
-- **Paper Trading**: Alpaca integration (paper trading only, enforced)
-- **Performance Tracking**: Dynamic agent weight adjustment based on performance
-- **Parallel Execution**: Fast parallel agent analysis and data fetching
-- **Redis Caching**: Optional distributed caching for better performance
-- **Comprehensive Testing**: Unit tests, integration tests, and backtesting validation
-- **Full Documentation**: API docs, architecture guide, and deployment instructions
+The system runs a weekly pipeline every Monday at market open:
 
-## Setup
+```mermaid
+flowchart LR
+    Universe["Stock Universe\n(500 tickers)"] --> Data["Data Fetch\n(Yahoo, Finnhub)"]
+    Data --> Agents["22 AI Agents\nanalyze in parallel"]
+    Agents --> Signals["Aggregated\nSignals"]
+    Signals --> Risk["Risk Manager\n(vol + correlation)"]
+    Risk --> Decisions["Portfolio Manager\n(unified ranking)"]
+    Decisions --> Execution["Alpaca Broker\n(paper trading)"]
+    Execution --> Email["Weekly Email\nReport"]
+```
 
-See **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** for full setup (Python 3.11+, Poetry, Ollama or cloud API, .env). Quick path: `poetry install` → `cp .env.example .env` → add Alpaca (and optional LLM) keys → `poetry run python src/main.py --tickers AAPL,MSFT,GOOGL`.
+**Each ticker gets scored by every agent independently.** Agents disagree — that's by design. A growth investor might love NVDA while a value investor hates it. The portfolio manager aggregates these weighted signals into actionable decisions.
 
-## Project Structure
+## The 22 Agents
+
+Agents are split into philosophical camps that drive both trading decisions and the covered call strategy:
+
+```mermaid
+flowchart TD
+    subgraph growth ["Growth / Momentum Camp"]
+        CW["Cathie Wood"]
+        CP["Chamath Palihapitiya"]
+        RB["Ron Baron"]
+        PF["Phil Fisher"]
+        GA["Growth Analyst"]
+        TA["Technicals Analyst"]
+        NSA["News Sentiment"]
+    end
+
+    subgraph value ["Value / Fundamental Camp"]
+        BG["Ben Graham"]
+        WB["Warren Buffett"]
+        CM["Charlie Munger"]
+        MB["Michael Burry"]
+        AD["Aswath Damodaran"]
+        PL["Peter Lynch"]
+        MP["Mohnish Pabrai"]
+        VA["Valuation Analyst"]
+        FA["Fundamentals Analyst"]
+    end
+
+    subgraph swing ["Swing Agents"]
+        BA["Bill Ackman"]
+        SD["Stanley Druckenmiller"]
+        RJ["Rakesh Jhunjhunwala"]
+        SA["Sentiment Analyst"]
+        CT["Congressional Trader"]
+        AI["Aditya Iyer"]
+    end
+
+    growth --> PM["Portfolio Manager"]
+    value --> PM
+    swing --> PM
+    PM --> BuyDecisions["Buy / Sell / Hold / CC"]
+```
+
+Each agent uses a different LLM prompt embodying that investor's philosophy. Signals are weighted by historical accuracy (weights adjust automatically over time).
+
+## Decision Engine
+
+The portfolio manager scores every ticker for two possible actions:
+
+```mermaid
+flowchart TD
+    Ticker["Each Ticker"] --> AggSignal["Aggregate 22 agent signals"]
+    AggSignal --> IsBullish{"Bullish\nconf >= 50?"}
+    IsBullish -->|Yes| BuyCandidate["Buy Candidate\nscore = bullish confidence"]
+    IsBullish -->|No| HoldTicker["Hold Ticker"]
+    HoldTicker --> CCCheck{"Growth bulls +\nValue bears?"}
+    CCCheck -->|"CC score >= 40"| CCCandidate["Covered Call Candidate\nscore = camp disagreement"]
+    CCCheck -->|No| Skip["Skip (hold)"]
+
+    BuyCandidate --> Unified["Unified Ranked List"]
+    CCCandidate --> Unified
+    Unified --> Allocate["Allocate capital\ntop-down by score"]
+    Allocate --> BuyOrder["Equity Buy"]
+    Allocate --> CCOrder["Buy 100 shares\n+ Sell Call"]
+```
+
+**Buy and covered call opportunities compete for the same capital.** If a CC opportunity on AMD scores 60 and a directional buy on ABBV scores 58, AMD gets capital first. The system allocates to whatever it's most confident in.
+
+### Covered Call Strategy
+
+Covered calls target **only hold tickers** — never stocks the system wants to buy directionally (those need full upside). The ideal CC candidate has:
+
+- **Growth agents bullish** (Cathie Wood, Chamath, etc.) → downside protection, the business is solid
+- **Value agents bearish** (Graham, Burry, Damodaran) → upside is capped, stock is expensive
+
+This creates a range-bound profile ideal for harvesting option premium. The CC confidence score is:
+
+```
+cc_score = min(growth_bull_pct, value_bear_pct) × avg_confidence
+```
+
+## Architecture
 
 ```
 ai-hedge-fund-production/
+├── weekly_scan_rebalancing.py  # Main entry point
 ├── src/
-│   ├── agents/          # Investment agent implementations (21 agents)
-│   ├── data/            # Data providers and caching (memory + Redis)
-│   ├── llm/             # LLM integration layer
-│   ├── broker/          # Broker API integration (Alpaca)
-│   ├── risk/            # Risk management
-│   ├── portfolio/       # Portfolio management
-│   ├── trading/         # Trading pipeline (with parallel execution)
-│   ├── performance/     # Performance tracking
-│   ├── backtesting/     # Backtesting engine
-│   └── utils/           # Utilities and helpers
-├── config/              # Configuration files
-├── docs/                # Documentation (API, Architecture, Deployment)
-├── logs/                # Log files
-└── tests/               # Comprehensive test suite
+│   ├── agents/                 # 22 investment agent implementations
+│   │   ├── base.py             # BaseAgent class
+│   │   ├── registry.py         # Agent registry + weight management
+│   │   ├── initialize.py       # Agent registration
+│   │   ├── warren_buffett.py   # Value investing philosophy
+│   │   ├── cathie_wood.py      # Disruptive innovation
+│   │   ├── michael_burry.py    # Contrarian deep value
+│   │   └── ...                 # 19 more agents
+│   ├── broker/
+│   │   └── alpaca.py           # Alpaca SDK (equities + options)
+│   ├── data/
+│   │   ├── providers/          # Yahoo Finance, Finnhub, Congressional
+│   │   ├── universe.py         # Stock universe selection
+│   │   └── models.py           # Price, FinancialMetrics, LineItem
+│   ├── llm/
+│   │   ├── models.py           # DeepSeek / Ollama model routing
+│   │   └── utils.py            # Retry logic, JSON parsing
+│   ├── options/
+│   │   └── covered_calls.py    # Covered call manager
+│   ├── portfolio/
+│   │   ├── manager.py          # Decision engine + CC scorer
+│   │   └── models.py           # Portfolio, Position models
+│   ├── risk/
+│   │   └── manager.py          # Volatility + correlation limits
+│   ├── trading/
+│   │   └── pipeline.py         # Weekly pipeline orchestrator
+│   ├── performance/
+│   │   ├── tracker.py          # Agent weight adjustment
+│   │   └── cycle_tracker.py    # Cycle-over-cycle tracking
+│   ├── scan_cache/             # Run persistence (5yr retention)
+│   └── utils/
+│       └── email.py            # HTML email reports
+├── config/
+│   └── agent_weights.json      # Dynamic agent weights
+├── .github/workflows/
+│   └── weekly-scan.yml         # GitHub Actions automation
+└── tests/                      # Test suite
 ```
 
-## Quick Start
+## Risk Management
 
-### 1. Install Dependencies
+```mermaid
+flowchart LR
+    Volatility["Annualized\nVolatility"] --> VolLimit["Vol-adjusted\nposition limit %"]
+    Correlation["Avg correlation\nwith portfolio"] --> CorrMult["Correlation\nmultiplier"]
+    VolLimit --> Combined["Combined\nposition limit"]
+    CorrMult --> Combined
+    Combined --> MaxDollars["Max $ for\nthis ticker"]
+    MaxDollars --> Sizing["Order sizing\n(capped by cash + risk)"]
+```
+
+| Volatility | Max Allocation | Correlation | Multiplier |
+|------------|---------------|-------------|------------|
+| < 15% | Up to 25% | >= 0.8 | 0.70x |
+| 15-30% | 15-20% | 0.6-0.8 | 0.85x |
+| 30-50% | 10-15% | 0.4-0.6 | 1.00x |
+| > 50% | Max 10% | < 0.2 | 1.10x |
+
+## Setup
+
+### Prerequisites
+
+- Python 3.9+
+- [Poetry](https://python-poetry.org/docs/#installation)
+- Alpaca paper trading account ([sign up free](https://alpaca.markets/))
+- DeepSeek API key ([get one](https://platform.deepseek.com/)) or local Ollama
+
+### Installation
+
 ```bash
+git clone https://github.com/Adi1yer/Aletheia-Capital.git
+cd Aletheia-Capital
 poetry install
-```
-
-### 2. Configure Environment
-```bash
 cp .env.example .env
-# Edit .env with your Alpaca API keys
 ```
 
-### 3. Run Weekly Trading
+### Configuration
+
+Edit `.env` with your API keys:
+
 ```bash
-# Dry run (no trades executed)
-poetry run python src/main.py --tickers AAPL,MSFT,GOOGL
+# Required
+ALPACA_API_KEY=your_alpaca_key
+ALPACA_SECRET_KEY=your_alpaca_secret
 
-# Execute trades
-poetry run python src/main.py --tickers AAPL,MSFT,GOOGL --execute
+# LLM (pick one)
+DEEPSEEK_API_KEY=your_deepseek_key   # Recommended (~$2/run for 500 tickers)
+# Or use local Ollama (free, slower)
 
-# Full market trading
-poetry run python src/main.py --universe --max-stocks 2000 --execute
+# Optional
+FINNHUB_API_KEY=your_finnhub_key     # Insider/analyst data
+SMTP_SERVER=smtp.gmail.com           # Email notifications
+SENDER_EMAIL=you@gmail.com
+SENDER_PASSWORD=your_app_password
+RECIPIENT_EMAIL=you@gmail.com
 ```
 
-### 4. Get Daily Updates
+### Running
+
 ```bash
-poetry run python src/daily_update.py
+# Full weekly scan with execution (500 tickers, covered calls enabled)
+poetry run python weekly_scan_rebalancing.py
+
+# Custom run
+poetry run python weekly_scan_rebalancing.py \
+  --max-stocks 300 \
+  --execute \
+  --min-buy-confidence 50 \
+  --enable-covered-calls \
+  --email-to you@example.com
+
+# Dry run (no trades)
+poetry run python weekly_scan_rebalancing.py --max-stocks 100
 ```
 
-## Configuration
+### Automated Weekly Runs
 
-See `config/` directory for agent configurations, weights, and trading parameters.
+The system runs automatically via GitHub Actions every Monday at 9:00 AM PST. To set up:
 
-## Documentation
+1. Push code to your GitHub repo
+2. Add secrets in **Settings → Secrets and variables → Actions**:
+   - `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL`
+   - `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`
+   - `SMTP_SERVER`, `SMTP_PORT`, `SENDER_EMAIL`, `SENDER_PASSWORD`, `RECIPIENT_EMAIL`
+3. The workflow triggers automatically, or manually via **Actions → Run workflow**
 
-- **Getting started**: `docs/GETTING_STARTED.md` - Setup and first run (start here)
-- **Doc index**: `docs/README.md` - List of all documentation
-- **API Reference**: `docs/API.md` - Complete API documentation
-- **Architecture**: `docs/ARCHITECTURE.md` - System architecture and design
-- **Deployment**: `docs/DEPLOYMENT.md` - Deployment guide for various environments
-- **Data sources**: `docs/DATA_SOURCES.md` - Data providers and insider-trading workarounds
-- **Enhancements**: `docs/ENHANCEMENTS.md` - Recent improvements and features
+## Weekly Email Report
+
+Each run sends an HTML email containing:
+
+- **Portfolio status** — cash, equity, top positions
+- **Decisions summary** — X buys, Y sells, Z holds
+- **Buy/sell orders** — ticker, quantity, confidence, reasoning
+- **Covered calls** — contracts written, strikes, expiry, estimated premium
+- **CC lot builds** — shares bought to reach 100-share lots
+- **Failed orders** — any execution failures flagged
+- **Past performance** — week-over-week equity change
+- **AI weekly outlook** — LLM-generated 2-3 sentence market summary
+
+## Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--max-stocks` | 500 | Universe size (top N by market cap) |
+| `--min-buy-confidence` | 50 | Minimum aggregated bullish confidence to buy |
+| `--min-sell-confidence` | 60 | Minimum bearish confidence to sell existing longs |
+| `--cash-buffer-pct` | 0.03 | Keep 3% of equity in cash |
+| `--max-buy-tickers` | 30 | Max number of buy candidates per run |
+| `--enable-covered-calls` | True | Enable covered call strategy on hold tickers |
+| `--min-cc-score` | 40 | Minimum CC score to qualify |
+
+## Performance
+
+- **Parallel agent execution** — 22 agents run concurrently
+- **Parallel data fetching** — all tickers fetched in parallel
+- **Batch processing** — large universes processed in 100-ticker batches
+- **Memory caching** — 24hr TTL to avoid redundant API calls
+- **Dynamic agent weights** — agents that make better predictions get more influence over time
 
 ## Testing
 
 ```bash
-# Run all tests
-poetry run pytest
-
-# Run with coverage
-poetry run pytest --cov=src --cov-report=html
-
-# Run specific test file
-poetry run pytest tests/test_agents.py
+poetry run pytest                              # All tests
+poetry run pytest --cov=src --cov-report=html  # With coverage
+poetry run pytest tests/test_agents.py         # Specific suite
 ```
-
-## Performance Features
-
-- **Parallel Agent Execution**: Agents run in parallel for faster analysis
-- **Parallel Data Fetching**: Data fetched in parallel for large universes
-- **Redis Caching**: Optional distributed caching (falls back to memory cache)
-- **Batch Processing**: Efficient processing of large stock universes
 
 ## Disclaimer
 
-This system is for educational and research purposes. Past performance does not guarantee future results.
-
+This system is for educational and research purposes only. It operates exclusively on Alpaca paper trading accounts. Past performance does not guarantee future results. Options trading involves significant risk. Always do your own research before making investment decisions with real capital.
