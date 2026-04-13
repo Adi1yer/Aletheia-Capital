@@ -37,9 +37,9 @@ wheels/
 logs/
 *.log
 
-# Data
-data/
-cache/
+# Data (scan cache and runtime cache only; not src/data/ which is source code)
+/data/
+/cache/
 *.db
 *.sqlite
 
