@@ -1,9 +1,15 @@
 """Alpaca broker integration for paper trading"""
 
 from typing import Dict, List, Optional
+from datetime import date, timedelta
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import (
+    MarketOrderRequest,
+    LimitOrderRequest,
+    GetOrdersRequest,
+    GetOptionContractsRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, ContractType
 from src.config.settings import settings
 from src.portfolio.models import Portfolio, Position
 from src.portfolio.manager import PortfolioDecision
@@ -241,6 +247,124 @@ class AlpacaBroker:
         )
         return results
     
+    # ── Options methods ──────────────────────────────────────────────
+
+    def get_option_contracts(
+        self,
+        underlying: str,
+        option_type: str = "call",
+        expiry_gte: Optional[date] = None,
+        expiry_lte: Optional[date] = None,
+        strike_gte: Optional[float] = None,
+        strike_lte: Optional[float] = None,
+        limit: int = 50,
+    ) -> List[Dict]:
+        """Discover available option contracts for an underlying symbol."""
+        try:
+            if expiry_gte is None:
+                expiry_gte = date.today() + timedelta(days=7)
+            if expiry_lte is None:
+                expiry_lte = date.today() + timedelta(days=45)
+
+            ct = ContractType.CALL if option_type == "call" else ContractType.PUT
+            req = GetOptionContractsRequest(
+                underlying_symbols=[underlying],
+                type=ct,
+                expiration_date_gte=expiry_gte.isoformat(),
+                expiration_date_lte=expiry_lte.isoformat(),
+                strike_price_gte=str(strike_gte) if strike_gte else None,
+                strike_price_lte=str(strike_lte) if strike_lte else None,
+                limit=limit,
+            )
+            resp = self.client.get_option_contracts(req)
+            contracts = resp.option_contracts if hasattr(resp, "option_contracts") else resp
+            results = []
+            for c in (contracts or []):
+                results.append({
+                    "symbol": c.symbol,
+                    "underlying": c.underlying_symbol,
+                    "strike": float(c.strike_price) if c.strike_price else 0.0,
+                    "expiry": str(c.expiration_date),
+                    "type": str(c.type) if hasattr(c, "type") else option_type,
+                    "open_interest": int(c.open_interest) if hasattr(c, "open_interest") and c.open_interest else 0,
+                    "close_price": float(c.close_price) if hasattr(c, "close_price") and c.close_price else 0.0,
+                    "tradable": getattr(c, "tradable", True),
+                })
+            logger.info("Option contracts fetched", underlying=underlying, count=len(results))
+            return results
+        except Exception as e:
+            logger.error("Failed to fetch option contracts", underlying=underlying, error=str(e))
+            return []
+
+    def submit_option_order(
+        self,
+        contract_symbol: str,
+        qty: int,
+        side: str = "sell",
+        order_type: str = "market",
+        limit_price: Optional[float] = None,
+    ) -> Optional[Dict]:
+        """Submit an options order (e.g. sell-to-open for covered calls)."""
+        try:
+            order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
+
+            if order_type == "limit" and limit_price is not None:
+                order_data = LimitOrderRequest(
+                    symbol=contract_symbol,
+                    qty=qty,
+                    side=order_side,
+                    type=OrderType.LIMIT,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=limit_price,
+                )
+            else:
+                order_data = MarketOrderRequest(
+                    symbol=contract_symbol,
+                    qty=qty,
+                    side=order_side,
+                    time_in_force=TimeInForce.DAY,
+                )
+
+            order = self.client.submit_order(order_data=order_data)
+            logger.info(
+                "Option order submitted",
+                contract=contract_symbol,
+                side=side,
+                qty=qty,
+                order_id=str(order.id),
+            )
+            return {
+                "order_id": str(order.id),
+                "symbol": order.symbol,
+                "qty": int(order.qty) if order.qty else qty,
+                "side": side,
+                "status": str(order.status) if hasattr(order.status, "value") else str(order.status),
+            }
+        except Exception as e:
+            logger.error("Option order failed", contract=contract_symbol, error=str(e))
+            return None
+
+    def get_option_positions(self) -> List[Dict]:
+        """Return current option positions (contracts whose symbol length > 10)."""
+        try:
+            positions = self.client.get_all_positions()
+            results = []
+            for pos in (positions or []):
+                sym = pos.symbol or ""
+                if len(sym) > 10:
+                    results.append({
+                        "symbol": sym,
+                        "qty": abs(int(float(pos.qty))),
+                        "side": "short" if int(float(pos.qty)) < 0 else "long",
+                        "avg_entry_price": float(pos.avg_entry_price),
+                        "market_value": float(pos.market_value),
+                        "underlying": sym[:4].rstrip("0123456789"),
+                    })
+            return results
+        except Exception as e:
+            logger.error("Failed to fetch option positions", error=str(e))
+            return []
+
     def sync_portfolio(self) -> Portfolio:
         """
         Sync portfolio state from Alpaca

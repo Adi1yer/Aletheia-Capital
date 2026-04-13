@@ -149,8 +149,9 @@ class TradingPipeline:
         agent_weights = self.registry.get_weights()
         
         # 7. Generate portfolio decisions
-        # If rebalance mode is enabled, do a portfolio-level allocation based on confidence.
-        logger.info("Generating portfolio decisions", rebalance=bool(run_config.get("rebalance")))
+        enable_cc = bool(run_config.get("enable_covered_calls", False))
+        min_cc_score = int(run_config.get("min_cc_score", 40))
+        logger.info("Generating portfolio decisions", rebalance=bool(run_config.get("rebalance")), covered_calls=enable_cc)
         if run_config.get("rebalance") is True:
             decisions = self.portfolio_manager.generate_rebalance_decisions(
                 tickers=tickers,
@@ -163,6 +164,8 @@ class TradingPipeline:
                 min_sell_confidence=int(run_config.get("min_sell_confidence", 60)),
                 cash_buffer_pct=float(run_config.get("cash_buffer_pct", 0.05)),
                 max_buy_tickers=int(run_config.get("max_buy_tickers", 20)),
+                enable_covered_calls=enable_cc,
+                min_cc_score=min_cc_score,
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(
@@ -173,6 +176,8 @@ class TradingPipeline:
                 agent_weights=agent_weights,
                 pending_orders_by_symbol=pending_orders_by_symbol,
             )
+
+        cc_lot_tickers = getattr(self.portfolio_manager, "_last_cc_lot_tickers", [])
         
         # 8. Execute trades (if enabled)
         execution_results = None
@@ -187,6 +192,29 @@ class TradingPipeline:
                 execution_results = self.broker.execute_decisions(decisions)
         else:
             logger.info("Dry run mode - trades not executed")
+
+        # 8b. Covered call execution (after equity trades settle)
+        cc_results: List[Dict] = []
+        if enable_cc and execute and self.broker and cc_lot_tickers:
+            try:
+                from src.options.covered_calls import CoveredCallManager
+                logger.info("Running covered call step", cc_lot_tickers=cc_lot_tickers)
+                cc_portfolio = self.broker.sync_portfolio()
+                cc_manager = CoveredCallManager()
+                cc_scores = {
+                    t: self.portfolio_manager._score_covered_call(t, agent_signals, agent_weights)
+                    for t in cc_lot_tickers
+                }
+                cc_results = cc_manager.execute_covered_calls(
+                    broker=self.broker,
+                    portfolio=cc_portfolio,
+                    cc_lot_tickers=cc_lot_tickers,
+                    cc_scores=cc_scores,
+                    current_prices={t: risk_analysis[t]["current_price"] for t in risk_analysis},
+                )
+            except Exception as e:
+                logger.error("Covered call step failed (non-fatal)", error=str(e))
+                cc_results = [{"status": "error", "reason": str(e)}]
         
         # 9. Track performance from previous cycle
         current_prices = {t: risk_analysis[t]['current_price'] for t in risk_analysis.keys()}
@@ -272,6 +300,7 @@ class TradingPipeline:
                 for ticker, decision in decisions.items()
             },
             'execution_results': execution_results,
+            'covered_call_results': cc_results,
         }
         
         logger.info("Weekly trading cycle complete", decision_count=len(decisions))

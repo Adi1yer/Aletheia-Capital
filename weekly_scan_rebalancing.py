@@ -74,6 +74,19 @@ def main() -> None:
         default=30,
         help="Max number of buy names to allocate into (default 30)",
     )
+
+    # Covered call strategy
+    p.add_argument(
+        "--enable-covered-calls",
+        action="store_true",
+        help="Enable covered-call strategy on hold tickers (default True when no args).",
+    )
+    p.add_argument(
+        "--min-cc-score",
+        type=int,
+        default=40,
+        help="Minimum covered-call score to qualify (default 40)",
+    )
     args = p.parse_args()
 
     # If you just run `python weekly_scan_rebalancing.py` with no arguments,
@@ -81,6 +94,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         args.max_stocks = 500
         args.execute = True
+        args.enable_covered_calls = True
         default_recipient = (settings.recipient_email or "").strip()
         if default_recipient:
             args.email_to = default_recipient
@@ -159,6 +173,8 @@ def main() -> None:
         "min_sell_confidence": int(args.min_sell_confidence),
         "cash_buffer_pct": float(args.cash_buffer_pct),
         "max_buy_tickers": int(args.max_buy_tickers),
+        "enable_covered_calls": bool(args.enable_covered_calls),
+        "min_cc_score": int(args.min_cc_score),
     }
 
     pipeline = TradingPipeline(broker=broker)

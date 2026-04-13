@@ -1,6 +1,6 @@
 """Portfolio management agent - makes final trading decisions"""
 
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Set, Tuple
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
@@ -14,6 +14,28 @@ import structlog
 import json
 
 logger = structlog.get_logger()
+
+GROWTH_AGENTS: Set[str] = {
+    "cathie_wood",
+    "chamath_palihapitiya",
+    "ron_baron",
+    "growth_analyst",
+    "technicals_analyst",
+    "news_sentiment_analyst",
+    "phil_fisher",
+}
+
+VALUE_AGENTS: Set[str] = {
+    "ben_graham",
+    "charlie_munger",
+    "warren_buffett",
+    "michael_burry",
+    "aswath_damodaran",
+    "peter_lynch",
+    "mohnish_pabrai",
+    "valuation_analyst",
+    "fundamentals_analyst",
+}
 
 
 class PortfolioDecision(BaseModel):
@@ -121,12 +143,16 @@ class PortfolioManager:
         min_sell_confidence: int = 60,
         cash_buffer_pct: float = 0.05,
         max_buy_tickers: int = 20,
+        enable_covered_calls: bool = False,
+        min_cc_score: int = 40,
     ) -> Dict[str, PortfolioDecision]:
         """
-        Deterministic portfolio-level rebalance:
+        Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
+
         - Sell existing long positions when aggregated signal is bearish with high confidence
-        - Allocate available cash (plus sale proceeds) across bullish names proportionally to confidence
-        - Never opens new shorts (sell only if we hold; cover only if already short)
+        - Score every remaining ticker as either a directional buy OR a covered-call-for-income candidate
+        - Rank all opportunities on one confidence scale and allocate capital top-down
+        - CC candidates: buy exactly 100 shares (lot build); the call is sold later by the pipeline
         """
         pending_orders_by_symbol = pending_orders_by_symbol or {}
         decisions: Dict[str, PortfolioDecision] = {}
@@ -152,30 +178,54 @@ class PortfolioManager:
                     sell_quantities[ticker] = qty
                     proceeds += qty * price
 
-        # 2) Compute budget for buys
+        # 2) Compute budget for buys + CC lot builds
         equity = portfolio.get_equity({t: float(p) for t, p in current_prices.items() if p})
         buffer = max(0.0, float(equity) * float(cash_buffer_pct))
         budget = max(0.0, float(portfolio.cash) + float(proceeds) - buffer)
 
-        # 3) Pick buy candidates and allocate by confidence
-        buy_candidates = []
-        buy_candidate_set: set = set()
+        # 3) Score every ticker as buy OR covered-call candidate
+        buy_candidates: List[Tuple[str, int]] = []
+        cc_candidates: List[Tuple[str, int]] = []
+
         for ticker in tickers:
             risk = risk_analysis.get(ticker)
             price = float(current_prices.get(ticker) or 0.0)
             if not risk or price <= 0:
                 continue
+            if ticker in sell_quantities:
+                continue
+
             aggregated = self._aggregate_signals(ticker, agent_signals, agent_weights)
+
             if aggregated["signal"] == "bullish" and aggregated["confidence"] >= min_buy_confidence:
                 buy_candidates.append((ticker, int(aggregated["confidence"])))
+            elif enable_covered_calls:
+                cc_score = self._score_covered_call(ticker, agent_signals, agent_weights)
+                if cc_score >= min_cc_score:
+                    cc_candidates.append((ticker, int(cc_score)))
 
         buy_candidates.sort(key=lambda x: x[1], reverse=True)
         buy_candidates = buy_candidates[: max(0, int(max_buy_tickers))]
         buy_candidate_set = {t for t, _ in buy_candidates}
-        total_score = sum(score for _, score in buy_candidates) or 0
 
-        # 4) Build decisions
-        # Start with sells and any covers (if short exists)
+        # Build unified ranked list: (ticker, score, type)
+        unified: List[Tuple[str, int, str]] = []
+        for t, s in buy_candidates:
+            unified.append((t, s, "buy"))
+        for t, s in cc_candidates:
+            unified.append((t, s, "cc"))
+        unified.sort(key=lambda x: x[1], reverse=True)
+
+        if unified:
+            logger.info(
+                "Unified opportunity ranking",
+                total=len(unified),
+                buys=sum(1 for _, _, tp in unified if tp == "buy"),
+                ccs=sum(1 for _, _, tp in unified if tp == "cc"),
+                top5=[(t, s, tp) for t, s, tp in unified[:5]],
+            )
+
+        # 4) Build sell / cover / placeholder-hold decisions
         for ticker in tickers:
             position = portfolio.get_position(ticker)
             risk = risk_analysis.get(ticker)
@@ -212,7 +262,6 @@ class PortfolioManager:
                 )
                 continue
 
-            # placeholder; may become buy below
             hold_reason = self._explain_hold(
                 ticker, aggregated, position,
                 min_buy_confidence, min_sell_confidence,
@@ -225,9 +274,10 @@ class PortfolioManager:
                 reasoning=hold_reason,
             )
 
-        # 5) Allocate buys (respect budget + risk remaining limit + pending buys)
-        if budget > 0 and total_score > 0:
-            for ticker, score in buy_candidates:
+        # 5) Allocate capital down the unified ranked list
+        cc_lot_tickers: List[str] = []
+        if budget > 0 and unified:
+            for ticker, score, opp_type in unified:
                 if budget <= 0:
                     break
                 risk = risk_analysis.get(ticker) or {}
@@ -237,7 +287,6 @@ class PortfolioManager:
                 pending = pending_orders_by_symbol.get(ticker) or {}
                 pending_buy = int(pending.get("buy_qty", 0) or 0)
 
-                # Risk cap: remaining_position_limit is additional dollars allowed by risk
                 remaining_dollars = float(risk.get("remaining_position_limit") or 0.0)
                 max_by_risk = int(remaining_dollars // price) if remaining_dollars > 0 else 0
                 max_by_cash = int(budget // price)
@@ -245,19 +294,41 @@ class PortfolioManager:
                 if max_buy <= 0:
                     continue
 
-                alloc = budget * (float(score) / float(total_score))
-                qty = min(max_buy, int(alloc // price))
-                if qty <= 0:
-                    continue
+                if opp_type == "cc":
+                    position = portfolio.get_position(ticker)
+                    current_long = position.long if position else 0
+                    needed = max(0, 100 - current_long - pending_buy)
+                    if needed <= 0:
+                        continue
+                    qty = min(needed, max_buy)
+                    if qty <= 0 or (current_long + qty) < 100:
+                        continue
+                    decisions[ticker] = PortfolioDecision(
+                        action="buy",
+                        quantity=qty,
+                        confidence=int(score),
+                        reasoning=f"CC lot build: buy to 100 shares (cc_score={score})",
+                    )
+                    cc_lot_tickers.append(ticker)
+                    budget -= qty * price
+                else:
+                    total_buy_score = sum(s for _, s, tp in unified if tp == "buy") or 1
+                    alloc = budget * (float(score) / float(total_buy_score))
+                    qty = min(max_buy, int(alloc // price))
+                    if qty <= 0:
+                        continue
+                    decisions[ticker] = PortfolioDecision(
+                        action="buy",
+                        quantity=qty,
+                        confidence=int(score),
+                        reasoning=f"Rebalance: bullish {score}",
+                    )
+                    budget -= qty * price
 
-                decisions[ticker] = PortfolioDecision(
-                    action="buy",
-                    quantity=qty,
-                    confidence=int(score),
-                    reasoning=f"Rebalance: bullish {score}",
-                )
-                budget -= qty * price
+        if cc_lot_tickers:
+            logger.info("CC lot builds selected", tickers=cc_lot_tickers)
 
+        self._last_cc_lot_tickers = cc_lot_tickers
         return decisions
 
     @staticmethod
@@ -291,6 +362,51 @@ class PortfolioManager:
         if budget <= 0:
             return f"Bullish {conf}% but no budget remaining for new buys"
         return f"Bullish {conf}% (bull {bull} vs bear {bear}); sizing produced 0 shares"
+
+    @staticmethod
+    def _score_covered_call(
+        ticker: str,
+        agent_signals: Dict[str, Dict[str, AgentSignal]],
+        agent_weights: Dict[str, float],
+    ) -> int:
+        """Score a ticker for covered-call suitability.
+
+        High score = growth agents bullish AND value agents bearish
+        (the stock won't crash but won't rally hard either -- ideal for
+        harvesting option premium).
+        """
+        growth_total = 0
+        growth_bullish = 0
+        value_total = 0
+        value_bearish = 0
+        all_confidences: List[float] = []
+
+        for agent_key, ticker_signals in agent_signals.items():
+            if ticker not in ticker_signals:
+                continue
+            sig = ticker_signals[ticker]
+            weight = agent_weights.get(agent_key, 1.0)
+            sig_signal = sig.signal if hasattr(sig, "signal") else sig.get("signal", "neutral")
+            sig_conf = sig.confidence if hasattr(sig, "confidence") else sig.get("confidence", 0)
+            all_confidences.append(sig_conf * weight)
+
+            if agent_key in GROWTH_AGENTS:
+                growth_total += 1
+                if sig_signal == "bullish":
+                    growth_bullish += 1
+            elif agent_key in VALUE_AGENTS:
+                value_total += 1
+                if sig_signal == "bearish":
+                    value_bearish += 1
+
+        if growth_total == 0 or value_total == 0:
+            return 0
+
+        growth_bull_pct = growth_bullish / growth_total
+        value_bear_pct = value_bearish / value_total
+        avg_confidence = (sum(all_confidences) / len(all_confidences)) if all_confidences else 0
+
+        return int(min(growth_bull_pct, value_bear_pct) * avg_confidence)
 
     def _calculate_allowed_actions(
         self,
@@ -347,20 +463,23 @@ class PortfolioManager:
             
             signal = ticker_signals[ticker]
             weight = agent_weights.get(agent_key, 1.0)
-            weighted_confidence = signal.confidence * weight
+            sig_signal = signal.signal if hasattr(signal, "signal") else signal.get("signal", "neutral")
+            sig_conf = signal.confidence if hasattr(signal, "confidence") else signal.get("confidence", 0)
+            sig_reasoning = (signal.reasoning if hasattr(signal, "reasoning") else signal.get("reasoning", ""))
+            weighted_confidence = sig_conf * weight
             
-            if signal.signal == "bullish":
+            if sig_signal == "bullish":
                 bullish_score += weighted_confidence
-            elif signal.signal == "bearish":
+            elif sig_signal == "bearish":
                 bearish_score += weighted_confidence
             
             total_weight += weight
             signal_details.append({
                 'agent': agent_key,
-                'signal': signal.signal,
-                'confidence': signal.confidence,
+                'signal': sig_signal,
+                'confidence': sig_conf,
                 'weight': weight,
-                'reasoning': signal.reasoning[:100],  # Truncate for LLM
+                'reasoning': str(sig_reasoning)[:100],
             })
         
         # Normalize scores
