@@ -87,6 +87,51 @@ def main() -> None:
         default=40,
         help="Minimum covered-call score to qualify (default 40)",
     )
+    p.add_argument(
+        "--earnings-blackout-days",
+        type=int,
+        default=14,
+        help="Skip buys/CC/CSP within this many days of earnings (0=off)",
+    )
+    p.add_argument(
+        "--stop-loss-pct",
+        type=float,
+        default=0.08,
+        help="Bracket stop-loss fraction on new buys (default 0.08 = 8%%; set 0 to disable)",
+    )
+    p.add_argument(
+        "--use-limit-orders",
+        action="store_true",
+        help="Use limit buys with small slippage buffer instead of market orders",
+    )
+    p.add_argument(
+        "--limit-slippage-pct",
+        type=float,
+        default=0.002,
+        help="Limit price = quote * (1 + this) for buys (default 0.002)",
+    )
+    p.add_argument(
+        "--enable-cash-secured-puts",
+        action="store_true",
+        help="Enable cash-secured put writes after equity execution",
+    )
+    p.add_argument(
+        "--min-csp-score",
+        type=int,
+        default=40,
+        help="Minimum CSP score (default 40)",
+    )
+    p.add_argument(
+        "--enable-conviction-rebalance",
+        action="store_true",
+        help="Sell weaker longs when much stronger buys exist",
+    )
+    p.add_argument(
+        "--conviction-score-gap",
+        type=int,
+        default=25,
+        help="Min gap vs best buy score to trigger conviction sell",
+    )
     args = p.parse_args()
 
     # If you just run `python weekly_scan_rebalancing.py` with no arguments,
@@ -175,6 +220,14 @@ def main() -> None:
         "max_buy_tickers": int(args.max_buy_tickers),
         "enable_covered_calls": bool(args.enable_covered_calls),
         "min_cc_score": int(args.min_cc_score),
+        "earnings_blackout_days": int(args.earnings_blackout_days),
+        "stop_loss_pct": args.stop_loss_pct,
+        "use_limit_orders": bool(args.use_limit_orders),
+        "limit_slippage_pct": float(args.limit_slippage_pct),
+        "enable_cash_secured_puts": bool(args.enable_cash_secured_puts),
+        "min_csp_score": int(args.min_csp_score),
+        "enable_conviction_rebalance": bool(args.enable_conviction_rebalance),
+        "conviction_score_gap": int(args.conviction_score_gap),
     }
 
     pipeline = TradingPipeline(broker=broker)

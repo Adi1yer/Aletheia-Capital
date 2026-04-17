@@ -3,7 +3,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
-from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE
+from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
@@ -64,7 +64,7 @@ class MohnishPabraiAgent(BaseAgent):
         }
         
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are Mohnish Pabrai, a value investor who clones great investors. Analyze this stock using Pabrai's investment principles:
+            ("system", with_performance_feedback(f"""You are Mohnish Pabrai, a value investor who clones great investors. Analyze this stock using Pabrai's investment principles:
 
 Key Criteria:
 1. Wide economic moats and competitive advantages
@@ -79,7 +79,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided financial data and provide your investment signal.
 
-""" + JSON_ONLY_INSTRUCTION),
+""" + JSON_ONLY_INSTRUCTION, self)),
             ("human", """Ticker: {ticker}
 
 Financial Metrics:

@@ -1,6 +1,8 @@
 """Email notification system"""
 
 import smtplib
+import json
+import os
 from datetime import datetime, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -14,6 +16,54 @@ from src.scan_cache import ScanCache
 from src.llm.models import get_llm_for_agent
 
 logger = structlog.get_logger()
+
+
+def _load_scorecard_leaderboard(limit: int = 12) -> list:
+    path = "data/performance/agent_scorecard.json"
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    rows = []
+    for ak, row in (data.get("agents") or {}).items():
+        if not isinstance(row, dict):
+            continue
+        obs = int(row.get("directional_observations") or 0)
+        if obs < 3:
+            continue
+        rows.append(
+            (
+                ak,
+                float(row.get("directional_accuracy") or 0),
+                float(row.get("confidence_weighted_return_pct") or 0),
+                obs,
+            )
+        )
+    rows.sort(key=lambda x: x[1] * 50 + x[3], reverse=True)
+    return rows[:limit]
+
+
+def _portfolio_concentration_lines(portfolio: dict, risk: dict, max_pct: float = 25.0) -> list:
+    eq = float(portfolio.get("equity") or 0)
+    if eq <= 0:
+        return []
+    lines = []
+    positions = portfolio.get("positions") or {}
+    for sym, pos in positions.items():
+        long_q = (pos or {}).get("long") or 0
+        if not long_q:
+            continue
+        px = (risk.get(sym) or {}).get("current_price") if isinstance(risk.get(sym), dict) else None
+        if px is None:
+            px = (pos or {}).get("long_cost_basis") or 0
+        mv = float(long_q) * float(px)
+        pct = 100.0 * mv / eq
+        if pct >= max_pct:
+            lines.append(f"{sym}: ~{pct:.1f}% of equity (long {long_q} @ ~${float(px):.2f})")
+    return lines
 
 
 def _format_timestamp(iso_ts: str) -> str:
@@ -335,6 +385,24 @@ class EmailNotifier:
                         text.append(f"  {sym}: short {short_qty} (cost basis ${cb:,.2f})")
             text.append("")
 
+            conc = _portfolio_concentration_lines(portfolio, results.get("risk_analysis") or {})
+            if conc:
+                text.append("CONCENTRATION ALERTS (informational)")
+                text.append("-" * 40)
+                for line in conc:
+                    text.append(f"  {line}")
+                text.append("")
+
+        lb = _load_scorecard_leaderboard()
+        if lb:
+            text.append("AGENT LEADERBOARD (scan-cache scorecard)")
+            text.append("-" * 40)
+            for ak, acc, cw, obs in lb:
+                text.append(
+                    f"  {ak}: acc {acc:.0%}, cw-ret {cw:.2f}, n={obs}"
+                )
+            text.append("")
+
         # Open and recent orders (if any)
         open_orders = results.get("open_orders") or []
         recent_orders = results.get("recent_orders") or []
@@ -443,6 +511,16 @@ class EmailNotifier:
             text.append("-" * 80)
             for ticker, d in cc_lot_buys:
                 text.append(f"  {ticker}: bought {d.get('quantity', 0)} shares ({d.get('reasoning', '')})")
+            text.append("")
+
+        csp_results = results.get("csp_results") or []
+        if csp_results:
+            text.append("CASH-SECURED PUTS")
+            text.append("-" * 40)
+            for r in csp_results:
+                st = r.get("status", "?")
+                u = r.get("underlying", "?")
+                text.append(f"  {u}: {st} {r.get('contract_symbol', '')}")
             text.append("")
 
         # Past performance section (week-over-week equity change, if available)
@@ -560,6 +638,30 @@ class EmailNotifier:
                     </table>
                 </div>
                 """
+            conc = _portfolio_concentration_lines(portfolio, results.get("risk_analysis") or {})
+            if conc:
+                html += """
+                <div class="section">
+                    <h2>Concentration alerts</h2>
+                    <ul>
+                """
+                for line in conc:
+                    html += f"<li>{html_escape(line)}</li>"
+                html += "</ul></div>"
+
+        lb = _load_scorecard_leaderboard()
+        if lb:
+            html += """
+            <div class="section">
+                <h2>Agent leaderboard (scan cache)</h2>
+                <table>
+                    <tr><th>Agent</th><th>Accuracy</th><th>CW return</th><th>N</th></tr>
+            """
+            for ak, acc, cw, obs in lb:
+                html += f"""
+                <tr><td>{html_escape(ak)}</td><td>{acc:.0%}</td><td>{cw:.2f}</td><td>{obs}</td></tr>
+                """
+            html += "</table></div>"
         
         # Decisions -- buys and sells first, then top holds
         decisions = results.get('decisions', {})

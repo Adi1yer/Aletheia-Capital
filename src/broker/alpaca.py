@@ -8,8 +8,9 @@ from alpaca.trading.requests import (
     LimitOrderRequest,
     GetOrdersRequest,
     GetOptionContractsRequest,
+    StopLossRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, ContractType
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, ContractType, OrderClass
 from src.config.settings import settings
 from src.portfolio.models import Portfolio, Position
 from src.portfolio.manager import PortfolioDecision
@@ -121,6 +122,10 @@ class AlpacaBroker:
         self,
         ticker: str,
         decision: PortfolioDecision,
+        current_price: Optional[float] = None,
+        stop_loss_pct: Optional[float] = None,
+        use_limit_order: bool = False,
+        limit_slippage_pct: float = 0.002,
     ) -> Optional[Dict]:
         """
         Execute a trading order
@@ -145,12 +150,44 @@ class AlpacaBroker:
                 logger.warning("Unknown action", ticker=ticker, action=decision.action)
                 return None
 
-            order_data = MarketOrderRequest(
-                symbol=ticker,
-                qty=decision.quantity,
-                side=side,
-                time_in_force=TimeInForce.DAY,
-            )
+            if (
+                side == OrderSide.BUY
+                and use_limit_order
+                and current_price
+                and float(current_price) > 0
+            ):
+                limit_px = round(float(current_price) * (1.0 + float(limit_slippage_pct)), 2)
+                order_data = LimitOrderRequest(
+                    symbol=ticker,
+                    qty=decision.quantity,
+                    side=side,
+                    type=OrderType.LIMIT,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=limit_px,
+                )
+            elif (
+                side == OrderSide.BUY
+                and stop_loss_pct
+                and float(stop_loss_pct) > 0
+                and current_price
+                and float(current_price) > 0
+            ):
+                stop_px = round(float(current_price) * (1.0 - float(stop_loss_pct)), 2)
+                order_data = MarketOrderRequest(
+                    symbol=ticker,
+                    qty=decision.quantity,
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                    order_class=OrderClass.BRACKET,
+                    stop_loss=StopLossRequest(stop_price=stop_px),
+                )
+            else:
+                order_data = MarketOrderRequest(
+                    symbol=ticker,
+                    qty=decision.quantity,
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                )
 
             order = self.client.submit_order(order_data=order_data)
 
@@ -178,6 +215,10 @@ class AlpacaBroker:
         self,
         decisions: Dict[str, PortfolioDecision],
         rate_limit: int = 200,  # Alpaca limit: 200 requests/minute
+        current_prices: Optional[Dict[str, float]] = None,
+        stop_loss_pct: Optional[float] = None,
+        use_limit_orders: bool = False,
+        limit_slippage_pct: float = 0.002,
     ) -> Dict[str, Optional[Dict]]:
         """
         Execute multiple trading decisions with rate limiting
@@ -218,9 +259,18 @@ class AlpacaBroker:
             key=lambda kv: (priority.get(kv[1].action, 99), kv[0]),
         )
 
+        prices = current_prices or {}
         executed = 0
         for i, (ticker, decision) in enumerate(ordered, 1):
-            result = self.execute_order(ticker, decision)
+            px = prices.get(ticker)
+            result = self.execute_order(
+                ticker,
+                decision,
+                current_price=float(px) if px is not None else None,
+                stop_loss_pct=stop_loss_pct,
+                use_limit_order=use_limit_orders,
+                limit_slippage_pct=limit_slippage_pct,
+            )
             results[ticker] = result
             
             if result:

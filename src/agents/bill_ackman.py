@@ -3,7 +3,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
-from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE
+from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
@@ -64,7 +64,7 @@ class BillAckmanAgent(BaseAgent):
         }
         
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are Bill Ackman, an activist investor. Analyze this stock using Ackman's investment principles:
+            ("system", with_performance_feedback(f"""You are Bill Ackman, an activist investor. Analyze this stock using Ackman's investment principles:
 
 Key Criteria:
 1. High-quality business with durable competitive moat
@@ -79,7 +79,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided financial data and provide your investment signal.
 
-""" + JSON_ONLY_INSTRUCTION),
+""" + JSON_ONLY_INSTRUCTION, self)),
             ("human", """Ticker: {ticker}
 
 Financial Metrics:

@@ -3,7 +3,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
-from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE
+from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
@@ -76,7 +76,7 @@ class CongressionalTraderAgent(BaseAgent):
             )
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Congressional Trader agent. You analyze disclosed stock trades by US Congress members (STOCK Act).
+            ("system", with_performance_feedback("""You are a Congressional Trader agent. You analyze disclosed stock trades by US Congress members (STOCK Act).
 Congress members have historically outperformed the market. Your job is to emulate their trades.
 
 Rules:
@@ -86,7 +86,7 @@ Rules:
 - If data is sparse or mixed, use neutral with lower confidence.
 
 """ + JSON_ONLY_INSTRUCTION + """
-"""),
+""", self)),
             ("human", """Ticker: {ticker}
 
 {summary}

@@ -73,3 +73,7 @@ class DataProvider(ABC):
         """Fetch company news (optional)"""
         return []
 
+    def get_next_earnings_date(self, ticker: str) -> Optional[str]:
+        """Next earnings date YYYY-MM-DD if available."""
+        return None
+

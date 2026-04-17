@@ -3,7 +3,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
-from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE
+from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
@@ -62,7 +62,7 @@ class CryptoAnalystAgent(BaseAgent):
             metrics = provider.get_crypto_metrics(ticker)
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a Crypto Analyst. Analyze this cryptocurrency using technical and momentum metrics.
+            ("system", with_performance_feedback("""You are a Crypto Analyst. Analyze this cryptocurrency using technical and momentum metrics.
 Crypto trades 24/7 and is more volatile than equities. Consider:
 1. Price trend and momentum
 2. Moving averages (SMA 20, SMA 50)
@@ -71,7 +71,7 @@ Crypto trades 24/7 and is more volatile than equities. Consider:
 5. Market cap and liquidity if available
 
 """ + JSON_ONLY_INSTRUCTION + """
-"""),
+""", self)),
             ("human", """Ticker: {ticker}
 
 Price Data:

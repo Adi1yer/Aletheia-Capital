@@ -2,8 +2,8 @@ name: Weekly Scan & Rebalance
 
 on:
   schedule:
-    # 5:00 PM UTC = 9:00 AM PST every Monday (market is open 30 min by then)
-    - cron: '0 17 * * 1'
+    # 5:45 PM UTC ~ 9:45 AM Pacific (PST); differs by one hour under PDT
+    - cron: '45 17 * * 1'
   workflow_dispatch: # Manual trigger from GitHub UI
 
 jobs:
@@ -47,4 +47,4 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-        run: poetry run python weekly_scan_rebalancing.py
+        run: poetry run python weekly_scan_rebalancing.py --stop-loss-pct 0.08

@@ -214,6 +214,18 @@ class DataAggregator(DataProvider):
                     logger.warning("Crypto metrics failed", symbol=symbol, error=str(e))
         return {}
 
+    def get_next_earnings_date(self, ticker: str) -> Optional[str]:
+        """Next earnings date from first provider that implements it (Yahoo)."""
+        for provider in self.providers:
+            if hasattr(provider, "get_next_earnings_date"):
+                try:
+                    d = provider.get_next_earnings_date(ticker)
+                    if d:
+                        return d
+                except Exception as e:
+                    logger.debug("Earnings lookup failed", provider=type(provider).__name__, error=str(e))
+        return None
+
     def get_analyst_recommendations(self, ticker: str) -> List[Dict[str, Any]]:
         """Get analyst recommendation trends from first provider that supports it (e.g. Finnhub)."""
         for provider in self.providers:

@@ -1,6 +1,7 @@
 """Portfolio management agent - makes final trading decisions"""
 
 from typing import Dict, List, Literal, Optional, Set, Tuple
+from datetime import datetime
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
@@ -56,6 +57,8 @@ class PortfolioManager:
     
     def __init__(self):
         self.risk_manager = RiskManager()
+        self._last_csp_tickers: List[str] = []
+        self._last_csp_scores: Dict[str, int] = {}
     
     def generate_decisions(
         self,
@@ -145,19 +148,57 @@ class PortfolioManager:
         max_buy_tickers: int = 20,
         enable_covered_calls: bool = False,
         min_cc_score: int = 40,
+        next_earnings_by_ticker: Optional[Dict[str, Optional[str]]] = None,
+        earnings_blackout_days: int = 0,
+        enable_cash_secured_puts: bool = False,
+        min_csp_score: int = 40,
+        enable_conviction_rebalance: bool = False,
+        conviction_score_gap: int = 25,
+        min_hold_confidence_for_rotation: int = 45,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
 
         - Sell existing long positions when aggregated signal is bearish with high confidence
-        - Score every remaining ticker as either a directional buy OR a covered-call-for-income candidate
+        - Optional conviction rotation: sell weak longs when much stronger buys exist
+        - Score every remaining ticker as buy, covered-call, or cash-secured-put candidate
         - Rank all opportunities on one confidence scale and allocate capital top-down
         - CC candidates: buy exactly 100 shares (lot build); the call is sold later by the pipeline
         """
         pending_orders_by_symbol = pending_orders_by_symbol or {}
         decisions: Dict[str, PortfolioDecision] = {}
+        next_earnings_by_ticker = next_earnings_by_ticker or {}
 
         current_prices = {t: (risk_analysis.get(t) or {}).get("current_price", 0.0) for t in tickers}
+
+        def _earnings_blocks_buy(t: str) -> bool:
+            if earnings_blackout_days <= 0:
+                return False
+            ed = next_earnings_by_ticker.get(t)
+            if not ed:
+                return False
+            try:
+                e_dt = datetime.strptime(str(ed)[:10], "%Y-%m-%d")
+                today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                return abs((e_dt - today).days) <= int(earnings_blackout_days)
+            except Exception:
+                return False
+
+        aggregated_by_ticker = {
+            t: self._aggregate_signals(t, agent_signals, agent_weights) for t in tickers
+        }
+
+        buy_scores_preview: Dict[str, int] = {}
+        for ticker in tickers:
+            risk = risk_analysis.get(ticker)
+            price = float(current_prices.get(ticker) or 0.0)
+            if not risk or price <= 0 or _earnings_blocks_buy(ticker):
+                continue
+            agg = aggregated_by_ticker[ticker]
+            if agg["signal"] == "bullish" and agg["confidence"] >= min_buy_confidence:
+                buy_scores_preview[ticker] = int(agg["confidence"])
+
+        max_opp_score = max(buy_scores_preview.values()) if buy_scores_preview else 0
 
         # 1) Determine sell candidates (free cash first)
         proceeds = 0.0
@@ -167,12 +208,24 @@ class PortfolioManager:
             price = float(current_prices.get(ticker) or 0.0)
             if not risk or price <= 0:
                 continue
-            aggregated = self._aggregate_signals(ticker, agent_signals, agent_weights)
+            aggregated = aggregated_by_ticker[ticker]
             position = portfolio.get_position(ticker)
             pending = pending_orders_by_symbol.get(ticker) or {}
             pending_sell = int(pending.get("sell_qty", 0) or 0)
 
             if position.long > 0 and aggregated["signal"] == "bearish" and aggregated["confidence"] >= min_sell_confidence:
+                qty = max(0, int(position.long) - pending_sell)
+                if qty > 0:
+                    sell_quantities[ticker] = qty
+                    proceeds += qty * price
+            elif (
+                enable_conviction_rebalance
+                and position
+                and position.long > 0
+                and max_opp_score >= min_buy_confidence
+                and int(aggregated["confidence"]) < int(min_hold_confidence_for_rotation)
+                and max_opp_score - int(aggregated["confidence"]) >= int(conviction_score_gap)
+            ):
                 qty = max(0, int(position.long) - pending_sell)
                 if qty > 0:
                     sell_quantities[ticker] = qty
@@ -183,9 +236,10 @@ class PortfolioManager:
         buffer = max(0.0, float(equity) * float(cash_buffer_pct))
         budget = max(0.0, float(portfolio.cash) + float(proceeds) - buffer)
 
-        # 3) Score every ticker as buy OR covered-call candidate
+        # 3) Score every ticker as buy OR covered-call OR CSP candidate
         buy_candidates: List[Tuple[str, int]] = []
         cc_candidates: List[Tuple[str, int]] = []
+        csp_candidates: List[Tuple[str, int]] = []
 
         for ticker in tickers:
             risk = risk_analysis.get(ticker)
@@ -194,15 +248,24 @@ class PortfolioManager:
                 continue
             if ticker in sell_quantities:
                 continue
+            if _earnings_blocks_buy(ticker):
+                continue
 
-            aggregated = self._aggregate_signals(ticker, agent_signals, agent_weights)
+            aggregated = aggregated_by_ticker[ticker]
 
+            slotted = False
             if aggregated["signal"] == "bullish" and aggregated["confidence"] >= min_buy_confidence:
                 buy_candidates.append((ticker, int(aggregated["confidence"])))
-            elif enable_covered_calls:
+                slotted = True
+            if not slotted and enable_covered_calls:
                 cc_score = self._score_covered_call(ticker, agent_signals, agent_weights)
                 if cc_score >= min_cc_score:
                     cc_candidates.append((ticker, int(cc_score)))
+                    slotted = True
+            if not slotted and enable_cash_secured_puts:
+                csp_score = self._score_cash_secured_put(ticker, agent_signals, agent_weights)
+                if csp_score >= min_csp_score:
+                    csp_candidates.append((ticker, int(csp_score)))
 
         buy_candidates.sort(key=lambda x: x[1], reverse=True)
         buy_candidates = buy_candidates[: max(0, int(max_buy_tickers))]
@@ -214,6 +277,8 @@ class PortfolioManager:
             unified.append((t, s, "buy"))
         for t, s in cc_candidates:
             unified.append((t, s, "cc"))
+        for t, s in csp_candidates:
+            unified.append((t, s, "csp"))
         unified.sort(key=lambda x: x[1], reverse=True)
 
         if unified:
@@ -222,6 +287,7 @@ class PortfolioManager:
                 total=len(unified),
                 buys=sum(1 for _, _, tp in unified if tp == "buy"),
                 ccs=sum(1 for _, _, tp in unified if tp == "cc"),
+                csps=sum(1 for _, _, tp in unified if tp == "csp"),
                 top5=[(t, s, tp) for t, s, tp in unified[:5]],
             )
 
@@ -234,7 +300,7 @@ class PortfolioManager:
                 decisions[ticker] = PortfolioDecision(action="hold", quantity=0, confidence=0, reasoning="No risk/price data")
                 continue
 
-            aggregated = self._aggregate_signals(ticker, agent_signals, agent_weights)
+            aggregated = aggregated_by_ticker[ticker]
             allowed = self._calculate_allowed_actions(
                 ticker,
                 portfolio,
@@ -245,11 +311,22 @@ class PortfolioManager:
 
             if ticker in sell_quantities and "sell" in allowed:
                 qty = min(int(sell_quantities[ticker]), int(allowed["sell"]))
+                bear_sell = (
+                    position
+                    and position.long > 0
+                    and aggregated["signal"] == "bearish"
+                    and aggregated["confidence"] >= min_sell_confidence
+                )
+                reason = (
+                    f"Rebalance: bearish {aggregated['confidence']}"
+                    if bear_sell
+                    else f"Conviction rotation: weaker hold vs opportunities (conf {aggregated['confidence']})"
+                )
                 decisions[ticker] = PortfolioDecision(
                     action="sell",
                     quantity=qty,
                     confidence=int(aggregated["confidence"]),
-                    reasoning=f"Rebalance: bearish {aggregated['confidence']}",
+                    reasoning=reason,
                 )
                 continue
 
@@ -276,6 +353,8 @@ class PortfolioManager:
 
         # 5) Allocate capital down the unified ranked list
         cc_lot_tickers: List[str] = []
+        csp_lot_tickers: List[str] = []
+        csp_scores: Dict[str, int] = {}
         if budget > 0 and unified:
             for ticker, score, opp_type in unified:
                 if budget <= 0:
@@ -286,6 +365,16 @@ class PortfolioManager:
                     continue
                 pending = pending_orders_by_symbol.get(ticker) or {}
                 pending_buy = int(pending.get("buy_qty", 0) or 0)
+
+                if opp_type == "csp":
+                    strike_approx = price * 0.95
+                    collateral = strike_approx * 100.0
+                    if collateral <= 0 or budget < collateral * 1.01:
+                        continue
+                    csp_lot_tickers.append(ticker)
+                    csp_scores[ticker] = int(score)
+                    budget -= collateral
+                    continue
 
                 remaining_dollars = float(risk.get("remaining_position_limit") or 0.0)
                 max_by_risk = int(remaining_dollars // price) if remaining_dollars > 0 else 0
@@ -327,8 +416,12 @@ class PortfolioManager:
 
         if cc_lot_tickers:
             logger.info("CC lot builds selected", tickers=cc_lot_tickers)
+        if csp_lot_tickers:
+            logger.info("CSP candidates selected", tickers=csp_lot_tickers)
 
         self._last_cc_lot_tickers = cc_lot_tickers
+        self._last_csp_tickers = csp_lot_tickers
+        self._last_csp_scores = csp_scores
         return decisions
 
     @staticmethod
@@ -407,6 +500,46 @@ class PortfolioManager:
         avg_confidence = (sum(all_confidences) / len(all_confidences)) if all_confidences else 0
 
         return int(min(growth_bull_pct, value_bear_pct) * avg_confidence)
+
+    @staticmethod
+    def _score_cash_secured_put(
+        ticker: str,
+        agent_signals: Dict[str, Dict[str, AgentSignal]],
+        agent_weights: Dict[str, float],
+    ) -> int:
+        """Cash-secured put: value agents bullish, growth agents bearish (inverse of covered call)."""
+        growth_total = 0
+        growth_bearish = 0
+        value_total = 0
+        value_bullish = 0
+        all_confidences: List[float] = []
+
+        for agent_key, ticker_signals in agent_signals.items():
+            if ticker not in ticker_signals:
+                continue
+            sig = ticker_signals[ticker]
+            weight = agent_weights.get(agent_key, 1.0)
+            sig_signal = sig.signal if hasattr(sig, "signal") else sig.get("signal", "neutral")
+            sig_conf = sig.confidence if hasattr(sig, "confidence") else sig.get("confidence", 0)
+            all_confidences.append(sig_conf * weight)
+
+            if agent_key in GROWTH_AGENTS:
+                growth_total += 1
+                if sig_signal == "bearish":
+                    growth_bearish += 1
+            elif agent_key in VALUE_AGENTS:
+                value_total += 1
+                if sig_signal == "bullish":
+                    value_bullish += 1
+
+        if growth_total == 0 or value_total == 0:
+            return 0
+
+        growth_bear_pct = growth_bearish / growth_total
+        value_bull_pct = value_bullish / value_total
+        avg_confidence = (sum(all_confidences) / len(all_confidences)) if all_confidences else 0
+
+        return int(min(growth_bear_pct, value_bull_pct) * avg_confidence)
 
     def _calculate_allowed_actions(
         self,

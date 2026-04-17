@@ -2,8 +2,8 @@
 
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dateutil.relativedelta import relativedelta
 import structlog
 import time
 import uuid
@@ -134,6 +134,34 @@ class TradingPipeline:
         # 3. Refresh data (right before trading)
         logger.info("Refreshing market data", start_date=start_date, end_date=end_date)
         self._refresh_data(tickers, start_date, end_date)
+
+        next_earnings_by_ticker: Dict[str, Optional[str]] = {}
+        blackout = int(run_config.get("earnings_blackout_days", 0) or 0)
+        if blackout > 0 and tickers:
+            logger.info("Fetching earnings dates for blackout filter", ticker_sample=len(tickers))
+
+            def _earn(sym: str) -> tuple:
+                try:
+                    return sym, self.data_provider.get_next_earnings_date(sym)
+                except Exception:
+                    return sym, None
+
+            with ThreadPoolExecutor(max_workers=min(32, len(tickers))) as ex:
+                futures = [ex.submit(_earn, t) for t in tickers]
+                for fut in as_completed(futures):
+                    sym, d = fut.result()
+                    next_earnings_by_ticker[sym] = d
+
+        if scan_cache is not None and run_config.get("refresh_agent_feedback", True):
+            try:
+                from src.backtesting.feedback import refresh_feedback_from_cache
+
+                refresh_feedback_from_cache(
+                    scan_cache,
+                    max_run_pairs=int(run_config.get("scorecard_run_pairs", 20)),
+                )
+            except Exception as e:
+                logger.warning("Agent feedback refresh failed", error=str(e))
         
         # 4. Run all agents
         logger.info("Running agent analysis")
@@ -151,7 +179,13 @@ class TradingPipeline:
         # 7. Generate portfolio decisions
         enable_cc = bool(run_config.get("enable_covered_calls", False))
         min_cc_score = int(run_config.get("min_cc_score", 40))
-        logger.info("Generating portfolio decisions", rebalance=bool(run_config.get("rebalance")), covered_calls=enable_cc)
+        enable_csp = bool(run_config.get("enable_cash_secured_puts", False))
+        logger.info(
+            "Generating portfolio decisions",
+            rebalance=bool(run_config.get("rebalance")),
+            covered_calls=enable_cc,
+            csp=enable_csp,
+        )
         if run_config.get("rebalance") is True:
             decisions = self.portfolio_manager.generate_rebalance_decisions(
                 tickers=tickers,
@@ -166,6 +200,15 @@ class TradingPipeline:
                 max_buy_tickers=int(run_config.get("max_buy_tickers", 20)),
                 enable_covered_calls=enable_cc,
                 min_cc_score=min_cc_score,
+                next_earnings_by_ticker=next_earnings_by_ticker,
+                earnings_blackout_days=blackout,
+                enable_cash_secured_puts=enable_csp,
+                min_csp_score=int(run_config.get("min_csp_score", 40)),
+                enable_conviction_rebalance=bool(run_config.get("enable_conviction_rebalance", False)),
+                conviction_score_gap=int(run_config.get("conviction_score_gap", 25)),
+                min_hold_confidence_for_rotation=int(
+                    run_config.get("min_hold_confidence_for_rotation", 45)
+                ),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(
@@ -189,12 +232,26 @@ class TradingPipeline:
                 if self.broker is None:
                     self.broker = self._broker_class()
                 logger.info("Executing trades")
-                execution_results = self.broker.execute_decisions(decisions)
+                px_map = {
+                    t: float(risk_analysis[t]["current_price"])
+                    for t in risk_analysis
+                    if isinstance(risk_analysis.get(t), dict)
+                    and risk_analysis[t].get("current_price") is not None
+                }
+                sl_pct = run_config.get("stop_loss_pct")
+                execution_results = self.broker.execute_decisions(
+                    decisions,
+                    current_prices=px_map,
+                    stop_loss_pct=float(sl_pct) if sl_pct is not None else None,
+                    use_limit_orders=bool(run_config.get("use_limit_orders", False)),
+                    limit_slippage_pct=float(run_config.get("limit_slippage_pct", 0.002)),
+                )
         else:
             logger.info("Dry run mode - trades not executed")
 
         # 8b. Covered call execution (after equity trades settle)
         cc_results: List[Dict] = []
+        csp_results: List[Dict] = []
         if enable_cc and execute and self.broker and cc_lot_tickers:
             try:
                 from src.options.covered_calls import CoveredCallManager
@@ -215,6 +272,24 @@ class TradingPipeline:
             except Exception as e:
                 logger.error("Covered call step failed (non-fatal)", error=str(e))
                 cc_results = [{"status": "error", "reason": str(e)}]
+
+        csp_lot_tickers = getattr(self.portfolio_manager, "_last_csp_tickers", [])
+        csp_scores_map = getattr(self.portfolio_manager, "_last_csp_scores", {})
+        if enable_csp and execute and self.broker and csp_lot_tickers:
+            try:
+                from src.options.cash_secured_puts import CashSecuredPutManager
+
+                logger.info("Running cash-secured put step", csp_tickers=csp_lot_tickers)
+                csp_mgr = CashSecuredPutManager()
+                csp_results = csp_mgr.execute_cash_secured_puts(
+                    broker=self.broker,
+                    csp_tickers=csp_lot_tickers,
+                    csp_scores=csp_scores_map,
+                    current_prices={t: risk_analysis[t]["current_price"] for t in risk_analysis},
+                )
+            except Exception as e:
+                logger.error("CSP step failed (non-fatal)", error=str(e))
+                csp_results = [{"status": "error", "reason": str(e)}]
         
         # 9. Track performance from previous cycle
         current_prices = {t: risk_analysis[t]['current_price'] for t in risk_analysis.keys()}
@@ -301,6 +376,7 @@ class TradingPipeline:
             },
             'execution_results': execution_results,
             'covered_call_results': cc_results,
+            'csp_results': csp_results,
         }
         
         logger.info("Weekly trading cycle complete", decision_count=len(decisions))
@@ -328,10 +404,11 @@ class TradingPipeline:
                     limit=1,
                 )
                 news = self.data_provider.get_company_news(ticker, end_date, start_date, limit=5)
+                m0 = metrics_list[0].model_dump() if metrics_list else {}
                 snapshot[ticker] = {
                     "last_price": float(prices[-1].close) if prices else None,
                     "price_count": len(prices),
-                    "metrics": metrics_list[0].model_dump() if metrics_list else {},
+                    "metrics": m0,
                     "line_items": line_items_list[0].model_dump() if line_items_list else {},
                     "news_count": len(news),
                     "news_titles": [n.title for n in news[:5]],
@@ -580,12 +657,22 @@ class TradingPipeline:
         try:
             if scan_cache is not None:
                 self.performance_tracker.load_from_scan_cache(scan_cache, limit=5)
-            # Calculate new weights based on historical performance
-            # This uses accumulated performance data from previous trading cycles
+            scorecard_agents = {}
+            try:
+                from src.backtesting.agent_evaluator import load_scorecard
+
+                sc = load_scorecard()
+                for ak, row in (sc.get("agents") or {}).items():
+                    if isinstance(row, dict) and row.get("directional_observations", 0):
+                        scorecard_agents[ak] = row
+            except Exception:
+                pass
             new_weights = self.performance_tracker.calculate_weights_from_performance(
                 min_weight=0.1,
                 max_weight=3.0,
-                smoothing_factor=0.2,  # Gradual adjustment (20% per cycle)
+                smoothing_factor=0.2,
+                scorecard_metrics=scorecard_agents,
+                decay_half_life_weeks=8.0,
             )
             
             if new_weights:

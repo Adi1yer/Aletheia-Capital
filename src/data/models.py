@@ -18,6 +18,8 @@ class Price(BaseModel):
 class FinancialMetrics(BaseModel):
     ticker: str
     report_period: datetime
+    sector: Optional[str] = None
+    industry: Optional[str] = None
     market_cap: Optional[float] = None
     pe_ratio: Optional[float] = None
     price_to_book_ratio: Optional[float] = None

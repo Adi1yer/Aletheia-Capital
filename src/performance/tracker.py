@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
+import math
 from pydantic import BaseModel
 from src.agents.base import AgentSignal
 import structlog
@@ -287,11 +288,45 @@ class PerformanceTracker:
             logger.warning("Could not load from scan cache", error=str(e))
             return 0
 
+    def _decay_weighted_avg_return(self, agent_key: str, half_life_weeks: float) -> Optional[float]:
+        if half_life_weeks <= 0:
+            return None
+        perf = self._performance.get(agent_key)
+        if not perf or not perf.trade_history:
+            return None
+        now = datetime.utcnow()
+        num = 0.0
+        den = 0.0
+        lam = math.log(2) / max(half_life_weeks, 1e-6)
+        for tr in perf.trade_history:
+            exit_d = tr.get("exit_date") or tr.get("entry_date")
+            if not exit_d:
+                continue
+            try:
+                if isinstance(exit_d, str):
+                    dt = datetime.strptime(str(exit_d)[:10], "%Y-%m-%d")
+                else:
+                    dt = exit_d
+            except Exception:
+                continue
+            weeks = max(0.0, (now - dt).days / 7.0)
+            w = math.exp(-lam * weeks)
+            r = tr.get("return_pct")
+            if r is None:
+                continue
+            num += float(r) * w
+            den += w
+        if den <= 0:
+            return None
+        return num / den
+
     def calculate_weights_from_performance(
         self,
         min_weight: float = 0.1,
         max_weight: float = 3.0,
         smoothing_factor: float = 0.3,
+        scorecard_metrics: Optional[Dict[str, Dict[str, Any]]] = None,
+        decay_half_life_weeks: float = 0.0,
     ) -> Dict[str, float]:
         """
         Calculate new weights based on agent performance
@@ -300,22 +335,37 @@ class PerformanceTracker:
             min_weight: Minimum weight (default: 0.1)
             max_weight: Maximum weight (default: 3.0)
             smoothing_factor: How much to adjust weights (0.0 = no change, 1.0 = full adjustment)
+            scorecard_metrics: Optional per-agent rows from agent scorecard (accuracy, cw return).
+            decay_half_life_weeks: If >0, weight recent trade_history returns with exponential decay.
         
         Returns:
             Dictionary mapping agent_key to new weight
         """
-        if not self._performance:
+        scorecard_metrics = scorecard_metrics or {}
+
+        agent_keys = set(self._performance.keys()) | set(scorecard_metrics.keys())
+        if not agent_keys:
             logger.warning("No performance data available, using equal weights")
             return {}
-        
-        # Get all agent returns
-        agent_returns = {}
-        for agent_key, perf in self._performance.items():
-            if perf.total_trades > 0:
-                agent_returns[agent_key] = perf.average_return_pct
-            else:
-                agent_returns[agent_key] = 0.0
-        
+
+        agent_returns: Dict[str, float] = {}
+        for agent_key in agent_keys:
+            perf = self._performance.get(agent_key)
+            base = 0.0
+            if perf and perf.total_trades > 0:
+                decayed = self._decay_weighted_avg_return(agent_key, decay_half_life_weeks)
+                base = decayed if decayed is not None else perf.average_return_pct
+            row = scorecard_metrics.get(agent_key)
+            if isinstance(row, dict) and row.get("directional_observations", 0):
+                acc = float(row.get("directional_accuracy") or 0)
+                cw = float(row.get("confidence_weighted_return_pct") or 0)
+                sc_score = acc * 50.0 + cw
+                if perf and perf.total_trades > 0:
+                    base = 0.5 * base + 0.5 * sc_score
+                else:
+                    base = sc_score
+            agent_returns[agent_key] = base
+
         if not agent_returns:
             return {}
         

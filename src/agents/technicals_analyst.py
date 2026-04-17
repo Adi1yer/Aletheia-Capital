@@ -4,7 +4,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
 from src.llm.utils import call_llm_with_retry
-from src.agents.prompt_helpers import compute_return_vs_index, JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE
+from src.agents.prompt_helpers import compute_return_vs_index, JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
@@ -85,7 +85,7 @@ class TechnicalsAnalystAgent(BaseAgent):
         }
         
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a Technicals Analyst, a technical analysis expert. Analyze this stock using technical analysis:
+            ("system", with_performance_feedback(f"""You are a Technicals Analyst, a technical analysis expert. Analyze this stock using technical analysis:
 
 Key Criteria:
 1. Price trends and momentum
@@ -100,7 +100,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided price data and provide your investment signal based on technical analysis.
 
-""" + JSON_ONLY_INSTRUCTION),
+""" + JSON_ONLY_INSTRUCTION, self)),
             ("human", """Ticker: {ticker}
 
 Current Price: {current_price}

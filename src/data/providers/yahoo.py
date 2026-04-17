@@ -2,7 +2,7 @@
 
 import yfinance as yf
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, date
 from src.data.models import Price, FinancialMetrics, LineItem, CompanyNews
 from src.data.providers.base import DataProvider
 import structlog
@@ -65,6 +65,8 @@ class YahooFinanceProvider(DataProvider):
             metrics = FinancialMetrics(
                 ticker=ticker,
                 report_period=datetime.strptime(end_date, "%Y-%m-%d"),
+                sector=info.get("sector"),
+                industry=info.get("industry"),
                 market_cap=market_cap,
                 pe_ratio=info.get('trailingPE'),
                 price_to_book_ratio=info.get('priceToBook'),
@@ -205,4 +207,31 @@ class YahooFinanceProvider(DataProvider):
         except Exception as e:
             logger.debug("Could not fetch company news", ticker=ticker, error=str(e))
             return []
+
+    def get_next_earnings_date(self, ticker: str) -> Optional[str]:
+        """Next reported earnings date as YYYY-MM-DD, or None if unknown."""
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info or {}
+            ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+            if isinstance(ts, (int, float)) and ts > 0:
+                return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+            cal = getattr(stock, "calendar", None)
+            if cal is not None and hasattr(cal, "empty") and not cal.empty:
+                row = cal.iloc[0]
+                if hasattr(row, "name"):
+                    d = row.name
+                    if hasattr(d, "strftime"):
+                        return d.strftime("%Y-%m-%d")
+            ed = getattr(stock, "earnings_dates", None)
+            if ed is not None and hasattr(ed, "empty") and not ed.empty:
+                idx = ed.index[0]
+                if hasattr(idx, "strftime"):
+                    d = idx.date() if hasattr(idx, "date") else idx
+                    if isinstance(d, date):
+                        return d.isoformat()
+                    return str(idx)[:10]
+        except Exception as e:
+            logger.debug("Earnings date lookup failed", ticker=ticker, error=str(e))
+        return None
 

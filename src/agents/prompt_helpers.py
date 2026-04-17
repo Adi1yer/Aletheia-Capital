@@ -70,3 +70,17 @@ def compute_return_vs_index(
     ticker_ret = (ticker_prices[-1].close - ticker_prices[0].close) / ticker_prices[0].close * 100
     index_ret = (index_prices[-1].close - index_prices[0].close) / index_prices[0].close * 100
     return round(ticker_ret - index_ret, 2)
+
+
+def with_performance_feedback(system_text: str, agent) -> str:
+    """Append cached scorecard blurb for this agent (registry key = name lower + underscores)."""
+    try:
+        from src.backtesting.feedback import block_for_agent
+
+        key = agent.name.lower().replace(" ", "_")
+        block = block_for_agent(key)
+        if block:
+            return system_text + "\n\n## Historical signal calibration (weak prior):\n" + block
+    except Exception:
+        pass
+    return system_text

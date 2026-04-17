@@ -3,7 +3,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
-from src.agents.prompt_helpers import format_insider_for_prompt, JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE
+from src.agents.prompt_helpers import format_insider_for_prompt, JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
@@ -70,7 +70,7 @@ class BenGrahamAgent(BaseAgent):
         }
         
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are Ben Graham, the Father of Value Investing. Analyze this stock using Graham's principles:
+            ("system", with_performance_feedback(f"""You are Ben Graham, the Father of Value Investing. Analyze this stock using Graham's principles:
 
 Key Criteria:
 1. Margin of safety - stock trading below intrinsic value
@@ -85,7 +85,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided financial data and provide your investment signal.
 
-""" + JSON_ONLY_INSTRUCTION),
+""" + JSON_ONLY_INSTRUCTION, self)),
             ("human", """Ticker: {ticker}
 
 Financial Metrics:

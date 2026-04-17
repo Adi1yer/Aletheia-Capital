@@ -3,7 +3,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
-from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE
+from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
 from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
@@ -65,7 +65,7 @@ class GrowthAnalystAgent(BaseAgent):
         }
         
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a Growth Analyst, a growth metrics expert. Analyze this stock using growth analysis:
+            ("system", with_performance_feedback(f"""You are a Growth Analyst, a growth metrics expert. Analyze this stock using growth analysis:
 
 Key Criteria:
 1. Revenue growth rate and sustainability
@@ -80,7 +80,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided financial data and provide your investment signal based on growth metrics.
 
-""" + JSON_ONLY_INSTRUCTION),
+""" + JSON_ONLY_INSTRUCTION, self)),
             ("human", """Ticker: {ticker}
 
 Financial Metrics:
