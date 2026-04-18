@@ -16,30 +16,38 @@ from src.data.providers.aggregator import get_data_provider
 from src.performance.tracker import PerformanceTracker
 from src.performance.cycle_tracker import CyclePerformanceTracker
 
+
 # Lazy import for Alpaca broker (only needed when executing trades)
 def get_alpaca_broker():
     """Lazy import of Alpaca broker. Returns None if Alpaca not installed or keys not configured."""
     try:
         from src.config.settings import settings
+
         if not settings.alpaca_api_key or not settings.alpaca_secret_key:
-            logger.info("Alpaca keys not configured - set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env for --execute")
+            logger.info(
+                "Alpaca keys not configured - set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env for --execute"
+            )
             return None
         from src.broker.alpaca import AlpacaBroker
+
         return AlpacaBroker
     except ImportError as e:
         logger.warning("Alpaca broker not available", error=str(e))
         return None
+
 
 logger = structlog.get_logger()
 
 
 class TradingPipeline:
     """Main trading pipeline for weekly execution"""
-    
-    def __init__(self, parallel_agents: bool = True, max_workers: Optional[int] = None, broker=None):
+
+    def __init__(
+        self, parallel_agents: bool = True, max_workers: Optional[int] = None, broker=None
+    ):
         """
         Initialize trading pipeline
-        
+
         Args:
             parallel_agents: If True, run agents in parallel (default: True)
             max_workers: Maximum number of worker threads for parallel execution (default: None = auto)
@@ -60,7 +68,7 @@ class TradingPipeline:
             parallel_agents=parallel_agents,
             max_workers=max_workers,
         )
-    
+
     def run_weekly_trading(
         self,
         tickers: List[str],
@@ -70,13 +78,13 @@ class TradingPipeline:
     ) -> Dict:
         """
         Run weekly trading cycle
-        
+
         Args:
             tickers: List of ticker symbols to trade
             execute: If True, execute trades. If False, only generate decisions.
             scan_cache: If provided (ScanCache instance), persist full run to local storage.
             run_config: Optional dict (e.g. universe, max_stocks, execute) to store with the run.
-        
+
         Returns:
             Dictionary with trading results
         """
@@ -84,18 +92,23 @@ class TradingPipeline:
         run_config.setdefault("execute", execute)
         run_start = time.time()
         logger.info("Starting weekly trading cycle", ticker_count=len(tickers), execute=execute)
-        
+
         # 1. Sync portfolio from broker when available (execute or dry run); else use empty portfolio
         open_orders: List[Dict] = []
         recent_orders: List[Dict] = []
         if self._broker_class:
             if self.broker is None:
                 self.broker = self._broker_class()
-            logger.info("Syncing portfolio from broker (decisions will use live cash and positions)")
+            logger.info(
+                "Syncing portfolio from broker (decisions will use live cash and positions)"
+            )
             try:
                 portfolio = self.broker.sync_portfolio()
             except Exception as e:
-                logger.error("Portfolio sync failed; aborting run to avoid decisions on bogus data", error=str(e))
+                logger.error(
+                    "Portfolio sync failed; aborting run to avoid decisions on bogus data",
+                    error=str(e),
+                )
                 raise SystemExit(1)
             try:
                 open_orders = self.broker.get_open_orders(limit=50)
@@ -121,16 +134,20 @@ class TradingPipeline:
             elif side == "sell":
                 pending_orders_by_symbol[sym]["sell_qty"] += qty
         if pending_orders_by_symbol:
-            logger.info("Pending orders by symbol (will cap decisions)", pending=pending_orders_by_symbol)
+            logger.info(
+                "Pending orders by symbol (will cap decisions)", pending=pending_orders_by_symbol
+            )
 
         if not self._broker_class:
-            logger.error("Alpaca keys required but not configured. Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env. No fallback.")
+            logger.error(
+                "Alpaca keys required but not configured. Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env. No fallback."
+            )
             raise SystemExit(1)
 
         # 2. Calculate date range (last 3 months for analysis)
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - relativedelta(months=3)).strftime("%Y-%m-%d")
-        
+
         # 3. Refresh data (right before trading)
         logger.info("Refreshing market data", start_date=start_date, end_date=end_date)
         self._refresh_data(tickers, start_date, end_date)
@@ -162,20 +179,43 @@ class TradingPipeline:
                 )
             except Exception as e:
                 logger.warning("Agent feedback refresh failed", error=str(e))
-        
+
+        # Intra-week main paper account context (daily snapshots → agent prompts via contextvar)
+        intraweek_token = None
+        try:
+            from src.agents.prompt_helpers import (
+                reset_intraweek_stock_context,
+                set_intraweek_stock_context,
+            )
+            from src.ops.daily_snapshots import format_snapshots_markdown
+
+            iw = format_snapshots_markdown("stock", days=7).strip()
+            if iw:
+                intraweek_token = set_intraweek_stock_context(iw)
+                run_config["intraweek_stock_summary"] = iw
+        except Exception as e:
+            logger.warning("Could not load intra-week stock snapshots", error=str(e))
+
         # 4. Run all agents
         logger.info("Running agent analysis")
-        agent_signals = self._run_agents(tickers, start_date, end_date)
-        
+        try:
+            agent_signals = self._run_agents(tickers, start_date, end_date)
+        finally:
+            if intraweek_token is not None:
+                try:
+                    reset_intraweek_stock_context(intraweek_token)
+                except Exception:
+                    pass
+
         # 5. Calculate risk limits
         logger.info("Calculating risk limits")
         risk_analysis = self.risk_manager.calculate_position_limits(
             tickers, portfolio, start_date, end_date
         )
-        
+
         # 6. Get agent weights
         agent_weights = self.registry.get_weights()
-        
+
         # 7. Generate portfolio decisions
         enable_cc = bool(run_config.get("enable_covered_calls", False))
         min_cc_score = int(run_config.get("min_cc_score", 40))
@@ -204,7 +244,9 @@ class TradingPipeline:
                 earnings_blackout_days=blackout,
                 enable_cash_secured_puts=enable_csp,
                 min_csp_score=int(run_config.get("min_csp_score", 40)),
-                enable_conviction_rebalance=bool(run_config.get("enable_conviction_rebalance", False)),
+                enable_conviction_rebalance=bool(
+                    run_config.get("enable_conviction_rebalance", False)
+                ),
                 conviction_score_gap=int(run_config.get("conviction_score_gap", 25)),
                 min_hold_confidence_for_rotation=int(
                     run_config.get("min_hold_confidence_for_rotation", 45)
@@ -221,7 +263,7 @@ class TradingPipeline:
             )
 
         cc_lot_tickers = getattr(self.portfolio_manager, "_last_cc_lot_tickers", [])
-        
+
         # 8. Execute trades (if enabled)
         execution_results = None
         if execute:
@@ -255,6 +297,7 @@ class TradingPipeline:
         if enable_cc and execute and self.broker and cc_lot_tickers:
             try:
                 from src.options.covered_calls import CoveredCallManager
+
                 logger.info("Running covered call step", cc_lot_tickers=cc_lot_tickers)
                 cc_portfolio = self.broker.sync_portfolio()
                 cc_manager = CoveredCallManager()
@@ -290,19 +333,19 @@ class TradingPipeline:
             except Exception as e:
                 logger.error("CSP step failed (non-fatal)", error=str(e))
                 csp_results = [{"status": "error", "reason": str(e)}]
-        
+
         # 9. Track performance from previous cycle
-        current_prices = {t: risk_analysis[t]['current_price'] for t in risk_analysis.keys()}
+        current_prices = {t: risk_analysis[t]["current_price"] for t in risk_analysis.keys()}
         self.cycle_tracker.record_cycle(
             agent_signals=agent_signals,
             decisions=decisions,
             current_prices=current_prices,
             date=end_date,
         )
-        
+
         # 10. Update agent weights based on performance (use scan cache when available)
         self._update_agent_weights(scan_cache=scan_cache)
-        
+
         # 10b. Portfolio after execution (for cache)
         portfolio_after = portfolio.model_dump()
         if execute and self.broker:
@@ -310,7 +353,7 @@ class TradingPipeline:
                 portfolio_after = self.broker.sync_portfolio().model_dump()
             except Exception as e:
                 logger.warning("Could not sync portfolio after execution for cache", error=str(e))
-        
+
         # 11. Persist full run to scan cache only for official weekly universe runs (never for test/debug/exploratory)
         run_id = None
         if scan_cache is not None and run_config.get("save_to_cache") is True:
@@ -336,7 +379,7 @@ class TradingPipeline:
                 execution_results=execution_results,
                 duration_seconds=duration_seconds,
             )
-        
+
         # 12. Return results (use post-execution portfolio when available)
         broker_used = self.broker is not None
         port_dict = (
@@ -358,30 +401,27 @@ class TradingPipeline:
             "run_id": run_id,
             "timestamp": datetime.now().isoformat(),
             "tickers": tickers,
+            "intraweek_stock_summary": run_config.get("intraweek_stock_summary") or "",
             "portfolio": port_dict,
             "open_orders": open_orders,
             "recent_orders": recent_orders,
             "broker_used": broker_used,
-            'agent_signals': {
+            "agent_signals": {
                 agent_key: {
-                    ticker: signal.model_dump()
-                    for ticker, signal in ticker_signals.items()
+                    ticker: signal.model_dump() for ticker, signal in ticker_signals.items()
                 }
                 for agent_key, ticker_signals in agent_signals.items()
             },
-            'risk_analysis': risk_analysis,
-            'decisions': {
-                ticker: decision.model_dump()
-                for ticker, decision in decisions.items()
-            },
-            'execution_results': execution_results,
-            'covered_call_results': cc_results,
-            'csp_results': csp_results,
+            "risk_analysis": risk_analysis,
+            "decisions": {ticker: decision.model_dump() for ticker, decision in decisions.items()},
+            "execution_results": execution_results,
+            "covered_call_results": cc_results,
+            "csp_results": csp_results,
         }
-        
+
         logger.info("Weekly trading cycle complete", decision_count=len(decisions))
         return results
-    
+
     def _build_data_snapshot(
         self,
         tickers: List[str],
@@ -399,7 +439,13 @@ class TradingPipeline:
                 metrics_list = self.data_provider.get_financial_metrics(ticker, end_date, limit=1)
                 line_items_list = self.data_provider.get_line_items(
                     ticker,
-                    ["revenue", "net_income", "free_cash_flow", "total_debt", "shareholders_equity"],
+                    [
+                        "revenue",
+                        "net_income",
+                        "free_cash_flow",
+                        "total_debt",
+                        "shareholders_equity",
+                    ],
                     end_date,
                     limit=1,
                 )
@@ -417,7 +463,7 @@ class TradingPipeline:
                 logger.debug("Snapshot failed for ticker", ticker=ticker, error=str(e))
                 snapshot[ticker] = {"error": str(e)}
         return snapshot
-    
+
     def _refresh_data(
         self,
         tickers: List[str],
@@ -428,7 +474,7 @@ class TradingPipeline:
     ):
         """
         Refresh market data for all tickers (with optional parallel execution)
-        
+
         Args:
             tickers: List of tickers to refresh
             start_date: Start date for price data
@@ -436,6 +482,7 @@ class TradingPipeline:
             parallel: If True, fetch data in parallel (default: True)
             max_workers: Maximum number of worker threads (default: None = auto)
         """
+
         def refresh_ticker(ticker: str):
             """Refresh data for a single ticker"""
             try:
@@ -448,13 +495,13 @@ class TradingPipeline:
                     ticker,
                     ["revenue", "net_income", "free_cash_flow", "total_debt"],
                     end_date,
-                    limit=10
+                    limit=10,
                 )
                 return ticker, True, None
             except Exception as e:
                 logger.warning("Data refresh failed", ticker=ticker, error=str(e))
                 return ticker, False, str(e)
-        
+
         if parallel and len(tickers) > 10:
             # Use parallel execution for large ticker lists
             logger.info("Refreshing data in parallel", ticker_count=len(tickers))
@@ -470,7 +517,7 @@ class TradingPipeline:
             # Sequential execution for small lists
             for ticker in tickers:
                 refresh_ticker(ticker)
-    
+
     def _run_agents(
         self,
         tickers: List[str],
@@ -480,7 +527,7 @@ class TradingPipeline:
     ) -> Dict[str, Dict[str, AgentSignal]]:
         """
         Run all registered agents on tickers (with optional parallel execution)
-        
+
         Args:
             tickers: List of tickers to analyze
             start_date: Analysis start date
@@ -489,16 +536,18 @@ class TradingPipeline:
         """
         agents = self.registry.get_all()
         agent_signals = {}
-        
+
         # For large universes, process in batches
         use_batching = len(tickers) > batch_size
-        
+
         if self.parallel_agents and len(agents) > 1:
             # Run agents in parallel
-            logger.info("Running agents in parallel", agent_count=len(agents), ticker_count=len(tickers))
+            logger.info(
+                "Running agents in parallel", agent_count=len(agents), ticker_count=len(tickers)
+            )
             completed_agents = 0
             total_agents = len(agents)
-            
+
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 futures = {
                     executor.submit(
@@ -512,35 +561,33 @@ class TradingPipeline:
                     ): agent_key
                     for agent_key, agent in agents.items()
                 }
-                
+
                 for future in as_completed(futures):
                     agent_key = futures[future]
                     try:
                         signals = future.result()
                         agent_signals[agent_key] = signals
                         completed_agents += 1
-                        
+
                         # Log progress for larger runs
                         if total_agents > 5 or len(tickers) > 10:
                             logger.info(
                                 "Agent progress",
                                 completed=completed_agents,
                                 total=total_agents,
-                                pct=round(completed_agents / total_agents * 100, 1)
+                                pct=round(completed_agents / total_agents * 100, 1),
                             )
                     except Exception as e:
                         logger.error("Agent execution failed", agent=agent_key, error=str(e))
                         # Default to neutral signals on error
                         agent_signals[agent_key] = {
                             ticker: AgentSignal(
-                                signal="neutral",
-                                confidence=0,
-                                reasoning=f"Agent error: {str(e)}"
+                                signal="neutral", confidence=0, reasoning=f"Agent error: {str(e)}"
                             )
                             for ticker in tickers
                         }
                         completed_agents += 1
-            
+
             logger.info("All agents complete", total_agents=total_agents)
         else:
             # Sequential execution
@@ -549,9 +596,9 @@ class TradingPipeline:
                     agent_key, agent, tickers, start_date, end_date, batch_size
                 )
                 agent_signals[agent_key] = signals
-        
+
         return agent_signals
-    
+
     def _run_single_agent(
         self,
         agent_key: str,
@@ -564,7 +611,7 @@ class TradingPipeline:
         """Run a single agent on tickers"""
         try:
             use_batching = len(tickers) > batch_size
-            
+
             logger.info(
                 "Running agent",
                 agent=agent.name,
@@ -572,17 +619,17 @@ class TradingPipeline:
                 ticker_count=len(tickers),
                 batching=use_batching,
             )
-            
+
             if use_batching:
                 # Process in batches
                 all_signals = {}
                 total_batches = (len(tickers) + batch_size - 1) // batch_size
-                
+
                 for batch_num in range(total_batches):
                     batch_start = batch_num * batch_size
                     batch_end = min((batch_num + 1) * batch_size, len(tickers))
                     batch_tickers = tickers[batch_start:batch_end]
-                    
+
                     logger.info(
                         "Processing batch",
                         agent=agent.name,
@@ -590,7 +637,7 @@ class TradingPipeline:
                         total_batches=total_batches,
                         batch_size=len(batch_tickers),
                     )
-                    
+
                     try:
                         # Enable parallel processing for batches (but limit concurrency for local Ollama)
                         batch_signals = agent.analyze_multiple(
@@ -598,7 +645,9 @@ class TradingPipeline:
                             start_date,
                             end_date,
                             parallel=True,
-                            max_workers=min(2, len(batch_tickers))  # Limit to 2 concurrent per agent for local Ollama
+                            max_workers=min(
+                                2, len(batch_tickers)
+                            ),  # Limit to 2 concurrent per agent for local Ollama
                         )
                         all_signals.update(batch_signals)
                     except Exception as e:
@@ -613,9 +662,9 @@ class TradingPipeline:
                             all_signals[ticker] = AgentSignal(
                                 signal="neutral",
                                 confidence=0,
-                                reasoning=f"Batch processing error: {str(e)}"
+                                reasoning=f"Batch processing error: {str(e)}",
                             )
-                
+
                 logger.info(
                     "Agent complete",
                     agent=agent.name,
@@ -631,7 +680,9 @@ class TradingPipeline:
                     start_date,
                     end_date,
                     parallel=True,
-                    max_workers=min(2, len(tickers))  # Limit to 2 concurrent per agent for local Ollama
+                    max_workers=min(
+                        2, len(tickers)
+                    ),  # Limit to 2 concurrent per agent for local Ollama
                 )
                 logger.info(
                     "Agent complete",
@@ -639,19 +690,17 @@ class TradingPipeline:
                     signals_generated=len(signals),
                 )
                 return signals
-                
+
         except Exception as e:
             logger.error("Agent execution failed", agent=agent.name, error=str(e))
             # Default to neutral signals on error
             return {
                 ticker: AgentSignal(
-                    signal="neutral",
-                    confidence=0,
-                    reasoning=f"Agent error: {str(e)}"
+                    signal="neutral", confidence=0, reasoning=f"Agent error: {str(e)}"
                 )
                 for ticker in tickers
             }
-    
+
     def _update_agent_weights(self, scan_cache: Optional[Any] = None):
         """Update agent weights based on performance (scan cache + cycle tracker data)."""
         try:
@@ -674,7 +723,7 @@ class TradingPipeline:
                 scorecard_metrics=scorecard_agents,
                 decay_half_life_weeks=8.0,
             )
-            
+
             if new_weights:
                 # Update weights in registry
                 updated_count = 0
@@ -689,7 +738,7 @@ class TradingPipeline:
                             old_weight=round(old_weight, 2),
                             new_weight=round(new_weight, 2),
                         )
-                
+
                 if updated_count > 0:
                     # Save updated weights
                     self.registry.save_weights_to_config()
@@ -700,7 +749,6 @@ class TradingPipeline:
                     )
             else:
                 logger.debug("No performance data available for weight adjustment")
-            
+
         except Exception as e:
             logger.error("Error updating agent weights", error=str(e))
-

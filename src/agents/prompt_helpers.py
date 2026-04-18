@@ -1,8 +1,28 @@
 """Shared helpers for building agent prompts (insider, analyst, index context)."""
 
-from typing import List, Dict, Any, Optional
+from contextvars import ContextVar, Token
+from typing import Any, Dict, List, Optional
 
 from src.data.models import InsiderTrade
+
+# Set during weekly pipeline so all agents see main paper account drift without threading kwargs everywhere.
+_intraweek_stock: ContextVar[str] = ContextVar("intraweek_stock", default="")
+
+
+def set_intraweek_stock_context(text: str) -> Token:
+    return _intraweek_stock.set(text)
+
+
+def reset_intraweek_stock_context(token: Token[str]) -> None:
+    _intraweek_stock.reset(token)
+
+
+def _intraweek_stock_block() -> str:
+    s = _intraweek_stock.get()
+    if not s.strip():
+        return ""
+    return "\n\n## Intra-week account context (main paper account, daily snapshots):\n" + s.strip()
+
 
 # Instruction so DeepSeek (and other LLMs) return parseable JSON without markdown or extra text.
 JSON_ONLY_INSTRUCTION = (
@@ -10,7 +30,7 @@ JSON_ONLY_INSTRUCTION = (
     "Do not use markdown, code fences (no ```), or any text before or after the JSON. "
     "Your entire response must be parseable as JSON. "
     "For any field named `signal`, you MUST use exactly one of these lowercase strings: "
-    "\"bullish\", \"bearish\", or \"neutral\" (do not use words like buy, sell, overvalued, etc.)."
+    '"bullish", "bearish", or "neutral" (do not use words like buy, sell, overvalued, etc.).'
 )
 AGENT_JSON_EXAMPLE = '{{"signal":"neutral","confidence":50,"reasoning":"Brief reason"}}'
 PM_JSON_EXAMPLE = '{{"action":"hold","quantity":0,"confidence":0,"reasoning":"Brief reason"}}'
@@ -25,13 +45,21 @@ def format_insider_for_prompt(
         return "No recent insider transaction data available."
     lines = []
     for t in trades[:max_entries]:
-        parts = [t.transaction_type or "?", str(t.shares) + " shares" if t.shares is not None else "?", t.filing_date.strftime("%Y-%m-%d")]
+        parts = [
+            t.transaction_type or "?",
+            str(t.shares) + " shares" if t.shares is not None else "?",
+            t.filing_date.strftime("%Y-%m-%d"),
+        ]
         if t.price is not None:
             parts.append(f"@ ${t.price:.2f}")
         if t.value is not None:
             parts.append(f"(${t.value:,.0f})")
         lines.append("  " + " ".join(str(p) for p in parts))
-    return "Recent insider activity:\n" + "\n".join(lines) if lines else "No recent insider transaction data available."
+    return (
+        "Recent insider activity:\n" + "\n".join(lines)
+        if lines
+        else "No recent insider transaction data available."
+    )
 
 
 def format_analyst_for_prompt(recommendations: List[Dict[str, Any]], max_periods: int = 4) -> str:
@@ -41,7 +69,13 @@ def format_analyst_for_prompt(recommendations: List[Dict[str, Any]], max_periods
     lines = []
     for r in recommendations[:max_periods]:
         period = r.get("period", "N/A")
-        sb, b, h, s, ss = r.get("strongBuy"), r.get("buy"), r.get("hold"), r.get("sell"), r.get("strongSell")
+        sb, b, h, s, ss = (
+            r.get("strongBuy"),
+            r.get("buy"),
+            r.get("hold"),
+            r.get("sell"),
+            r.get("strongSell"),
+        )
         parts = [f"Period {period}:"]
         if sb is not None:
             parts.append(f"StrongBuy={sb}")
@@ -54,7 +88,11 @@ def format_analyst_for_prompt(recommendations: List[Dict[str, Any]], max_periods
         if ss is not None:
             parts.append(f"StrongSell={ss}")
         lines.append("  " + " ".join(parts))
-    return "Analyst recommendation trends:\n" + "\n".join(lines) if lines else "No analyst recommendation data available."
+    return (
+        "Analyst recommendation trends:\n" + "\n".join(lines)
+        if lines
+        else "No analyst recommendation data available."
+    )
 
 
 def compute_return_vs_index(
@@ -81,6 +119,8 @@ def with_performance_feedback(system_text: str, agent, ticker: Optional[str] = N
     for this agent on that symbol (signal, confidence vs forward return).
     """
     try:
+        system_text = system_text + _intraweek_stock_block()
+
         from src.backtesting.feedback import block_for_agent
         from src.backtesting.learning_outcomes import ticker_calibration_block
 
@@ -91,10 +131,7 @@ def with_performance_feedback(system_text: str, agent, ticker: Optional[str] = N
             extra = ticker_calibration_block(key, str(ticker).strip())
         if block and extra:
             return (
-                system_text
-                + "\n\n## Historical signal calibration (weak prior):\n"
-                + block
-                + extra
+                system_text + "\n\n## Historical signal calibration (weak prior):\n" + block + extra
             )
         if block:
             return system_text + "\n\n## Historical signal calibration (weak prior):\n" + block

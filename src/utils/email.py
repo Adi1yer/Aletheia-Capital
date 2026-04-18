@@ -79,7 +79,7 @@ def _format_timestamp(iso_ts: str) -> str:
 
 class EmailNotifier:
     """Send email notifications"""
-    
+
     def __init__(
         self,
         smtp_server: Optional[str] = None,
@@ -89,25 +89,25 @@ class EmailNotifier:
     ):
         """
         Initialize email notifier
-        
+
         Args:
             smtp_server: SMTP server (e.g., 'smtp.gmail.com')
             smtp_port: SMTP port (default: 587 for TLS)
             sender_email: Sender email address
             sender_password: Sender email password or app password
         """
-        self.smtp_server = smtp_server or getattr(settings, 'smtp_server', None)
+        self.smtp_server = smtp_server or getattr(settings, "smtp_server", None)
         self.smtp_port = smtp_port
-        self.sender_email = sender_email or getattr(settings, 'sender_email', None)
-        self.sender_password = sender_password or getattr(settings, 'sender_password', None)
-        
+        self.sender_email = sender_email or getattr(settings, "sender_email", None)
+        self.sender_password = sender_password or getattr(settings, "sender_password", None)
+
         if not all([self.smtp_server, self.sender_email, self.sender_password]):
             logger.warning("Email notifier not fully configured - notifications will be disabled")
             self.enabled = False
         else:
             self.enabled = True
             logger.info("Email notifier initialized", smtp_server=self.smtp_server)
-    
+
     def send_email(
         self,
         recipient: str,
@@ -117,48 +117,48 @@ class EmailNotifier:
     ) -> bool:
         """
         Send email notification
-        
+
         Args:
             recipient: Recipient email address
             subject: Email subject
             body_text: Plain text body
             body_html: HTML body (optional)
-        
+
         Returns:
             True if sent successfully, False otherwise
         """
         if not self.enabled:
             logger.warning("Email notifier not configured, skipping email")
             return False
-        
+
         try:
             # Create message
-            msg = MIMEMultipart('alternative')
-            msg['From'] = self.sender_email
-            msg['To'] = recipient
-            msg['Subject'] = subject
-            
+            msg = MIMEMultipart("alternative")
+            msg["From"] = self.sender_email
+            msg["To"] = recipient
+            msg["Subject"] = subject
+
             # Add text and HTML parts
-            part1 = MIMEText(body_text, 'plain')
+            part1 = MIMEText(body_text, "plain")
             msg.attach(part1)
-            
+
             if body_html:
-                part2 = MIMEText(body_html, 'html')
+                part2 = MIMEText(body_html, "html")
                 msg.attach(part2)
-            
+
             # Send email
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.sender_email, self.sender_password)
                 server.send_message(msg)
-            
+
             logger.info("Email sent successfully", recipient=recipient, subject=subject)
             return True
-            
+
         except Exception as e:
             logger.error("Failed to send email", recipient=recipient, error=str(e))
             return False
-    
+
     def send_trading_results(
         self,
         recipient: str,
@@ -166,19 +166,19 @@ class EmailNotifier:
     ) -> bool:
         """
         Send weekly trading results email
-        
+
         Args:
             recipient: Recipient email address
             results: Trading results dictionary
-        
+
         Returns:
             True if sent successfully, False otherwise
         """
-        all_decisions = results.get('decisions', {})
+        all_decisions = results.get("decisions", {})
         decision_count = len(all_decisions)
         buy_count = sum(1 for d in all_decisions.values() if d.get("action") in ("buy", "cover"))
         sell_count = sum(1 for d in all_decisions.values() if d.get("action") == "sell")
-        executed = results.get('execution_results', {})
+        executed = results.get("execution_results", {})
         executed_count = sum(1 for r in executed.values() if r) if executed else 0
 
         ts = results.get("timestamp")
@@ -191,11 +191,11 @@ class EmailNotifier:
             except Exception:
                 week_label = f"Week of {ts[:10]}"
 
-        cc_results = results.get('covered_call_results') or []
+        cc_results = results.get("covered_call_results") or []
         cc_written = sum(1 for r in cc_results if r.get("status") == "executed")
         cc_part = f", {cc_written} Calls Written" if cc_written else ""
         subject = f"{week_label} – {buy_count} Buys, {sell_count} Sells, {executed_count} Executed{cc_part} ({decision_count} analyzed)"
-        
+
         # Build past performance snapshot from scan cache (if available)
         past_perf = self._build_past_performance(results)
 
@@ -205,15 +205,17 @@ class EmailNotifier:
         # Create text and HTML versions
         text_body = self._format_trading_results_text(results, past_perf, outlook)
         html_body = self._format_trading_results_html(results, past_perf, outlook)
-        
+
         return self.send_email(
             recipient=recipient,
             subject=subject,
             body_text=text_body,
             body_html=html_body,
         )
-    
-    def _format_trading_results_text(self, results: dict, past_perf: Optional[dict] = None, outlook: Optional[str] = None) -> str:
+
+    def _format_trading_results_text(
+        self, results: dict, past_perf: Optional[dict] = None, outlook: Optional[str] = None
+    ) -> str:
         """Format trading results as plain text"""
         text = []
         text.append("=" * 80)
@@ -224,10 +226,16 @@ class EmailNotifier:
         text.append(f"Tickers Analyzed: {len(results.get('tickers', []))}")
         text.append(f"Decisions Made: {len(results.get('decisions', {}))}")
         text.append("")
+        iw = (results.get("intraweek_stock_summary") or "").strip()
+        if iw:
+            text.append("INTRA-WEEK MAIN PAPER ACCOUNT (from daily snapshots)")
+            text.append("-" * 80)
+            text.append(iw)
+            text.append("")
 
         # Portfolio summary
-        if 'portfolio' in results:
-            portfolio = results['portfolio']
+        if "portfolio" in results:
+            portfolio = results["portfolio"]
             text.append("PORTFOLIO STATUS")
             text.append("-" * 80)
             text.append(f"Cash: ${portfolio.get('cash', 0):,.2f}")
@@ -243,7 +251,8 @@ class EmailNotifier:
                 text.append("Top Positions:")
                 sorted_positions = sorted(
                     positions.items(),
-                    key=lambda kv: abs((kv[1] or {}).get("long", 0) or 0) + abs((kv[1] or {}).get("short", 0) or 0),
+                    key=lambda kv: abs((kv[1] or {}).get("long", 0) or 0)
+                    + abs((kv[1] or {}).get("short", 0) or 0),
                     reverse=True,
                 )
                 for sym, pos in sorted_positions[:10]:
@@ -270,9 +279,7 @@ class EmailNotifier:
             text.append("AGENT LEADERBOARD (scan-cache scorecard)")
             text.append("-" * 40)
             for ak, acc, cw, obs in lb:
-                text.append(
-                    f"  {ak}: acc {acc:.0%}, cw-ret {cw:.2f}, n={obs}"
-                )
+                text.append(f"  {ak}: acc {acc:.0%}, cw-ret {cw:.2f}, n={obs}")
             text.append("")
 
         # Open and recent orders (if any)
@@ -303,7 +310,7 @@ class EmailNotifier:
             text.append("")
 
         # Decisions -- buys and sells first, then top holds
-        decisions = results.get('decisions', {})
+        decisions = results.get("decisions", {})
         if decisions:
             buys = [(t, d) for t, d in decisions.items() if d.get("action") in ("buy", "cover")]
             sells = [(t, d) for t, d in decisions.items() if d.get("action") == "sell"]
@@ -312,7 +319,9 @@ class EmailNotifier:
             sells.sort(key=lambda x: x[1].get("confidence", 0), reverse=True)
             holds.sort(key=lambda x: x[1].get("confidence", 0), reverse=True)
 
-            text.append(f"DECISIONS SUMMARY: {len(buys)} buys, {len(sells)} sells, {len(holds)} holds")
+            text.append(
+                f"DECISIONS SUMMARY: {len(buys)} buys, {len(sells)} sells, {len(holds)} holds"
+            )
             text.append("-" * 80)
             text.append("")
 
@@ -320,7 +329,9 @@ class EmailNotifier:
                 text.append("BUY ORDERS")
                 text.append("-" * 40)
                 for ticker, d in buys:
-                    text.append(f"  {ticker}: buy {d.get('quantity', 0)} shares (Confidence: {d.get('confidence', 0)}%)")
+                    text.append(
+                        f"  {ticker}: buy {d.get('quantity', 0)} shares (Confidence: {d.get('confidence', 0)}%)"
+                    )
                     reasoning = (d.get("reasoning") or "").strip()
                     if reasoning:
                         text.append(f"    Reason: {reasoning[:200]}")
@@ -330,7 +341,9 @@ class EmailNotifier:
                 text.append("SELL ORDERS")
                 text.append("-" * 40)
                 for ticker, d in sells:
-                    text.append(f"  {ticker}: sell {d.get('quantity', 0)} shares (Confidence: {d.get('confidence', 0)}%)")
+                    text.append(
+                        f"  {ticker}: sell {d.get('quantity', 0)} shares (Confidence: {d.get('confidence', 0)}%)"
+                    )
                     reasoning = (d.get("reasoning") or "").strip()
                     if reasoning:
                         text.append(f"    Reason: {reasoning[:200]}")
@@ -342,11 +355,13 @@ class EmailNotifier:
                 for ticker, d in holds[:10]:
                     reasoning = (d.get("reasoning") or "").strip()
                     snippet = reasoning[:120] if reasoning else ""
-                    text.append(f"  {ticker}: hold (Confidence: {d.get('confidence', 0)}%) – {snippet}")
+                    text.append(
+                        f"  {ticker}: hold (Confidence: {d.get('confidence', 0)}%) – {snippet}"
+                    )
                 text.append("")
 
         # Execution Results
-        exec_results = results.get('execution_results') or {}
+        exec_results = results.get("execution_results") or {}
         if exec_results:
             executed = sum(1 for r in exec_results.values() if r)
             failed_tickers = [t for t, r in exec_results.items() if not r]
@@ -356,7 +371,7 @@ class EmailNotifier:
             text.append("")
 
         # Covered Call Results
-        cc_results = results.get('covered_call_results') or []
+        cc_results = results.get("covered_call_results") or []
         cc_executed = [r for r in cc_results if r.get("status") == "executed"]
         cc_skipped = [r for r in cc_results if r.get("status") == "skipped"]
         cc_failed = [r for r in cc_results if r.get("status") == "failed"]
@@ -365,24 +380,37 @@ class EmailNotifier:
             text.append("-" * 80)
             if cc_executed:
                 total_premium = sum(r.get("estimated_premium", 0) for r in cc_executed)
-                text.append(f"Calls written: {len(cc_executed)} (est. premium: ${total_premium:,.2f})")
+                text.append(
+                    f"Calls written: {len(cc_executed)} (est. premium: ${total_premium:,.2f})"
+                )
                 for r in cc_executed:
-                    text.append(f"  {r['underlying']}: sold {r['contracts']}x {r['contract_symbol']} "
-                                f"strike ${r['strike']:,.2f} exp {r['expiry']} "
-                                f"(cc_score={r.get('cc_score', '?')}, premium ~${r.get('estimated_premium', 0):,.2f})")
+                    text.append(
+                        f"  {r['underlying']}: sold {r['contracts']}x {r['contract_symbol']} "
+                        f"strike ${r['strike']:,.2f} exp {r['expiry']} "
+                        f"(cc_score={r.get('cc_score', '?')}, premium ~${r.get('estimated_premium', 0):,.2f})"
+                    )
             if cc_skipped:
-                text.append(f"Skipped: {len(cc_skipped)} ({', '.join(r.get('underlying', '?') for r in cc_skipped)})")
+                text.append(
+                    f"Skipped: {len(cc_skipped)} ({', '.join(r.get('underlying', '?') for r in cc_skipped)})"
+                )
             if cc_failed:
-                text.append(f"Failed: {len(cc_failed)} ({', '.join(r.get('underlying', '?') for r in cc_failed)})")
+                text.append(
+                    f"Failed: {len(cc_failed)} ({', '.join(r.get('underlying', '?') for r in cc_failed)})"
+                )
             text.append("")
         # CC lot builds in decisions
-        cc_lot_buys = [(t, d) for t, d in decisions.items()
-                       if d.get("action") == "buy" and "CC lot build" in (d.get("reasoning") or "")]
+        cc_lot_buys = [
+            (t, d)
+            for t, d in decisions.items()
+            if d.get("action") == "buy" and "CC lot build" in (d.get("reasoning") or "")
+        ]
         if cc_lot_buys:
             text.append("CC LOT BUILDS (bought 100 shares for covered call writing)")
             text.append("-" * 80)
             for ticker, d in cc_lot_buys:
-                text.append(f"  {ticker}: bought {d.get('quantity', 0)} shares ({d.get('reasoning', '')})")
+                text.append(
+                    f"  {ticker}: bought {d.get('quantity', 0)} shares ({d.get('reasoning', '')})"
+                )
             text.append("")
 
         csp_results = results.get("csp_results") or []
@@ -418,11 +446,13 @@ class EmailNotifier:
             text.append("-" * 80)
             text.append(outlook.strip())
             text.append("")
-        
+
         text.append("=" * 80)
         return "\n".join(text)
-    
-    def _format_trading_results_html(self, results: dict, past_perf: Optional[dict] = None, outlook: Optional[str] = None) -> str:
+
+    def _format_trading_results_html(
+        self, results: dict, past_perf: Optional[dict] = None, outlook: Optional[str] = None
+    ) -> str:
         """Format trading results as HTML"""
         html = f"""
         <html>
@@ -447,10 +477,18 @@ class EmailNotifier:
             <p><strong>Tickers Analyzed:</strong> {len(results.get('tickers', []))}</p>
             <p><strong>Decisions Made:</strong> {len(results.get('decisions', {}))}</p>
         """
-        
+        iw = (results.get("intraweek_stock_summary") or "").strip()
+        if iw:
+            html += f"""
+            <div class="section">
+                <h2>Intra-week main paper account (daily snapshots)</h2>
+                <pre style="white-space:pre-wrap;font-size:12px;">{html_escape(iw)}</pre>
+            </div>
+            """
+
         # Portfolio
-        if 'portfolio' in results:
-            portfolio = results['portfolio']
+        if "portfolio" in results:
+            portfolio = results["portfolio"]
             html += f"""
             <div class="section">
                 <h2>Portfolio Status</h2>
@@ -480,7 +518,8 @@ class EmailNotifier:
                 """
                 sorted_positions = sorted(
                     positions.items(),
-                    key=lambda kv: abs((kv[1] or {}).get("long", 0) or 0) + abs((kv[1] or {}).get("short", 0) or 0),
+                    key=lambda kv: abs((kv[1] or {}).get("long", 0) or 0)
+                    + abs((kv[1] or {}).get("short", 0) or 0),
                     reverse=True,
                 )
                 for sym, pos in sorted_positions[:10]:
@@ -534,9 +573,9 @@ class EmailNotifier:
                 <tr><td>{html_escape(ak)}</td><td>{acc:.0%}</td><td>{cw:.2f}</td><td>{obs}</td></tr>
                 """
             html += "</table></div>"
-        
+
         # Decisions -- buys and sells first, then top holds
-        decisions = results.get('decisions', {})
+        decisions = results.get("decisions", {})
         if decisions:
             buys = [(t, d) for t, d in decisions.items() if d.get("action") in ("buy", "cover")]
             sells = [(t, d) for t, d in decisions.items() if d.get("action") == "sell"]
@@ -618,7 +657,7 @@ class EmailNotifier:
                 """
 
             # Failed orders section
-            exec_results = results.get('execution_results') or {}
+            exec_results = results.get("execution_results") or {}
             if exec_results:
                 failed_tickers = [t for t, r in exec_results.items() if not r]
                 executed_count = sum(1 for r in exec_results.values() if r)
@@ -640,7 +679,7 @@ class EmailNotifier:
                     """
 
         # Covered call results
-        cc_results = results.get('covered_call_results') or []
+        cc_results = results.get("covered_call_results") or []
         cc_executed = [r for r in cc_results if r.get("status") == "executed"]
         cc_skipped = [r for r in cc_results if r.get("status") == "skipped"]
         cc_failed = [r for r in cc_results if r.get("status") == "failed"]
@@ -673,8 +712,11 @@ class EmailNotifier:
             html += "</div>"
 
         # CC lot builds
-        cc_lot_buys = [(t, d) for t, d in decisions.items()
-                       if d.get("action") == "buy" and "CC lot build" in (d.get("reasoning") or "")]
+        cc_lot_buys = [
+            (t, d)
+            for t, d in decisions.items()
+            if d.get("action") == "buy" and "CC lot build" in (d.get("reasoning") or "")
+        ]
         if cc_lot_buys:
             html += """
             <div class="section">
@@ -789,7 +831,7 @@ class EmailNotifier:
                 <p>{html_escape(outlook.strip())}</p>
             </div>
             """
-        
+
         html += """
         </body>
         </html>
@@ -820,7 +862,9 @@ class EmailNotifier:
 
         prev = cache.load_run(prev_meta["run_id"])
 
-        def compute_equity(portfolio: Optional[Dict[str, Any]], risk: Optional[Dict[str, Any]]) -> Optional[float]:
+        def compute_equity(
+            portfolio: Optional[Dict[str, Any]], risk: Optional[Dict[str, Any]]
+        ) -> Optional[float]:
             if not portfolio:
                 return None
             equity_val = float(portfolio.get("cash", 0.0))
@@ -845,8 +889,12 @@ class EmailNotifier:
 
         prev_exec_res = prev.get("execution_results") or {}
         curr_exec_res = results.get("execution_results") or {}
-        prev_exec_count = sum(1 for r in prev_exec_res.values() if r) if isinstance(prev_exec_res, dict) else None
-        curr_exec_count = sum(1 for r in curr_exec_res.values() if r) if isinstance(curr_exec_res, dict) else None
+        prev_exec_count = (
+            sum(1 for r in prev_exec_res.values() if r) if isinstance(prev_exec_res, dict) else None
+        )
+        curr_exec_count = (
+            sum(1 for r in curr_exec_res.values() if r) if isinstance(curr_exec_res, dict) else None
+        )
 
         return {
             "prev_run_id": prev_meta["run_id"],
@@ -874,22 +922,28 @@ class EmailNotifier:
 
         lines = []
         lines.append("You are an investment strategist summarizing this week's trading cycle.")
-        lines.append("In 2–3 sentences, summarize the portfolio's current stance and one key risk or opportunity for the week ahead.")
+        lines.append(
+            "In 2–3 sentences, summarize the portfolio's current stance and one key risk or opportunity for the week ahead."
+        )
         lines.append("Avoid disclaimers and avoid restating the full input. Be direct and concise.")
         lines.append("")
         lines.append("Context:")
         lines.append(f"- Equity: ${eq:,.2f}" if isinstance(eq, (int, float)) else f"- Equity: {eq}")
-        lines.append(f"- Cash: ${cash:,.2f}" if isinstance(cash, (int, float)) else f"- Cash: {cash}")
+        lines.append(
+            f"- Cash: ${cash:,.2f}" if isinstance(cash, (int, float)) else f"- Cash: {cash}"
+        )
         lines.append(f"- Buys/Longs this run: {', '.join(buys) or 'none'}")
         lines.append(f"- Sells/Shorts this run: {', '.join(sells) or 'none'}")
         lines.append(f"- Holds this run: {', '.join(holds) or 'none'}")
 
-        if past_perf and past_perf.get("prev_equity") is not None and past_perf.get("curr_equity") is not None:
+        if (
+            past_perf
+            and past_perf.get("prev_equity") is not None
+            and past_perf.get("curr_equity") is not None
+        ):
             delta = past_perf["curr_equity"] - past_perf["prev_equity"]
             pct = (delta / past_perf["prev_equity"] * 100) if past_perf["prev_equity"] else 0.0
-            lines.append(
-                f"- Week-over-week equity change: {delta:+.2f} ({pct:+.2f}%)"
-            )
+            lines.append(f"- Week-over-week equity change: {delta:+.2f} ({pct:+.2f}%)")
 
         prompt = "\n".join(lines)
 
@@ -923,4 +977,3 @@ def get_email_notifier() -> EmailNotifier:
     if _email_notifier is None:
         _email_notifier = EmailNotifier()
     return _email_notifier
-

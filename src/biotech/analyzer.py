@@ -14,8 +14,12 @@ import structlog
 logger = structlog.get_logger()
 
 
-def analyze_snapshot(snapshot: BiotechSnapshot) -> BiotechAnalysisOutput:
-    user = user_prompt_from_snapshot(snapshot_json_for_llm(snapshot))
+def analyze_snapshot(
+    snapshot: BiotechSnapshot, intraweek_context: str = ""
+) -> BiotechAnalysisOutput:
+    user = user_prompt_from_snapshot(
+        snapshot_json_for_llm(snapshot), intraweek_context=intraweek_context
+    )
     # Prefer DeepSeek when DEEPSEEK_API_KEY is set (same routing as trading agents).
     llm = get_llm_for_agent("deepseek-v3", "deepseek")
     messages = [

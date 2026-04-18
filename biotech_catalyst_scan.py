@@ -39,6 +39,7 @@ from src.biotech.readout_window import snapshot_has_readout_catalyst
 from src.biotech.risk_biotech import BiotechRiskBudget
 from src.biotech.watchlist import load_biotech_tickers
 from src.config.settings import settings
+from src.ops.daily_snapshots import format_snapshots_markdown
 
 logger = structlog.get_logger()
 
@@ -117,6 +118,12 @@ def main() -> int:
     fwd = int(settings.biotech_readout_forward_days)
     grace = int(settings.biotech_readout_past_grace_days)
 
+    biotech_intraweek = ""
+    try:
+        biotech_intraweek = format_snapshots_markdown("biotech", days=7).strip()
+    except Exception as e:
+        logger.warning("Could not load biotech daily snapshots for context", error=str(e))
+
     results = []
     for t in tickers:
         logger.info("Building snapshot", ticker=t)
@@ -146,7 +153,7 @@ def main() -> int:
             continue
 
         logger.info("Analyzing", ticker=t)
-        analysis = analyze_snapshot(snap)
+        analysis = analyze_snapshot(snap, intraweek_context=biotech_intraweek)
         gates_ok, gate_reasons = apply_gates(snap, analysis)
         exec_result = None
         if paper_execute and broker and gates_ok:

@@ -14,12 +14,19 @@ Output MUST be a single JSON object matching the schema requested in the user me
 """
 
 
-def user_prompt_from_snapshot(snapshot_json: str) -> str:
+def user_prompt_from_snapshot(snapshot_json: str, intraweek_context: str = "") -> str:
+    iw = ""
+    if intraweek_context.strip():
+        iw = (
+            "\n\nINTRA-WEEK BIOTECH PAPER ACCOUNT (daily snapshots; context only, not medical advice):\n"
+            + intraweek_context.strip()
+            + "\n"
+        )
     return f"""Analyze this public snapshot for ticker research.
 
 DATA (JSON):
 {snapshot_json}
-
+{iw}
 Return JSON with these keys exactly:
 - executive_summary (string)
 - clinical_assessment (string)

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     ] = None  # FinBrain House Trades (optional, Finnhub also has congressional)
     coingecko_api_key: Optional[str] = None  # CoinGecko (optional, free tier works without key)
     crypto_enabled: bool = False  # Set True to add crypto provider and enable --crypto pipeline
+    daily_snapshots_dir: str = "data/daily_snapshots"  # Daily Alpaca JSON per account (stock / biotech)
     scan_cache_dir: str = "data/scan_cache"  # Base directory for scan cache runs
     # 0 = never auto-delete cached runs (retain all history). >0 = prune runs older than N weeks.
     scan_cache_keep_weeks: int = 0
