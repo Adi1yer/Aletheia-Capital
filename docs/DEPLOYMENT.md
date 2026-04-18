@@ -69,18 +69,6 @@ poetry run python src/main.py --tickers AAPL,MSFT,GOOGL --execute
 poetry run python src/main.py --universe --max-stocks 2000 --execute
 ```
 
-#### Daily Updates
-```bash
-# Console output
-poetry run python src/daily_update.py
-
-# JSON output
-poetry run python src/daily_update.py --output json --file logs/daily_update.json
-
-# Email notification
-poetry run python src/daily_update.py --email
-```
-
 ### 4. Scheduling (Cron)
 
 Use the `scripts/run_weekly_scan.sh` wrapper for easier configuration and logging.
@@ -105,11 +93,6 @@ Make the script executable first: `chmod +x scripts/run_weekly_scan.sh`
 #### Direct Python (alternative)
 ```bash
 0 9 * * 1 cd /path/to/ai-hedge-fund-production && poetry run python src/main.py --universe --max-stocks 2000 --execute --email >> logs/weekly_trading.log 2>&1
-```
-
-#### Daily Updates (Every day at 5 PM)
-```bash
-0 17 * * * cd /path/to/ai-hedge-fund-production && poetry run python src/daily_update.py --email >> logs/daily_update.log 2>&1
 ```
 
 ## Cloud Deployment
@@ -313,7 +296,6 @@ aggregator = DataAggregator(redis_client=redis_client)
 
 ### Logs
 - Weekly trading: `logs/weekly_trading.log`
-- Daily updates: `logs/daily_update.log`
 - Application logs: `logs/app.log`
 
 ### Health Checks

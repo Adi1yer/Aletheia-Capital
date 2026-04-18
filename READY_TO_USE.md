@@ -73,13 +73,10 @@ poetry run python src/main.py --universe --max-stocks 2000
 poetry run python src/main.py --universe --max-stocks 2000 --execute
 ```
 
-### 4. Get Daily Updates
+### 4. Optional pipeline smoke check (dry run)
 ```bash
-# Daily market update
-poetry run python src/daily_update.py
-
-# Save to file
-poetry run python src/daily_update.py --output json --file logs/daily_update.json
+poetry run python scripts/pipeline_smoke_check.py
+# or: ./run.sh smoke
 ```
 
 ## System Status
@@ -89,29 +86,26 @@ poetry run python src/daily_update.py --output json --file logs/daily_update.jso
 - Paper trading configured correctly
 - Caching working
 - Full market support
-- Daily updates working
 
 ### 📋 Optional Enhancements (Future)
 - Performance tracking system
 - Dynamic agent weight adjustment
 - Backtesting engine
 - Cloud deployment
-- Email notifications for daily updates
 
 ## Next Steps
 
 1. **Test the system** with a small universe first
-2. **Set up cron jobs** for automated weekly trading and daily updates
-3. **Monitor performance** using daily updates
+2. **Set up cron jobs** for automated weekly trading (see `scripts/run_weekly_scan.sh`)
+3. **Monitor performance** via weekly logs and scan cache under `data/scan_cache`
 4. **Adjust agent weights** in `config/agent_weights.json` based on performance
 
 ## Files Created/Updated
 
 - ✅ All 21 agent files
 - ✅ `src/data/universe.py` - Stock universe provider
-- ✅ `src/trading/daily_updates.py` - Daily update system
-- ✅ `src/daily_update.py` - Daily update script
-- ✅ `src/main.py` - Updated with universe support
+- ✅ `scripts/pipeline_smoke_check.py` - Optional dry-run pipeline validation
+- ✅ `src/main.py` - Updated with universe support (`poetry run trade` or `poetry run python src/main.py`)
 - ✅ `src/trading/pipeline.py` - Batch processing added
 - ✅ `src/broker/alpaca.py` - Paper trading enforced
 - ✅ `src/data/providers/aggregator.py` - Caching integrated

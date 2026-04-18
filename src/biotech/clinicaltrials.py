@@ -51,7 +51,8 @@ def search_trials_by_term(term: str, page_size: int = 15) -> List[TrialSummary]:
                     phase=phase,
                     conditions=[str(c) for c in conds][:12],
                     sponsor=sp_name,
-                    raw={"protocolSection": proto},
+                    # Omit full protocol JSON — it explodes token count; structured fields above suffice.
+                    raw={},
                 )
             )
         except Exception:

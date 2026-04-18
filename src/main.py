@@ -1,4 +1,8 @@
-"""Main entry point for the trading system"""
+"""
+Stock trading CLI: weekly/universe runs, optional `--execute`, scan cache when using
+`--universe --weekly`. Install console entry: `poetry install` then `poetry run trade`
+(same as `poetry run python src/main.py`).
+"""
 
 import argparse
 import logging

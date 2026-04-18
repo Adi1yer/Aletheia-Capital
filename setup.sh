@@ -158,8 +158,8 @@ main() {
     echo "  2. Run the trading system:"
     echo "     poetry run python src/main.py --tickers AAPL,MSFT,GOOGL"
     echo ""
-    echo "  3. Get daily updates:"
-    echo "     poetry run python src/daily_update.py"
+    echo "  3. Optional pipeline smoke check (dry run):"
+    echo "     poetry run python scripts/pipeline_smoke_check.py"
     echo ""
 }
 

@@ -1,4 +1,14 @@
-"""Backtesting script"""
+"""
+Historical backtesting entrypoint (`src/backtest.py`).
+
+This replays the trading pipeline over a date range using **price/volume data**
+from the configured data provider (including its on-disk cache). It does **not**
+load `data/scan_cache` JSON from weekly scans. For evaluation that uses cached
+agent outputs from real runs, see `src/backtesting/agent_evaluator.py` and the
+weekly pipeline’s `scan_cache` wiring. Learning from cached runs (scorecard + per-ticker
+calibration for prompts) is implemented in `src/backtesting/agent_evaluator.py`,
+`src/backtesting/learning_outcomes.py`, and `src/backtesting/feedback.py`.
+"""
 
 import argparse
 import structlog

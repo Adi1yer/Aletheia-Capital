@@ -5,7 +5,6 @@ from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
 from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
 from src.llm.utils import call_llm_with_retry
-from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
 import structlog
@@ -87,7 +86,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided financial data and provide your investment signal based on valuation.
 
-""" + JSON_ONLY_INSTRUCTION, self)),
+""" + JSON_ONLY_INSTRUCTION, self, ticker)),
             ("human", """Ticker: {ticker}
 
 Financial Metrics:

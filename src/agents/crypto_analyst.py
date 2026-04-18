@@ -71,7 +71,7 @@ Crypto trades 24/7 and is more volatile than equities. Consider:
 5. Market cap and liquidity if available
 
 """ + JSON_ONLY_INSTRUCTION + """
-""", self)),
+""", self, ticker)),
             ("human", """Ticker: {ticker}
 
 Price Data:

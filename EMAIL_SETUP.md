@@ -54,19 +54,6 @@ SENDER_PASSWORD=your-password
 
 ## Usage
 
-### Daily Updates with Email
-
-```bash
-# Send daily update via email
-poetry run python src/daily_update.py --email
-
-# Send to specific recipient
-poetry run python src/daily_update.py --email --email-to custom@example.com
-
-# Both console and email
-poetry run python src/daily_update.py --output both --email
-```
-
 ### Weekly Trading with Email
 
 ```bash
@@ -78,14 +65,6 @@ poetry run python src/main.py --tickers AAPL,MSFT --execute --email --email-to c
 ```
 
 ## Automated Email Notifications
-
-### Cron Setup for Daily Emails
-
-Add to crontab:
-```bash
-# Daily update at 5 PM with email
-0 17 * * * cd /path/to/ai-hedge-fund-production && poetry run python src/daily_update.py --email
-```
 
 ### Cron Setup for Weekly Trading with Email
 

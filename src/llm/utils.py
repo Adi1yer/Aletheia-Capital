@@ -1,9 +1,10 @@
 """LLM utility functions"""
 
-from typing import TypeVar, Type
+import re
+from typing import Optional, TypeVar, Type
 from pydantic import BaseModel
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 import json
 import structlog
@@ -46,57 +47,121 @@ def _normalize_json_keys(data: dict) -> dict:
     return out
 
 
+def _strip_trailing_commas_json(s: str) -> str:
+    """Remove JSON-style trailing commas before } or ] (common LLM mistake)."""
+    prev = None
+    out = s
+    while prev != out:
+        prev = out
+        out = re.sub(r",(\s*[\]}])", r"\1", out)
+    return out
+
+
+def _unwrap_code_fences(text: str) -> str:
+    t = text.strip()
+    if not t.startswith("```"):
+        return t
+    parts = t.split("```", 2)
+    inner = parts[1] if len(parts) >= 2 else parts[-1]
+    inner = inner.strip()
+    first_nl = inner.find("\n")
+    if first_nl != -1 and inner[:first_nl].strip().lower() in ("json",):
+        inner = inner[first_nl + 1 :]
+    return inner.strip()
+
+
+def _extract_balanced_json(text: str) -> Optional[str]:
+    """Extract first top-level `{...}` with brace matching (respects strings)."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    i = start
+    in_string = False
+    escape = False
+    while i < len(text):
+        c = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+        i += 1
+    return None
+
+
 def _parse_structured_text(text: str, output_model: Type[T]) -> T:
     """
     Parse JSON-like text into the desired Pydantic model.
-    Handles common cases like code fences and extra commentary.
+    Handles code fences, balanced braces, trailing commas, and stray prose.
     """
-    # Strip common markdown code fences
-    text = text.strip()
-    if not text:
+    text = _unwrap_code_fences(text)
+    if not text.strip():
         raise ValueError("Empty response from LLM")
 
-    if text.startswith("```"):
-        # Remove leading fence
-        parts = text.split("```", 2)
-        text = parts[-1].strip() if len(parts) == 3 else parts[-1].strip()
-    if text.endswith("```"):
-        text = text[:-3].strip()
-
-    # Heuristic: grab from first "{" to last "}" to isolate JSON object
+    candidates: list[str] = []
+    bal = _extract_balanced_json(text)
+    if bal:
+        candidates.append(bal)
     if "{" in text and "}" in text:
         start = text.find("{")
         end = text.rfind("}") + 1
-        candidate = text[start:end]
-    else:
-        candidate = text
+        if end > start:
+            candidates.append(text[start:end])
 
-    # Always use dict path so we can normalize keys (DeepSeek sometimes returns "\"signal\"" etc.).
-    # Avoid model_validate_json(candidate) so we never build a model from unnormalized keys.
-    data = json.loads(candidate)
-    if isinstance(data, dict):
-        data = _normalize_json_keys(data)
-        # Normalize common synonyms for the \"signal\" field so validation doesn't fail
-        # when the LLM says \"buy\"/\"sell\"/\"overvalued\" instead of bullish/bearish/neutral.
-        raw_signal = data.get("signal")
-        if raw_signal is not None:
-            val = str(raw_signal).strip().lower()
-            synonym_map = {
-                "buy": "bullish",
-                "strong buy": "bullish",
-                "accumulate": "bullish",
-                "overweight": "bullish",
-                "sell": "bearish",
-                "strong sell": "bearish",
-                "underweight": "bearish",
-                "short": "bearish",
-                "overvalued": "bearish",
-                "undervalued": "bullish",
-                "hold": "neutral",
-                "wait": "neutral",
-            }
-            if val in synonym_map:
-                data["signal"] = synonym_map[val]
+    last_err: Optional[Exception] = None
+    data = None
+    for raw_c in candidates:
+        for cand in (raw_c, _strip_trailing_commas_json(raw_c)):
+            try:
+                data = json.loads(cand)
+                last_err = None
+                break
+            except json.JSONDecodeError as e:
+                last_err = e
+                continue
+        if data is not None:
+            break
+    if data is None:
+        raise last_err or ValueError("Could not parse JSON from LLM response")
+    if not isinstance(data, dict):
+        raise ValueError("Expected a JSON object at the root")
+
+    # Normalize keys (DeepSeek sometimes returns odd key spellings for agent JSON).
+    data = _normalize_json_keys(data)
+    raw_signal = data.get("signal")
+    if raw_signal is not None:
+        val = str(raw_signal).strip().lower()
+        synonym_map = {
+            "buy": "bullish",
+            "strong buy": "bullish",
+            "accumulate": "bullish",
+            "overweight": "bullish",
+            "sell": "bearish",
+            "strong sell": "bearish",
+            "underweight": "bearish",
+            "short": "bearish",
+            "overvalued": "bearish",
+            "undervalued": "bullish",
+            "hold": "neutral",
+            "wait": "neutral",
+        }
+        if val in synonym_map:
+            data["signal"] = synonym_map[val]
     return output_model.model_validate(data)
 
 
@@ -152,27 +217,44 @@ def call_llm_with_retry(
     except Exception:
         use_deepseek_path = False
 
+    if isinstance(prompt, list):
+        base_messages: list[BaseMessage] = list(prompt)
+    else:
+        base_messages = [prompt]
+
     for attempt in range(max_retries):
         try:
-            if isinstance(prompt, list):
-                messages = prompt
-            else:
-                messages = [prompt]
+            messages = list(base_messages)
 
             if use_deepseek_path:
-                try:
-                    raw = llm.invoke(messages)
-                    text = getattr(raw, "content", "") or str(raw)
-                    if not isinstance(text, str):
-                        text = str(text)
+                raw = llm.invoke(messages)
+                text = getattr(raw, "content", "") or str(raw)
+                if not isinstance(text, str):
+                    text = str(text)
 
+                try:
                     parsed = _parse_structured_text(text, output_model)
                     fields = getattr(output_model, "model_fields", {}) or {}
-                    data = {}
-                    for name in fields:
-                        data[name] = getattr(parsed, name)
+                    data = {name: getattr(parsed, name) for name in fields}
                     return output_model.model_validate(data)
                 except Exception as parse_err:
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            "DeepSeek JSON parse failed; retrying with repair instruction",
+                            attempt=attempt + 1,
+                            error=str(parse_err),
+                        )
+                        base_messages = base_messages + [
+                            AIMessage(content=text),
+                            HumanMessage(
+                                content=(
+                                    "Your previous reply was not valid JSON or did not match the required schema. "
+                                    "Respond with ONLY one JSON object with the same fields as specified. "
+                                    "No markdown, no code fences (no ```), no text before or after the JSON."
+                                )
+                            ),
+                        ]
+                        continue
                     logger.info(
                         "DeepSeek structured parse failed; using fallback output",
                         error=str(parse_err),

@@ -8,6 +8,8 @@ Cache policy:
 - Old runs are pruned by default after 5 years (260 weeks) so we keep data for internal analysis without API calls.
 - The weekly email "past performance" section uses this canonical structure:
   list_runs() then load_run() to read meta, portfolio_after/portfolio_before, execution_results.
+- `src/backtesting/agent_evaluator.py` and `src/backtesting/learning_outcomes.py` read consecutive
+  runs to score agents and to inject per-(agent,ticker) calibration into future prompts.
 """
 
 import json

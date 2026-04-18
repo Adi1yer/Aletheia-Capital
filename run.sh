@@ -16,8 +16,8 @@ if [ "$1" == "test" ]; then
     poetry run pytest tests/ -v "${@:2}"
 elif [ "$1" == "trade" ]; then
     poetry run python src/main.py "${@:2}"
-elif [ "$1" == "daily" ]; then
-    poetry run python src/daily_update.py "${@:2}"
+elif [ "$1" == "smoke" ]; then
+    poetry run python scripts/pipeline_smoke_check.py "${@:2}"
 elif [ "$1" == "backtest" ]; then
     poetry run python src/backtest.py "${@:2}"
 else

@@ -82,9 +82,9 @@ poetry run python src/main.py --tickers AAPL,MSFT,GOOGL --execute
 poetry run python src/main.py --universe --max-stocks 100
 ```
 
-**Daily update:**
+**Pipeline smoke check (dry run, no orders):**
 ```bash
-poetry run python src/daily_update.py
+poetry run python scripts/pipeline_smoke_check.py
 ```
 
 **Backtest:**

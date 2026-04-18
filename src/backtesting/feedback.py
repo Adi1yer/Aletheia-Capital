@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import structlog
 
 from src.backtesting.agent_evaluator import evaluate_scan_cache, load_scorecard
+from src.backtesting.learning_outcomes import rebuild_ticker_agent_calibration
 
 logger = structlog.get_logger()
 
@@ -40,8 +41,12 @@ def build_feedback_payload(scorecard: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def refresh_feedback_from_cache(scan_cache: Any, max_run_pairs: int = 20) -> None:
-    """Regenerate scorecard + agent_feedback.json for prompt injection."""
+    """Regenerate scorecard, per-ticker calibration, and agent_feedback.json for prompt injection."""
     sc = evaluate_scan_cache(scan_cache, max_run_pairs=max_run_pairs)
+    try:
+        rebuild_ticker_agent_calibration(scan_cache, max_run_pairs=max_run_pairs)
+    except Exception as e:
+        logger.warning("Ticker-agent calibration rebuild failed", error=str(e))
     if not sc:
         return
     payload = build_feedback_payload(sc)

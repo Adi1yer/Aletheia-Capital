@@ -72,15 +72,34 @@ def compute_return_vs_index(
     return round(ticker_ret - index_ret, 2)
 
 
-def with_performance_feedback(system_text: str, agent) -> str:
-    """Append cached scorecard blurb for this agent (registry key = name lower + underscores)."""
+def with_performance_feedback(system_text: str, agent, ticker: Optional[str] = None) -> str:
+    """
+    Append cached scorecard blurb for this agent (registry key = name lower + underscores).
+
+    When `ticker` is set and weekly scan_cache has been used to build
+    `data/performance/ticker_agent_calibration.json`, also append recent outcomes
+    for this agent on that symbol (signal, confidence vs forward return).
+    """
     try:
         from src.backtesting.feedback import block_for_agent
+        from src.backtesting.learning_outcomes import ticker_calibration_block
 
         key = agent.name.lower().replace(" ", "_")
         block = block_for_agent(key)
+        extra = ""
+        if ticker and str(ticker).strip():
+            extra = ticker_calibration_block(key, str(ticker).strip())
+        if block and extra:
+            return (
+                system_text
+                + "\n\n## Historical signal calibration (weak prior):\n"
+                + block
+                + extra
+            )
         if block:
             return system_text + "\n\n## Historical signal calibration (weak prior):\n" + block
+        if extra:
+            return system_text + extra
     except Exception:
         pass
     return system_text

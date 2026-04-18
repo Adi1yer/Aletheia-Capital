@@ -33,7 +33,12 @@ class BacktestResult(BaseModel):
 
 
 class BacktestingEngine:
-    """Backtesting engine for trading strategies"""
+    """
+    Simulates the trading pipeline over historical dates using fetched market data.
+
+    Does not replay `data/scan_cache`; scan-cache–driven analysis lives in the
+    live weekly path and `agent_evaluator` / feedback modules.
+    """
     
     def __init__(self):
         self.data_provider = get_data_provider()

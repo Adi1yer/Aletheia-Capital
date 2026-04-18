@@ -107,7 +107,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided data and provide your investment signal based on sentiment.
 
-""" + JSON_ONLY_INSTRUCTION, self)),
+""" + JSON_ONLY_INSTRUCTION, self, ticker)),
             ("human", """Ticker: {ticker}
 
 Financial Metrics:

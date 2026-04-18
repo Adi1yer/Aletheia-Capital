@@ -86,7 +86,7 @@ Rules:
 - If data is sparse or mixed, use neutral with lower confidence.
 
 """ + JSON_ONLY_INSTRUCTION + """
-""", self)),
+""", self, ticker)),
             ("human", """Ticker: {ticker}
 
 {summary}

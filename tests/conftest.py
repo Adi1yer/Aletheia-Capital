@@ -1,11 +1,13 @@
 """Pytest configuration and fixtures"""
 
+from datetime import datetime
+from unittest.mock import Mock
+
 import pytest
-from unittest.mock import Mock, MagicMock
-from datetime import datetime, timedelta
-from src.agents.base import BaseAgent, AgentSignal
+
+from src.agents.base import AgentSignal
+from src.data.models import FinancialMetrics, LineItem, Price
 from src.portfolio.models import Portfolio, Position
-from src.data.models import Price, FinancialMetrics, LineItem
 
 
 @pytest.fixture
@@ -17,6 +19,8 @@ def sample_ticker():
 @pytest.fixture
 def sample_dates():
     """Sample date range for testing"""
+    from datetime import datetime, timedelta
+
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     return start_date, end_date
@@ -27,7 +31,7 @@ def sample_prices():
     """Sample price data"""
     return [
         Price(
-            time="2024-01-01T00:00:00Z",
+            time=datetime(2024, 1, 1, 0, 0, 0),
             open=150.0,
             high=155.0,
             low=149.0,
@@ -35,7 +39,7 @@ def sample_prices():
             volume=1000000,
         ),
         Price(
-            time="2024-01-02T00:00:00Z",
+            time=datetime(2024, 1, 2, 0, 0, 0),
             open=153.0,
             high=156.0,
             low=152.0,
@@ -48,16 +52,15 @@ def sample_prices():
 @pytest.fixture
 def sample_metrics():
     """Sample financial metrics"""
+    rp = datetime(2024, 1, 1)
     return [
         FinancialMetrics(
-            period="2024-01-01",
+            ticker="AAPL",
+            report_period=rp,
             pe_ratio=25.0,
-            pb_ratio=5.0,
+            price_to_book_ratio=5.0,
             debt_to_equity=0.5,
             roe=0.15,
-            roa=0.10,
-            current_ratio=2.0,
-            quick_ratio=1.5,
         )
     ]
 
@@ -65,9 +68,11 @@ def sample_metrics():
 @pytest.fixture
 def sample_line_items():
     """Sample line items"""
+    rp = datetime(2024, 1, 1)
     return [
         LineItem(
-            period="2024-01-01",
+            ticker="AAPL",
+            report_period=rp,
             revenue=1000000000.0,
             net_income=200000000.0,
             free_cash_flow=150000000.0,
@@ -108,7 +113,7 @@ def sample_portfolio():
 def sample_agent_signal():
     """Sample agent signal"""
     return AgentSignal(
-        signal="buy",
+        signal="bullish",
         confidence=75,
         reasoning="Strong fundamentals and growth potential",
     )
@@ -119,10 +124,11 @@ def mock_llm():
     """Mock LLM for testing"""
     llm = Mock()
     llm.with_structured_output = Mock(return_value=llm)
-    llm.invoke = Mock(return_value=AgentSignal(
-        signal="buy",
-        confidence=75,
-        reasoning="Test reasoning"
-    ))
+    llm.invoke = Mock(
+        return_value=AgentSignal(
+            signal="bullish",
+            confidence=75,
+            reasoning="Test reasoning",
+        )
+    )
     return llm
-

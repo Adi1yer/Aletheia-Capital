@@ -41,48 +41,14 @@ The system automatically filters stocks by:
 poetry run python src/main.py --tickers AAPL,MSFT,GOOGL --execute
 ```
 
-## Daily Updates
+## Pipeline smoke check (optional)
 
-### Generate Daily Market Update
+Dry-run the stock trading pipeline for a couple of tickers (no orders):
 
 ```bash
-# Console output
-poetry run python src/daily_update.py
-
-# JSON output
-poetry run python src/daily_update.py --output json
-
-# Both formats
-poetry run python src/daily_update.py --output both
-
-# Save to file
-poetry run python src/daily_update.py --output json --file daily_update.json
+poetry run python scripts/pipeline_smoke_check.py
+poetry run python scripts/pipeline_smoke_check.py --tickers MSFT,AAPL
 ```
-
-### What's Included
-
-1. **Portfolio Status**
-   - Cash balance
-   - Equity value
-   - Portfolio value
-   - Buying power
-   - Position count
-
-2. **Market Summary**
-   - S&P 500 (SPY)
-   - NASDAQ 100 (QQQ)
-   - Dow Jones (DIA)
-   - Current prices and daily changes
-
-3. **Holdings Data**
-   - Current prices
-   - Price changes
-   - P/E ratios
-   - Market caps
-
-4. **Agent Status**
-   - Total agents active
-   - Agent list
 
 ## Scheduling
 
@@ -96,15 +62,6 @@ crontab -e
 
 # Add this line (adjust path and time as needed)
 0 9 * * 1 cd /path/to/ai-hedge-fund-production && poetry run python src/main.py --universe --max-stocks 5000 --execute
-```
-
-### Daily Updates (Cron)
-
-Add to crontab for daily updates (e.g., every day at 5 PM):
-
-```bash
-# Add this line
-0 17 * * * cd /path/to/ai-hedge-fund-production && poetry run python src/daily_update.py --output both --file logs/daily_update_$(date +\%Y-\%m-\%d).json
 ```
 
 ## Performance Considerations
@@ -162,12 +119,7 @@ All data is cached for 24 hours to minimize API calls.
    poetry run python src/main.py --universe --max-stocks 2000 --execute
    ```
 
-2. **Daily (5 PM)**: Get market update
-   ```bash
-   poetry run python src/daily_update.py --output both --file logs/daily_update.json
-   ```
-
-3. **Review**: Check logs and daily update files for performance
+2. **Review**: Check `logs/` and `data/scan_cache` after weekly runs
 
 ## Notes
 

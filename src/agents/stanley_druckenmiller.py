@@ -109,7 +109,7 @@ Investment Style: {self.investing_style}
 
 Analyze the provided financial data and provide your investment signal.
 
-""" + JSON_ONLY_INSTRUCTION, self)),
+""" + JSON_ONLY_INSTRUCTION, self, ticker)),
             ("human", """Ticker: {ticker}
 
 Market context (macro): {macro_context}

@@ -1,16 +1,18 @@
-"""Simple health check for the weekly trading pipeline.
+#!/usr/bin/env python3
+"""
+Lightweight smoke test for the stock trading pipeline (dry run, no orders).
 
-Runs a tiny dry-run over a couple of tickers and asserts:
-- All agent signals use canonical signals: bullish/bearish/neutral
-- No agent reasoning contains failure markers (\"Analysis failed\", \"Agent error\")
-- No portfolio decision reasoning contains \"Decision error\"
+Moved from src/health/check.py. Validates agent signals and portfolio decisions
+for a couple of tickers. Exit 0 = healthy.
 
-Exit code 0 means healthy, non-zero means something regressed.
+Usage:
+  poetry run python scripts/pipeline_smoke_check.py
+  poetry run python scripts/pipeline_smoke_check.py --tickers MSFT,AAPL
 """
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import argparse
 from typing import Sequence
 import sys
 
@@ -18,16 +20,12 @@ import structlog
 
 from src.trading.pipeline import TradingPipeline
 
-
 logger = structlog.get_logger()
 
 
 def run_health_check(tickers: Sequence[str] | None = None) -> None:
     if not tickers:
         tickers = ["MSFT", "AAPL"]
-
-    end = date.today()
-    start = end - timedelta(days=90)
 
     pipeline = TradingPipeline(parallel_agents=True)
 
@@ -45,11 +43,9 @@ def run_health_check(tickers: Sequence[str] | None = None) -> None:
 
     problems: list[str] = []
 
-    # 1) Validate agent signals
-    agent_signals = results.get("agent_signals") or {}
-    allowed_signals = {"bullish", "bearish,neutral".split(",")[0], "neutral"}  # keep explicit set
     allowed_signals = {"bullish", "bearish", "neutral"}
 
+    agent_signals = results.get("agent_signals") or {}
     for agent_key, per_ticker in agent_signals.items():
         for ticker, sig in per_ticker.items():
             signal = sig.get("signal")
@@ -63,7 +59,6 @@ def run_health_check(tickers: Sequence[str] | None = None) -> None:
                     f"Failure-like reasoning from agent '{agent_key}' for '{ticker}': {reasoning}"
                 )
 
-    # 2) Validate portfolio decisions
     decisions = results.get("decisions") or {}
     for ticker, dec in decisions.items():
         reasoning = dec.get("reasoning", "") or ""
@@ -80,6 +75,17 @@ def run_health_check(tickers: Sequence[str] | None = None) -> None:
     print(f"Health check passed; tickers={list(tickers)}")
 
 
-if __name__ == "__main__":
-    run_health_check()
+def main() -> None:
+    p = argparse.ArgumentParser(description="Pipeline smoke check (dry run)")
+    p.add_argument("--tickers", type=str, default="", help="Comma-separated tickers (default MSFT,AAPL)")
+    args = p.parse_args()
+    tickers = (
+        [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+        if args.tickers.strip()
+        else None
+    )
+    run_health_check(tickers)
 
+
+if __name__ == "__main__":
+    main()
