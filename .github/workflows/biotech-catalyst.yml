@@ -10,8 +10,8 @@ on:
         description: Optional comma-separated tickers (leave empty to use watchlist / BIOTECH_TICKERS)
         required: false
         default: ""
-      paper_execute:
-        description: "true to run paper straddle execution (requires biotech Alpaca secrets)"
+      dry_run:
+        description: "true to skip Alpaca paper execution (analysis only)"
         required: false
         default: "false"
       skip_readout_filter:
@@ -52,15 +52,15 @@ jobs:
             exit 0
           fi
           T="${{ github.event.inputs.tickers }}"
-          PE="${{ github.event.inputs.paper_execute }}"
+          DRY="${{ github.event.inputs.dry_run }}"
           SF="${{ github.event.inputs.skip_readout_filter }}"
           if [ -n "$T" ]; then
             ARGS=(--tickers "$T")
           else
             ARGS=(--from-watchlist)
           fi
-          if [ "$PE" = "true" ]; then
-            ARGS+=(--paper-execute)
+          if [ "$DRY" = "true" ]; then
+            ARGS+=(--no-paper-execute)
           fi
           if [ "$SF" = "true" ]; then
             ARGS+=(--skip-readout-filter)

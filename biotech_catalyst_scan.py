@@ -3,7 +3,8 @@
 Biotech catalyst scanner — standalone from weekly pipeline.
 
 Ingests public data (ClinicalTrials.gov, EDGAR, Yahoo), runs LLM analysis,
-optional paper trades on an isolated Alpaca paper account (BIOTECH_ALPACA_* env).
+defined-risk paper trades on an isolated Alpaca paper account (BIOTECH_ALPACA_* env)
+enabled by default; use --no-paper-execute for analysis only.
 
 By default, only tickers with at least one trial whose primary/completion date falls
 in the readout window (see settings / env) are analyzed — intended for near-term
@@ -12,7 +13,7 @@ trial readout catalysts.
 Usage:
   poetry run python biotech_catalyst_scan.py --tickers MRNA,VRTX
   poetry run python biotech_catalyst_scan.py --from-watchlist
-  poetry run python biotech_catalyst_scan.py --from-watchlist --paper-execute
+  poetry run python biotech_catalyst_scan.py --from-watchlist --no-paper-execute
 """
 
 from __future__ import annotations
@@ -72,9 +73,9 @@ def main() -> int:
         help="Use BIOTECH_TICKERS env or config/biotech_watchlist.txt",
     )
     p.add_argument(
-        "--paper-execute",
+        "--no-paper-execute",
         action="store_true",
-        help="Submit defined-risk paper orders (straddle)",
+        help="Skip Alpaca paper orders (analysis and logging only)",
     )
     p.add_argument(
         "--max-premium-pct-equity",
@@ -91,13 +92,14 @@ def main() -> int:
     args = p.parse_args()
 
     tickers = _resolve_tickers(args)
+    paper_execute = not bool(args.no_paper_execute)
 
     biotech_key = (settings.biotech_alpaca_api_key or "").strip()
     biotech_sec = (settings.biotech_alpaca_secret_key or "").strip()
     use_isolated = bool(biotech_key and biotech_sec)
 
     broker = None
-    if args.paper_execute:
+    if paper_execute:
         if not use_isolated:
             logger.error(
                 "Paper execute requires BIOTECH_ALPACA_API_KEY and BIOTECH_ALPACA_SECRET_KEY "
@@ -147,9 +149,9 @@ def main() -> int:
         analysis = analyze_snapshot(snap)
         gates_ok, gate_reasons = apply_gates(snap, analysis)
         exec_result = None
-        if args.paper_execute and broker and gates_ok:
+        if paper_execute and broker and gates_ok:
             exec_result = execute_straddle_paper(broker, snap, budget)
-        elif args.paper_execute and broker and not gates_ok:
+        elif paper_execute and broker and not gates_ok:
             exec_result = {"status": "skipped", "reasons": gate_reasons}
 
         rec = BiotechRunRecord(
