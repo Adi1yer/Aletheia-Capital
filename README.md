@@ -135,7 +135,7 @@ ai-hedge-fund-production/
 │   ├── performance/
 │   │   ├── tracker.py          # Agent weight adjustment
 │   │   └── cycle_tracker.py    # Cycle-over-cycle tracking
-│   ├── scan_cache/             # Run persistence (5yr retention)
+│   ├── scan_cache/             # Run persistence (full history; prune optional)
 │   └── utils/
 │       └── email.py            # HTML email reports
 ├── config/

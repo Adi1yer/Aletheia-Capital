@@ -38,6 +38,14 @@ def search_trials_by_term(term: str, page_size: int = 15) -> List[TrialSummary]:
             nct = id_block.get("nctId", "")
             title = id_block.get("briefTitle", "") or id_block.get("officialTitle", "")
             status = status_mod.get("overallStatus", "")
+            pcd = status_mod.get("primaryCompletionDateStruct") or {}
+            ccd = status_mod.get("completionDateStruct") or {}
+            primary_completion_date = ""
+            completion_date = ""
+            if isinstance(pcd, dict) and pcd.get("date"):
+                primary_completion_date = str(pcd.get("date", "")).replace("Z", "")[:10]
+            if isinstance(ccd, dict) and ccd.get("date"):
+                completion_date = str(ccd.get("date", "")).replace("Z", "")[:10]
             phases = id_block.get("phases") or []
             phase = ",".join(phases) if isinstance(phases, list) else str(phases)
             conds = cond_mod.get("conditions", []) or []
@@ -51,7 +59,8 @@ def search_trials_by_term(term: str, page_size: int = 15) -> List[TrialSummary]:
                     phase=phase,
                     conditions=[str(c) for c in conds][:12],
                     sponsor=sp_name,
-                    # Omit full protocol JSON — it explodes token count; structured fields above suffice.
+                    primary_completion_date=primary_completion_date,
+                    completion_date=completion_date,
                     raw={},
                 )
             )

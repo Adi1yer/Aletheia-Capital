@@ -6,7 +6,7 @@ This is the "official" weekly workflow:
 - run agents
 - rebalance deterministically based on aggregated confidence
 - optionally execute trades
-- cache the run (5y retention policy) and send a weekly email.
+- cache the run (all runs retained by default) and send a weekly email.
 
 Usage:
   Click "Run Python File" in Cursor (interpreter must be .venv/bin/python), or:
@@ -238,8 +238,8 @@ def main() -> None:
         run_config=run_config,
     )
 
-    # Prune (keep 5 years by default)
-    keep_weeks = getattr(settings, "scan_cache_keep_weeks", 260)
+    # Optional prune — default settings never delete (scan_cache_keep_weeks=0).
+    keep_weeks = getattr(settings, "scan_cache_keep_weeks", 0)
     if keep_weeks > 0:
         scan_cache.prune_old_runs(keep_weeks=keep_weeks)
 

@@ -1,14 +1,21 @@
 name: Biotech Catalyst Scan
 
 on:
+  schedule:
+    # Same as weekly stock scan: Mondays 17:45 UTC
+    - cron: "45 17 * * 1"
   workflow_dispatch:
     inputs:
       tickers:
-        description: Comma-separated tickers (e.g. MRNA,VRTX)
-        required: true
-        default: "MRNA"
+        description: Optional comma-separated tickers (leave empty to use watchlist / BIOTECH_TICKERS)
+        required: false
+        default: ""
       paper_execute:
         description: "true to run paper straddle execution (requires biotech Alpaca secrets)"
+        required: false
+        default: "false"
+      skip_readout_filter:
+        description: "true to analyze all tickers even without a trial in the readout window (not recommended)"
         required: false
         default: "false"
 
@@ -22,7 +29,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install Poetry
         run: |
@@ -37,10 +44,25 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           BIOTECH_ALPACA_API_KEY: ${{ secrets.BIOTECH_ALPACA_API_KEY }}
           BIOTECH_ALPACA_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
+          BIOTECH_TICKERS: ${{ secrets.BIOTECH_TICKERS }}
         run: |
-          PE="${{ github.event.inputs.paper_execute }}"
-          if [ "$PE" = "true" ]; then
-            poetry run python biotech_catalyst_scan.py --tickers "${{ github.event.inputs.tickers }}" --paper-execute
-          else
-            poetry run python biotech_catalyst_scan.py --tickers "${{ github.event.inputs.tickers }}"
+          set -e
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            poetry run python biotech_catalyst_scan.py --from-watchlist
+            exit 0
           fi
+          T="${{ github.event.inputs.tickers }}"
+          PE="${{ github.event.inputs.paper_execute }}"
+          SF="${{ github.event.inputs.skip_readout_filter }}"
+          if [ -n "$T" ]; then
+            ARGS=(--tickers "$T")
+          else
+            ARGS=(--from-watchlist)
+          fi
+          if [ "$PE" = "true" ]; then
+            ARGS+=(--paper-execute)
+          fi
+          if [ "$SF" = "true" ]; then
+            ARGS+=(--skip-readout-filter)
+          fi
+          poetry run python biotech_catalyst_scan.py "${ARGS[@]}"

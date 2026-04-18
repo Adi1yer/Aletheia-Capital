@@ -25,7 +25,9 @@ def cmd_list(scan_cache: ScanCache, limit: int, since: str) -> None:
     print(f"Found {len(runs)} run(s) (newest first):\n")
     for r in runs:
         print(f"  {r['run_id']}")
-        print(f"    run_date: {r['run_date']}  tickers: {r['ticker_count']}  saved_at: {r.get('saved_at', 'N/A')}")
+        print(
+            f"    run_date: {r['run_date']}  tickers: {r['ticker_count']}  saved_at: {r.get('saved_at', 'N/A')}"
+        )
         print()
 
 
@@ -46,7 +48,11 @@ def cmd_show(scan_cache: ScanCache, run_id: str, raw: bool) -> None:
     print("Duration (s):", meta.get("duration_seconds"))
     if "decisions" in data:
         decisions = data["decisions"]
-        non_hold = [t for t, d in decisions.items() if d.get("action") != "hold" and d.get("quantity", 0) > 0]
+        non_hold = [
+            t
+            for t, d in decisions.items()
+            if d.get("action") != "hold" and d.get("quantity", 0) > 0
+        ]
         print("Decisions: non-hold count =", len(non_hold))
     if "signals" in data:
         print("Agents in signals:", list(data["signals"].keys()))
@@ -89,24 +95,44 @@ def cmd_signals(scan_cache: ScanCache, run_id: str | None) -> None:
 
 def cmd_prune(scan_cache: ScanCache, keep_weeks: int) -> None:
     """Remove run directories older than keep_weeks."""
+    if keep_weeks <= 0:
+        print(
+            "keep-weeks must be > 0 to delete anything. With 0, all runs are kept (default policy)."
+        )
+        return
     removed = scan_cache.prune_old_runs(keep_weeks=keep_weeks)
     print(f"Pruned {removed} run(s) (kept last {keep_weeks} weeks).")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Scan cache: list, inspect, and prune cached market scan runs")
+    parser = argparse.ArgumentParser(
+        description="Scan cache: list, inspect, and prune cached market scan runs"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="List cached runs (newest first)")
     list_p = sub.add_parser("show", help="Show one run by run_id")
     list_p.add_argument("run_id", help="Run ID (e.g. from list)")
     list_p.add_argument("--raw", action="store_true", help="Print full JSON")
-    sig_p = sub.add_parser("signals", help="Show per-agent signal distribution for a run (default: latest)")
+    sig_p = sub.add_parser(
+        "signals", help="Show per-agent signal distribution for a run (default: latest)"
+    )
     sig_p.add_argument("--run-id", help="Run ID (if omitted, use latest run)", dest="run_id")
-    prune_p = sub.add_parser("prune", help="Delete runs older than N weeks")
-    prune_p.add_argument("--keep-weeks", type=int, default=260, help="Keep last N weeks (default 260 = 5 years)")
+    prune_p = sub.add_parser(
+        "prune", help="Delete runs older than N weeks (destructive; default policy keeps all)"
+    )
+    prune_p.add_argument(
+        "--keep-weeks",
+        type=int,
+        required=True,
+        help="Keep only runs newer than this many weeks (must be > 0)",
+    )
     parser.add_argument("--limit", type=int, default=50, help="Max runs to list (default 50)")
-    parser.add_argument("--since", type=str, default="", help="Only runs on or after date (YYYY-MM-DD)")
-    parser.add_argument("--cache-dir", type=str, default="data/scan_cache", help="Scan cache directory")
+    parser.add_argument(
+        "--since", type=str, default="", help="Only runs on or after date (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--cache-dir", type=str, default="data/scan_cache", help="Scan cache directory"
+    )
     args = parser.parse_args()
     cache = ScanCache(base_dir=args.cache_dir)
     if args.command == "list":

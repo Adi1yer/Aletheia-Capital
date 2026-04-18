@@ -1,0 +1,8 @@
+# One ticker per line. Weekly biotech scan uses this list (unless BIOTECH_TICKERS is set).
+# Only names with at least one clinical trial in the readout window are analyzed.
+# Examples — edit to match your catalyst universe:
+MRNA
+VRTX
+REGN
+BIIB
+GILD

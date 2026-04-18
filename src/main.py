@@ -194,9 +194,9 @@ def main():
         run_config=run_config,
     )
 
-    # Prune old cache runs only after a weekly universe run (keep 5 years by default)
+    # Optional prune after a weekly universe run (disabled when scan_cache_keep_weeks is 0)
     if args.universe and args.weekly and scan_cache is not None:
-        keep_weeks = getattr(settings, "scan_cache_keep_weeks", 260)
+        keep_weeks = getattr(settings, "scan_cache_keep_weeks", 0)
         if keep_weeks > 0:
             scan_cache.prune_old_runs(keep_weeks=keep_weeks)
 

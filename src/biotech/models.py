@@ -14,6 +14,9 @@ class TrialSummary(BaseModel):
     phase: str = ""
     conditions: List[str] = Field(default_factory=list)
     sponsor: str = ""
+    # ISO YYYY-MM-DD from ClinicalTrials.gov statusModule (best-effort).
+    primary_completion_date: str = ""
+    completion_date: str = ""
     raw: Dict[str, Any] = Field(default_factory=dict)
 
 

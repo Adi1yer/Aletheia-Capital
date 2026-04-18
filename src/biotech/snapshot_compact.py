@@ -25,6 +25,8 @@ def compact_snapshot_dict(snapshot: BiotechSnapshot) -> dict:
                 "phase": str(t.get("phase") or "")[:120],
                 "conditions": [str(c)[:120] for c in (t.get("conditions") or [])[:10]],
                 "sponsor": str(t.get("sponsor") or "")[:200],
+                "primary_completion_date": str(t.get("primary_completion_date") or "")[:16],
+                "completion_date": str(t.get("completion_date") or "")[:16],
             }
         )
     d["trials"] = trials_out

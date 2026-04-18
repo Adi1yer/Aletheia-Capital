@@ -5,7 +5,7 @@ Cache policy:
 - A "weekly run" is one full scan identified by run_id and run_date (YYYY-MM-DD).
 - We store only outputs needed for analysis: run metadata, tickers, signals, decisions,
   execution results, portfolio snapshots, and a compact data_snapshot (no raw HTML).
-- Old runs are pruned by default after 5 years (260 weeks) so we keep data for internal analysis without API calls.
+- Auto-prune is off by default (scan_cache_keep_weeks=0): all runs are retained locally.
 - The weekly email "past performance" section uses this canonical structure:
   list_runs() then load_run() to read meta, portfolio_after/portfolio_before, execution_results.
 - `src/backtesting/agent_evaluator.py` and `src/backtesting/learning_outcomes.py` read consecutive
