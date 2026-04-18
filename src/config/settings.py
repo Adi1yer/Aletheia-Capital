@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     alpaca_api_key: Optional[str] = None
     alpaca_secret_key: Optional[str] = None
     alpaca_base_url: str = "https://paper-api.alpaca.markets/v2"
+
+    # Optional second paper account for biotech catalyst experiments (isolated from main pipeline)
+    biotech_alpaca_api_key: Optional[str] = None
+    biotech_alpaca_secret_key: Optional[str] = None
     
     # LLM API Keys (optional - use free tiers)
     deepseek_api_key: Optional[str] = None

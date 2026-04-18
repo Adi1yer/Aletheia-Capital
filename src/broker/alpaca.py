@@ -22,8 +22,15 @@ logger = structlog.get_logger()
 class AlpacaBroker:
     """Alpaca broker integration (alpaca-py SDK)"""
 
-    def __init__(self):
-        """Initialize Alpaca client for paper trading"""
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+    ):
+        """Initialize Alpaca client for paper trading.
+
+        Optional api_key/secret_key override settings (e.g. isolated biotech paper account).
+        """
         paper_base_url = "https://paper-api.alpaca.markets/v2"
         if settings.alpaca_base_url != paper_base_url:
             logger.warning(
@@ -32,12 +39,19 @@ class AlpacaBroker:
                 using_url=paper_base_url,
             )
 
+        key = api_key if api_key is not None else settings.alpaca_api_key
+        sec = secret_key if secret_key is not None else settings.alpaca_secret_key
+
         self.client = TradingClient(
-            api_key=settings.alpaca_api_key,
-            secret_key=settings.alpaca_secret_key,
+            api_key=key,
+            secret_key=sec,
             paper=True,
         )
-        logger.info("Initialized Alpaca broker for paper trading", base_url=paper_base_url)
+        logger.info(
+            "Initialized Alpaca broker for paper trading",
+            base_url=paper_base_url,
+            isolated=bool(api_key is not None or secret_key is not None),
+        )
 
     def get_account(self) -> Dict:
         """Get account information"""
