@@ -22,6 +22,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 
@@ -35,11 +36,12 @@ from src.biotech.dataset import append_run
 from src.biotech.execution import execute_straddle_paper
 from src.biotech.ingest import build_snapshot
 from src.biotech.models import BiotechRunRecord
-from src.biotech.readout_window import snapshot_has_readout_catalyst
+from src.biotech.readout_window import best_readout_date, snapshot_has_readout_catalyst
 from src.biotech.risk_biotech import BiotechRiskBudget
 from src.biotech.watchlist import load_biotech_tickers
 from src.config.settings import settings
 from src.ops.daily_snapshots import format_snapshots_markdown
+from src.utils.email import get_email_notifier
 
 logger = structlog.get_logger()
 
@@ -58,6 +60,85 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
         logger.error("No tickers")
         sys.exit(1)
     return tickers
+
+
+def _build_biotech_email(
+    results: List[Dict[str, Any]], fwd: int, grace: int
+) -> tuple[str, str, str]:
+    analyzed = [r for r in results if not r.get("skipped")]
+    executed = [
+        r
+        for r in analyzed
+        if isinstance(r.get("execution"), dict) and r["execution"].get("status") == "submitted"
+    ]
+    skipped = [r for r in results if r.get("skipped")]
+
+    subject = (
+        f"Biotech Weekly Catalyst Scan - {len(analyzed)} analyzed, "
+        f"{len(executed)} executed, {len(skipped)} skipped"
+    )
+
+    lines: List[str] = []
+    lines.append("BIOTECH WEEKLY CATALYST RESULTS")
+    lines.append("=" * 70)
+    lines.append(f"Readout window: today-{grace}d to today+{fwd}d")
+    lines.append(
+        f"Summary: analyzed={len(analyzed)}, executed={len(executed)}, skipped_no_window={len(skipped)}"
+    )
+    lines.append("")
+
+    for row in results:
+        t = row.get("ticker", "?")
+        if row.get("skipped"):
+            lines.append(f"{t}: SKIPPED (no trial in readout window)")
+            continue
+
+        analysis = row.get("analysis") or {}
+        gate_reasons = row.get("gate_reasons") or []
+        execution = row.get("execution") or {}
+        lines.append(f"{t}:")
+        lines.append(f"  - Gates passed: {bool(row.get('gates_ok'))}")
+
+        if execution and execution.get("status") == "submitted":
+            orders = execution.get("orders") or []
+            legs = [o.get("contract", "?") for o in orders if isinstance(o, dict)]
+            lines.append("  - Action: Executed defined-risk long straddle (1 call + 1 put).")
+            lines.append(
+                "  - Why this structure: expected catalyst-driven move while capping max loss to paid premium."
+            )
+            lines.append(
+                f"  - Order legs: {', '.join(legs) if legs else 'submitted (legs unavailable)'}"
+            )
+            if execution.get("max_premium") is not None:
+                lines.append(f"  - Premium cap used: ${float(execution.get('max_premium')):,.2f}")
+        elif execution:
+            lines.append(
+                f"  - Action: No order ({execution.get('status', 'skipped')} - {execution.get('reason') or execution.get('reasons')})"
+            )
+        else:
+            lines.append("  - Action: No order (paper execution disabled)")
+
+        if analysis.get("executive_summary"):
+            lines.append(f"  - Thesis: {str(analysis.get('executive_summary')).strip()[:400]}")
+        if analysis.get("clinical_assessment"):
+            lines.append(
+                f"  - Clinical rationale: {str(analysis.get('clinical_assessment')).strip()[:400]}"
+            )
+        if analysis.get("ip_assessment"):
+            lines.append(f"  - IP rationale: {str(analysis.get('ip_assessment')).strip()[:300]}")
+        if analysis.get("reasoning"):
+            lines.append(f"  - Model reasoning: {str(analysis.get('reasoning')).strip()[:350]}")
+        if gate_reasons:
+            lines.append(f"  - Gate notes: {'; '.join(str(x) for x in gate_reasons)}")
+        lines.append("")
+
+    text = "\n".join(lines).strip()
+    html = (
+        '<html><body><pre style="white-space:pre-wrap;font-family:Arial,sans-serif;">'
+        + text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        + "</pre></body></html>"
+    )
+    return subject, text, html
 
 
 def main() -> int:
@@ -85,6 +166,17 @@ def main() -> int:
         help="Max premium vs equity (default 2%%)",
     )
     p.add_argument("--out-json", type=str, default="", help="Write combined results to this path")
+    p.add_argument(
+        "--email-to",
+        type=str,
+        default="",
+        help="Biotech email recipient (default BIOTECH_RECIPIENT_EMAIL or RECIPIENT_EMAIL)",
+    )
+    p.add_argument(
+        "--no-email",
+        action="store_true",
+        help="Disable biotech summary email",
+    )
     p.add_argument(
         "--skip-readout-filter",
         action="store_true",
@@ -184,6 +276,22 @@ def main() -> int:
         Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out_json).write_text(json.dumps(results, indent=2, default=str))
         logger.info("Wrote results", path=args.out_json)
+
+    if not args.no_email:
+        recipient = (
+            args.email_to
+            or (settings.biotech_recipient_email or "").strip()
+            or (settings.recipient_email or "").strip()
+        )
+        if recipient:
+            subject, text_body, html_body = _build_biotech_email(results, fwd=fwd, grace=grace)
+            sent = get_email_notifier().send_email(
+                recipient=recipient,
+                subject=subject,
+                body_text=text_body,
+                body_html=html_body,
+            )
+            logger.info("Biotech summary email", recipient=recipient, sent=bool(sent))
 
     return 0
 
