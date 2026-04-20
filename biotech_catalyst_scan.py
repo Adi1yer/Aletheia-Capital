@@ -40,7 +40,10 @@ from src.biotech.readout_window import best_readout_date, snapshot_has_readout_c
 from src.biotech.risk_biotech import BiotechRiskBudget
 from src.biotech.watchlist import load_biotech_tickers
 from src.config.settings import settings
-from src.ops.daily_snapshots import format_snapshots_markdown
+from src.ops.daily_snapshots import (
+    format_snapshots_markdown,
+    format_week_position_lifecycle_markdown,
+)
 from src.utils.email import get_email_notifier
 
 logger = structlog.get_logger()
@@ -63,7 +66,11 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
 
 
 def _build_biotech_email(
-    results: List[Dict[str, Any]], fwd: int, grace: int
+    results: List[Dict[str, Any]],
+    fwd: int,
+    grace: int,
+    position_lifecycle_by_ticker: Dict[str, str] | None = None,
+    week_lifecycle_markdown: str = "",
 ) -> tuple[str, str, str]:
     analyzed = [r for r in results if not r.get("skipped")]
     executed = [
@@ -86,6 +93,12 @@ def _build_biotech_email(
         f"Summary: analyzed={len(analyzed)}, executed={len(executed)}, skipped_no_window={len(skipped)}"
     )
     lines.append("")
+    lc_map = position_lifecycle_by_ticker or {}
+    if week_lifecycle_markdown.strip():
+        lines.append("POSITION LIFECYCLE (7d option book — from daily snapshots)")
+        lines.append("-" * 70)
+        lines.append(week_lifecycle_markdown.strip())
+        lines.append("")
 
     for row in results:
         t = row.get("ticker", "?")
@@ -98,6 +111,14 @@ def _build_biotech_email(
         execution = row.get("execution") or {}
         lines.append(f"{t}:")
         lines.append(f"  - Gates passed: {bool(row.get('gates_ok'))}")
+        lu = str(t).strip().upper()
+        if lu in lc_map:
+            lines.append(f"  - {lc_map[lu]}")
+        else:
+            lines.append(
+                "  - Position lifecycle: no option legs for this underlying in the 7d snapshot window "
+                "(isolated biotech paper book shows no carried straddle on this symbol, or snapshot gap)."
+            )
 
         if execution and execution.get("status") == "submitted":
             orders = execution.get("orders") or []
@@ -219,8 +240,17 @@ def main() -> int:
     grace = int(settings.biotech_readout_past_grace_days)
 
     biotech_intraweek = ""
+    week_lc_md = ""
+    lc_by_ticker: Dict[str, str] = {}
     try:
         biotech_intraweek = format_snapshots_markdown("biotech", days=7).strip()
+        week_lc_md, lc_by_ticker = format_week_position_lifecycle_markdown("biotech", days=7)
+        if week_lc_md.strip():
+            biotech_intraweek = (
+                biotech_intraweek + "\n\n" + week_lc_md.strip()
+                if biotech_intraweek.strip()
+                else week_lc_md.strip()
+            )
     except Exception as e:
         logger.warning("Could not load biotech daily snapshots for context", error=str(e))
 
@@ -292,7 +322,13 @@ def main() -> int:
             or (settings.recipient_email or "").strip()
         )
         if recipient:
-            subject, text_body, html_body = _build_biotech_email(results, fwd=fwd, grace=grace)
+            subject, text_body, html_body = _build_biotech_email(
+                results,
+                fwd=fwd,
+                grace=grace,
+                position_lifecycle_by_ticker=lc_by_ticker,
+                week_lifecycle_markdown=week_lc_md,
+            )
             sent = get_email_notifier().send_email(
                 recipient=recipient,
                 subject=subject,

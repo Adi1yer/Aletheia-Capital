@@ -19,6 +19,8 @@ def user_prompt_from_snapshot(snapshot_json: str, intraweek_context: str = "") -
     if intraweek_context.strip():
         iw = (
             "\n\nINTRA-WEEK BIOTECH PAPER ACCOUNT (daily snapshots; context only, not medical advice):\n"
+            "Includes equity/cash/positions, option straddle breakeven hints, day-over-day option-book deltas, "
+            "and week-span carry vs new exposure when ≥2 days of snapshots exist.\n"
             + intraweek_context.strip()
             + "\n"
         )

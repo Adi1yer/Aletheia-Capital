@@ -18,7 +18,7 @@ import structlog
 
 from src.broker.alpaca import AlpacaBroker
 from src.config.settings import settings
-from src.ops.daily_snapshots import save_snapshot
+from src.ops.daily_snapshots import enrich_payload_with_prior_day_lifecycle, save_snapshot
 
 logger = structlog.get_logger()
 
@@ -137,6 +137,7 @@ def main() -> int:
                 return 1
             broker = AlpacaBroker()
             payload, alerts, xc = _collect_payload(broker, "stock", args.max_position_pct)
+            enrich_payload_with_prior_day_lifecycle("stock", payload)
             path = save_snapshot("stock", payload)
             logger.info("Saved stock daily snapshot", path=str(path), alerts=len(alerts))
             worst = max(worst, xc)
@@ -148,6 +149,7 @@ def main() -> int:
                 continue
             broker = AlpacaBroker(api_key=bk, secret_key=bs)
             payload, alerts, xc = _collect_payload(broker, "biotech", args.max_position_pct)
+            enrich_payload_with_prior_day_lifecycle("biotech", payload)
             path = save_snapshot("biotech", payload)
             logger.info("Saved biotech daily snapshot", path=str(path), alerts=len(alerts))
             worst = max(worst, xc)
