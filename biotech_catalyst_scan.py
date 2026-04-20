@@ -102,6 +102,7 @@ def _build_biotech_email(
         if execution and execution.get("status") == "submitted":
             orders = execution.get("orders") or []
             legs = [o.get("contract", "?") for o in orders if isinstance(o, dict)]
+            strat = execution.get("strategy") or {}
             lines.append("  - Action: Executed defined-risk long straddle (1 call + 1 put).")
             lines.append(
                 "  - Why this structure: expected catalyst-driven move while capping max loss to paid premium."
@@ -111,6 +112,13 @@ def _build_biotech_email(
             )
             if execution.get("max_premium") is not None:
                 lines.append(f"  - Premium cap used: ${float(execution.get('max_premium')):,.2f}")
+            be_lo = strat.get("break_even_low_est")
+            be_hi = strat.get("break_even_high_est")
+            exp = strat.get("expiry")
+            if be_lo is not None and be_hi is not None:
+                lines.append(
+                    f"  - Break-even estimate at expiry{f' {exp}' if exp else ''}: below ${float(be_lo):.2f} or above ${float(be_hi):.2f}"
+                )
         elif execution:
             lines.append(
                 f"  - Action: No order ({execution.get('status', 'skipped')} - {execution.get('reason') or execution.get('reasons')})"

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -21,6 +22,24 @@ from src.ops.daily_snapshots import save_snapshot
 
 logger = structlog.get_logger()
 
+_OCC_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
+
+
+def _parse_occ_symbol(symbol: str) -> Dict[str, Any]:
+    m = _OCC_RE.match(symbol or "")
+    if not m:
+        return {}
+    under, yymmdd, cp, strike_raw = m.groups()
+    yy = int(yymmdd[:2]) + 2000
+    mm = int(yymmdd[2:4])
+    dd = int(yymmdd[4:6])
+    return {
+        "underlying": under.strip(),
+        "expiry": f"{yy:04d}-{mm:02d}-{dd:02d}",
+        "type": "call" if cp == "C" else "put",
+        "strike": int(strike_raw) / 1000.0,
+    }
+
 
 def _collect_payload(
     broker: AlpacaBroker,
@@ -34,6 +53,7 @@ def _collect_payload(
 
     alerts: List[str] = []
     top_rows: List[Dict[str, Any]] = []
+    option_rows: List[Dict[str, Any]] = []
 
     for sym, pos in sorted(positions.items(), key=lambda x: -abs(x[1].get("market_value", 0))):
         mv = float(pos.get("market_value", 0))
@@ -57,6 +77,18 @@ def _collect_payload(
                 "unrealized_pnl_pct": round(pnl_pct, 2),
             }
         )
+        occ = _parse_occ_symbol(sym)
+        if occ:
+            option_rows.append(
+                {
+                    "symbol": sym,
+                    "qty": qty,
+                    "side": side,
+                    "avg_entry_price": round(avg, 4),
+                    "market_value": round(mv, 2),
+                    **occ,
+                }
+            )
 
     top_rows = sorted(top_rows, key=lambda x: -abs(x.get("market_value", 0)))[:15]
 
@@ -69,6 +101,7 @@ def _collect_payload(
         "position_count": len(positions),
         "alerts": alerts,
         "top_positions": top_rows,
+        "option_positions": option_rows,
     }
     exit_code = 2 if alerts else 0
     return payload, alerts, exit_code

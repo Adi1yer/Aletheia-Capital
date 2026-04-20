@@ -73,5 +73,30 @@ def format_snapshots_markdown(account: Account, days: int = 7) -> str:
         if top:
             bits = [f"{x.get('symbol')} {x.get('pct_equity', 0):.1f}% eq" for x in top[:5]]
             lines.append(f"  - top: {', '.join(bits)}")
+        opts = r.get("option_positions") or []
+        if opts:
+            # Group by (underlying, expiry) and summarize long call+put premium -> rough breakevens.
+            grouped: Dict[tuple, List[Dict[str, Any]]] = {}
+            for o in opts:
+                key = (o.get("underlying"), o.get("expiry"))
+                grouped.setdefault(key, []).append(o)
+            for (u, exp), legs in list(grouped.items())[:3]:
+                calls = [x for x in legs if x.get("type") == "call"]
+                puts = [x for x in legs if x.get("type") == "put"]
+                if not calls or not puts:
+                    continue
+                c = calls[0]
+                p = puts[0]
+                prem = float(c.get("avg_entry_price", 0) or 0) + float(
+                    p.get("avg_entry_price", 0) or 0
+                )
+                k_call = float(c.get("strike", 0) or 0)
+                k_put = float(p.get("strike", 0) or 0)
+                if k_call > 0 and k_put > 0 and prem > 0:
+                    lo = k_put - prem
+                    hi = k_call + prem
+                    lines.append(
+                        f"  - options {u} {exp}: long straddle-ish; est b/e {lo:.2f} to {hi:.2f} (from avg premiums)"
+                    )
         lines.append("")
     return "\n".join(lines).strip()

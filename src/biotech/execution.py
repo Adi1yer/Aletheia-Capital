@@ -70,15 +70,48 @@ def execute_straddle_paper(
     if not c or not p:
         return {"status": "skipped", "reason": "no suitable option contracts"}
 
-    est = (c.get("close_price", 0) or 0) * 100 + (p.get("close_price", 0) or 0) * 100
+    call_px = float(c.get("close_price", 0) or 0)
+    put_px = float(p.get("close_price", 0) or 0)
+    call_k = float(c.get("strike", 0) or 0)
+    put_k = float(p.get("strike", 0) or 0)
+    est = call_px * 100 + put_px * 100
     if est > max_prem:
         return {
             "status": "skipped",
             "reason": f"estimated premium {est:.2f} exceeds cap {max_prem:.2f} ({budget.max_premium_pct_equity:.1%} of equity)",
             "equity": eq,
+            "strategy": {
+                "type": "long_straddle",
+                "call_contract": c.get("symbol"),
+                "put_contract": p.get("symbol"),
+                "call_strike": call_k,
+                "put_strike": put_k,
+                "expiry": c.get("expiry") or p.get("expiry"),
+                "estimated_premium_total": est,
+                "estimated_premium_per_share": call_px + put_px,
+                "break_even_low_est": (put_k - (call_px + put_px)) if put_k > 0 else None,
+                "break_even_high_est": (call_k + (call_px + put_px)) if call_k > 0 else None,
+            },
         }
 
-    out: Dict[str, Any] = {"status": "submitted", "equity": eq, "max_premium": max_prem, "orders": []}
+    out: Dict[str, Any] = {
+        "status": "submitted",
+        "equity": eq,
+        "max_premium": max_prem,
+        "orders": [],
+        "strategy": {
+            "type": "long_straddle",
+            "call_contract": c.get("symbol"),
+            "put_contract": p.get("symbol"),
+            "call_strike": call_k,
+            "put_strike": put_k,
+            "expiry": c.get("expiry") or p.get("expiry"),
+            "estimated_premium_total": est,
+            "estimated_premium_per_share": call_px + put_px,
+            "break_even_low_est": (put_k - (call_px + put_px)) if put_k > 0 else None,
+            "break_even_high_est": (call_k + (call_px + put_px)) if call_k > 0 else None,
+        },
+    }
     for leg, side in ((c, "buy"), (p, "buy")):
         o = broker.submit_option_order(
             contract_symbol=leg["symbol"],
