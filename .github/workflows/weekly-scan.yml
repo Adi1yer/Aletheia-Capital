@@ -47,4 +47,4 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-        run: poetry run python weekly_scan_rebalancing.py --max-stocks 200 --stop-loss-pct 0.08
+        run: poetry run python weekly_scan_rebalancing.py --max-stocks 500 --stop-loss-pct 0.08 --enable-covered-calls

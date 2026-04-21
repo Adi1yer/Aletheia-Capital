@@ -293,8 +293,17 @@ class TradingPipeline:
 
         # 8b. Covered call execution (after equity trades settle)
         cc_results: List[Dict] = []
+        cc_diagnostics: Dict[str, Any] = {
+            "enabled": bool(enable_cc),
+            "execute_mode": bool(execute),
+            "cc_lot_tickers": list(cc_lot_tickers),
+            "cc_lot_ticker_count": len(cc_lot_tickers),
+            "step_ran": False,
+            "reason_not_run": "",
+        }
         csp_results: List[Dict] = []
         if enable_cc and execute and self.broker and cc_lot_tickers:
+            cc_diagnostics["step_ran"] = True
             try:
                 from src.options.covered_calls import CoveredCallManager
 
@@ -315,6 +324,26 @@ class TradingPipeline:
             except Exception as e:
                 logger.error("Covered call step failed (non-fatal)", error=str(e))
                 cc_results = [{"status": "error", "reason": str(e)}]
+        else:
+            if not enable_cc:
+                cc_diagnostics["reason_not_run"] = "covered calls disabled by run config"
+            elif not execute:
+                cc_diagnostics["reason_not_run"] = "dry run mode (no execution)"
+            elif not self.broker:
+                cc_diagnostics["reason_not_run"] = "broker unavailable"
+            elif not cc_lot_tickers:
+                cc_diagnostics[
+                    "reason_not_run"
+                ] = "no covered-call lot candidates from decision engine"
+
+        cc_diagnostics["result_count"] = len(cc_results)
+        cc_diagnostics["executed_count"] = sum(
+            1 for r in cc_results if r.get("status") == "executed"
+        )
+        cc_diagnostics["skipped_count"] = sum(1 for r in cc_results if r.get("status") == "skipped")
+        cc_diagnostics["failed_count"] = sum(
+            1 for r in cc_results if r.get("status") in ("failed", "error")
+        )
 
         csp_lot_tickers = getattr(self.portfolio_manager, "_last_csp_tickers", [])
         csp_scores_map = getattr(self.portfolio_manager, "_last_csp_scores", {})
@@ -416,6 +445,7 @@ class TradingPipeline:
             "decisions": {ticker: decision.model_dump() for ticker, decision in decisions.items()},
             "execution_results": execution_results,
             "covered_call_results": cc_results,
+            "covered_call_diagnostics": cc_diagnostics,
             "csp_results": csp_results,
         }
 

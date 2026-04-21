@@ -78,8 +78,16 @@ def main() -> None:
     # Covered call strategy
     p.add_argument(
         "--enable-covered-calls",
+        dest="enable_covered_calls",
         action="store_true",
-        help="Enable covered-call strategy on hold tickers (default True when no args).",
+        default=True,
+        help="Enable covered-call strategy on hold tickers (default: enabled).",
+    )
+    p.add_argument(
+        "--no-covered-calls",
+        dest="enable_covered_calls",
+        action="store_false",
+        help="Disable covered-call strategy for this run.",
     )
     p.add_argument(
         "--min-cc-score",

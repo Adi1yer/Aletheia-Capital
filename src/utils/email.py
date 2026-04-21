@@ -371,33 +371,45 @@ class EmailNotifier:
             text.append("")
 
         # Covered Call Results
+        cc_diag = results.get("covered_call_diagnostics") or {}
         cc_results = results.get("covered_call_results") or []
         cc_executed = [r for r in cc_results if r.get("status") == "executed"]
         cc_skipped = [r for r in cc_results if r.get("status") == "skipped"]
         cc_failed = [r for r in cc_results if r.get("status") == "failed"]
-        if cc_results:
-            text.append("COVERED CALLS")
-            text.append("-" * 80)
-            if cc_executed:
-                total_premium = sum(r.get("estimated_premium", 0) for r in cc_executed)
+        text.append("COVERED CALLS")
+        text.append("-" * 80)
+        enabled = bool(cc_diag.get("enabled", False))
+        text.append(f"Enabled: {'yes' if enabled else 'no'}")
+        text.append(
+            f"Execution mode: {'live' if bool(cc_diag.get('execute_mode', False)) else 'dry'}"
+        )
+        text.append(f"Candidate tickers: {int(cc_diag.get('cc_lot_ticker_count', 0) or 0)}")
+        text.append(
+            "Outcome: "
+            f"executed={int(cc_diag.get('executed_count', len(cc_executed)) or 0)}, "
+            f"skipped={int(cc_diag.get('skipped_count', len(cc_skipped)) or 0)}, "
+            f"failed={int(cc_diag.get('failed_count', len(cc_failed)) or 0)}"
+        )
+        if cc_diag.get("reason_not_run"):
+            text.append(f"Step note: {cc_diag.get('reason_not_run')}")
+        if cc_executed:
+            total_premium = sum(r.get("estimated_premium", 0) for r in cc_executed)
+            text.append(f"Calls written: {len(cc_executed)} (est. premium: ${total_premium:,.2f})")
+            for r in cc_executed:
                 text.append(
-                    f"Calls written: {len(cc_executed)} (est. premium: ${total_premium:,.2f})"
+                    f"  {r['underlying']}: sold {r['contracts']}x {r['contract_symbol']} "
+                    f"strike ${r['strike']:,.2f} exp {r['expiry']} "
+                    f"(cc_score={r.get('cc_score', '?')}, premium ~${r.get('estimated_premium', 0):,.2f})"
                 )
-                for r in cc_executed:
-                    text.append(
-                        f"  {r['underlying']}: sold {r['contracts']}x {r['contract_symbol']} "
-                        f"strike ${r['strike']:,.2f} exp {r['expiry']} "
-                        f"(cc_score={r.get('cc_score', '?')}, premium ~${r.get('estimated_premium', 0):,.2f})"
-                    )
-            if cc_skipped:
-                text.append(
-                    f"Skipped: {len(cc_skipped)} ({', '.join(r.get('underlying', '?') for r in cc_skipped)})"
-                )
-            if cc_failed:
-                text.append(
-                    f"Failed: {len(cc_failed)} ({', '.join(r.get('underlying', '?') for r in cc_failed)})"
-                )
-            text.append("")
+        if cc_skipped:
+            text.append(
+                f"Skipped: {len(cc_skipped)} ({', '.join(r.get('underlying', '?') for r in cc_skipped)})"
+            )
+        if cc_failed:
+            text.append(
+                f"Failed: {len(cc_failed)} ({', '.join(r.get('underlying', '?') for r in cc_failed)})"
+            )
+        text.append("")
         # CC lot builds in decisions
         cc_lot_buys = [
             (t, d)
@@ -679,37 +691,46 @@ class EmailNotifier:
                     """
 
         # Covered call results
+        cc_diag = results.get("covered_call_diagnostics") or {}
         cc_results = results.get("covered_call_results") or []
         cc_executed = [r for r in cc_results if r.get("status") == "executed"]
         cc_skipped = [r for r in cc_results if r.get("status") == "skipped"]
         cc_failed = [r for r in cc_results if r.get("status") == "failed"]
-        if cc_results:
-            total_premium = sum(r.get("estimated_premium", 0) for r in cc_executed)
-            html += f"""
-            <div class="section">
-                <h2>Covered Calls</h2>
-                <p><strong>{len(cc_executed)}</strong> written, <strong>{len(cc_skipped)}</strong> skipped, <strong>{len(cc_failed)}</strong> failed
-                   {f' &mdash; est. premium: ${total_premium:,.2f}' if total_premium else ''}</p>
+        total_premium = sum(r.get("estimated_premium", 0) for r in cc_executed)
+        html += f"""
+        <div class="section">
+            <h2>Covered Calls</h2>
+            <p>
+                <strong>Enabled:</strong> {"yes" if bool(cc_diag.get("enabled", False)) else "no"}<br/>
+                <strong>Execution mode:</strong> {"live" if bool(cc_diag.get("execute_mode", False)) else "dry"}<br/>
+                <strong>Candidate tickers:</strong> {int(cc_diag.get("cc_lot_ticker_count", 0) or 0)}<br/>
+                <strong>Outcome:</strong>
+                executed={int(cc_diag.get("executed_count", len(cc_executed)) or 0)},
+                skipped={int(cc_diag.get("skipped_count", len(cc_skipped)) or 0)},
+                failed={int(cc_diag.get("failed_count", len(cc_failed)) or 0)}
+                {f'<br/><strong>Step note:</strong> {html_escape(str(cc_diag.get("reason_not_run")))}' if cc_diag.get("reason_not_run") else ""}
+                {f'<br/><strong>Est. premium:</strong> ${total_premium:,.2f}' if total_premium else ""}
+            </p>
+        """
+        if cc_executed:
+            html += """
+            <table>
+                <tr><th>Underlying</th><th>Contract</th><th>Strike</th><th>Expiry</th><th>Contracts</th><th>CC Score</th><th>Est. Premium</th></tr>
             """
-            if cc_executed:
-                html += """
-                <table>
-                    <tr><th>Underlying</th><th>Contract</th><th>Strike</th><th>Expiry</th><th>Contracts</th><th>CC Score</th><th>Est. Premium</th></tr>
+            for r in cc_executed:
+                html += f"""
+                <tr>
+                    <td>{r.get('underlying', '?')}</td>
+                    <td>{r.get('contract_symbol', '?')}</td>
+                    <td>${r.get('strike', 0):,.2f}</td>
+                    <td>{r.get('expiry', '?')}</td>
+                    <td>{r.get('contracts', 0)}</td>
+                    <td>{r.get('cc_score', '?')}</td>
+                    <td>${r.get('estimated_premium', 0):,.2f}</td>
+                </tr>
                 """
-                for r in cc_executed:
-                    html += f"""
-                    <tr>
-                        <td>{r.get('underlying', '?')}</td>
-                        <td>{r.get('contract_symbol', '?')}</td>
-                        <td>${r.get('strike', 0):,.2f}</td>
-                        <td>{r.get('expiry', '?')}</td>
-                        <td>{r.get('contracts', 0)}</td>
-                        <td>{r.get('cc_score', '?')}</td>
-                        <td>${r.get('estimated_premium', 0):,.2f}</td>
-                    </tr>
-                    """
-                html += "</table>"
-            html += "</div>"
+            html += "</table>"
+        html += "</div>"
 
         # CC lot builds
         cc_lot_buys = [
