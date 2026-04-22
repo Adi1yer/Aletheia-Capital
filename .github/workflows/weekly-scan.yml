@@ -9,7 +9,7 @@ on:
 jobs:
   weekly-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 480
 
     steps:
       - name: Checkout code
