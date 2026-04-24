@@ -179,7 +179,15 @@ class EmailNotifier:
         buy_count = sum(1 for d in all_decisions.values() if d.get("action") in ("buy", "cover"))
         sell_count = sum(1 for d in all_decisions.values() if d.get("action") == "sell")
         executed = results.get("execution_results", {})
-        executed_count = sum(1 for r in executed.values() if r) if executed else 0
+        executed_count = (
+            sum(
+                1
+                for r in executed.values()
+                if r and (not isinstance(r, dict) or r.get("status") != "failed")
+            )
+            if executed
+            else 0
+        )
 
         ts = results.get("timestamp")
         week_label = "Week"
@@ -363,11 +371,24 @@ class EmailNotifier:
         # Execution Results
         exec_results = results.get("execution_results") or {}
         if exec_results:
-            executed = sum(1 for r in exec_results.values() if r)
-            failed_tickers = [t for t, r in exec_results.items() if not r]
+            executed = sum(
+                1
+                for r in exec_results.values()
+                if r and (not isinstance(r, dict) or r.get("status") != "failed")
+            )
+            failed_tickers = [
+                t
+                for t, r in exec_results.items()
+                if (not r) or (isinstance(r, dict) and r.get("status") == "failed")
+            ]
             text.append(f"EXECUTION RESULTS: {executed} orders executed")
             if failed_tickers:
                 text.append(f"FAILED ORDERS ({len(failed_tickers)}): {', '.join(failed_tickers)}")
+                for t in failed_tickers[:10]:
+                    rr = exec_results.get(t) or {}
+                    err = rr.get("error") if isinstance(rr, dict) else None
+                    if err:
+                        text.append(f"  - {t}: {err[:200]}")
             text.append("")
 
         # Covered Call Results
@@ -671,8 +692,16 @@ class EmailNotifier:
             # Failed orders section
             exec_results = results.get("execution_results") or {}
             if exec_results:
-                failed_tickers = [t for t, r in exec_results.items() if not r]
-                executed_count = sum(1 for r in exec_results.values() if r)
+                failed_tickers = [
+                    t
+                    for t, r in exec_results.items()
+                    if (not r) or (isinstance(r, dict) and r.get("status") == "failed")
+                ]
+                executed_count = sum(
+                    1
+                    for r in exec_results.values()
+                    if r and (not isinstance(r, dict) or r.get("status") != "failed")
+                )
                 if failed_tickers:
                     html += f"""
                     <div class="section">

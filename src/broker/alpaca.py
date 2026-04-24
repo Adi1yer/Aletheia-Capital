@@ -75,7 +75,11 @@ class AlpacaBroker:
 
             for pos in positions:
                 qty = abs(int(float(pos.qty)))
-                side = getattr(pos.side, "value", str(pos.side)).lower() if hasattr(pos, "side") else ("long" if int(float(pos.qty)) >= 0 else "short")
+                side = (
+                    getattr(pos.side, "value", str(pos.side)).lower()
+                    if hasattr(pos, "side")
+                    else ("long" if int(float(pos.qty)) >= 0 else "short")
+                )
                 if side not in ("long", "short"):
                     side = "long"
                 position_dict[pos.symbol] = {
@@ -102,8 +106,12 @@ class AlpacaBroker:
                     "side": getattr(o.side, "value", str(o.side)).lower(),
                     "qty": int(float(o.qty)) if o.qty else 0,
                     "status": getattr(o.status, "value", str(o.status)).lower(),
-                    "submitted_at": str(o.submitted_at) if hasattr(o, "submitted_at") and o.submitted_at else None,
-                    "type": getattr(o.type, "value", str(o.type)).lower() if hasattr(o, "type") else "market",
+                    "submitted_at": str(o.submitted_at)
+                    if hasattr(o, "submitted_at") and o.submitted_at
+                    else None,
+                    "type": getattr(o.type, "value", str(o.type)).lower()
+                    if hasattr(o, "type")
+                    else "market",
                 }
                 for o in (orders or [])
             ]
@@ -123,8 +131,12 @@ class AlpacaBroker:
                     "side": getattr(o.side, "value", str(o.side)).lower(),
                     "qty": int(float(o.qty)) if o.qty else 0,
                     "status": getattr(o.status, "value", str(o.status)).lower(),
-                    "filled_at": str(o.filled_at) if hasattr(o, "filled_at") and o.filled_at else None,
-                    "submitted_at": str(o.submitted_at) if hasattr(o, "submitted_at") and o.submitted_at else None,
+                    "filled_at": str(o.filled_at)
+                    if hasattr(o, "filled_at") and o.filled_at
+                    else None,
+                    "submitted_at": str(o.submitted_at)
+                    if hasattr(o, "submitted_at") and o.submitted_at
+                    else None,
                 }
                 for o in (orders or [])
             ]
@@ -203,7 +215,26 @@ class AlpacaBroker:
                     time_in_force=TimeInForce.DAY,
                 )
 
-            order = self.client.submit_order(order_data=order_data)
+            try:
+                order = self.client.submit_order(order_data=order_data)
+            except Exception as e:
+                # Some Alpaca paper-account contexts reject bracket orders intermittently.
+                # Fallback once to a plain market buy so the run can still execute.
+                if side == OrderSide.BUY and stop_loss_pct and float(stop_loss_pct) > 0:
+                    logger.warning(
+                        "Bracket buy rejected; retrying as plain market buy",
+                        ticker=ticker,
+                        error=str(e),
+                    )
+                    fallback = MarketOrderRequest(
+                        symbol=ticker,
+                        qty=decision.quantity,
+                        side=side,
+                        time_in_force=TimeInForce.DAY,
+                    )
+                    order = self.client.submit_order(order_data=fallback)
+                else:
+                    raise
 
             logger.info(
                 "Order submitted",
@@ -219,12 +250,18 @@ class AlpacaBroker:
                 "qty": int(order.qty),
                 "side": str(order.side) if hasattr(order.side, "value") else order.side,
                 "status": str(order.status) if hasattr(order.status, "value") else order.status,
+                "success": True,
             }
 
         except Exception as e:
             logger.error("Order execution failed", ticker=ticker, error=str(e))
-            return None
-    
+            return {
+                "symbol": ticker,
+                "status": "failed",
+                "error": str(e),
+                "success": False,
+            }
+
     def execute_decisions(
         self,
         decisions: Dict[str, PortfolioDecision],
@@ -236,36 +273,38 @@ class AlpacaBroker:
     ) -> Dict[str, Optional[Dict]]:
         """
         Execute multiple trading decisions with rate limiting
-        
+
         Args:
             decisions: Dictionary mapping ticker to PortfolioDecision
             rate_limit: Maximum requests per minute (default: 200 for Alpaca)
-        
+
         Returns:
             Dictionary mapping ticker to order result
         """
         import time
-        
+
         logger.info("Executing trading decisions", decision_count=len(decisions))
-        
+
         results = {}
-        non_hold_decisions = {t: d for t, d in decisions.items() if d.action != "hold" and d.quantity > 0}
-        
+        non_hold_decisions = {
+            t: d for t, d in decisions.items() if d.action != "hold" and d.quantity > 0
+        }
+
         if not non_hold_decisions:
             logger.info("No trades to execute (all holds)")
             return results
-        
+
         # Calculate delay between requests to respect rate limit
         # Add 10% buffer to be safe
         delay_seconds = 60.0 / (rate_limit * 0.9)  # ~0.33 seconds between requests
-        
+
         logger.info(
             "Executing trades with rate limiting",
             trade_count=len(non_hold_decisions),
             delay_seconds=round(delay_seconds, 3),
-            estimated_time_minutes=round(len(non_hold_decisions) * delay_seconds / 60, 1)
+            estimated_time_minutes=round(len(non_hold_decisions) * delay_seconds / 60, 1),
         )
-        
+
         # Execute sells first to free cash / buying power for subsequent buys.
         priority = {"sell": 0, "short": 0, "cover": 1, "buy": 2}
         ordered = sorted(
@@ -286,31 +325,31 @@ class AlpacaBroker:
                 limit_slippage_pct=limit_slippage_pct,
             )
             results[ticker] = result
-            
-            if result:
+
+            if result and result.get("success", True):
                 executed += 1
-            
+
             # Rate limiting: wait between requests (except for last one)
             if i < len(ordered):
                 time.sleep(delay_seconds)
-            
+
             # Log progress for large batches
             if len(ordered) > 50 and i % 50 == 0:
                 logger.info(
                     "Execution progress",
                     completed=i,
                     total=len(ordered),
-                    pct=round(i / len(ordered) * 100, 1)
+                    pct=round(i / len(ordered) * 100, 1),
                 )
-        
+
         logger.info(
             "Trading execution complete",
             executed_count=executed,
             total_decisions=len(decisions),
-            failed_count=len(ordered) - executed
+            failed_count=len(ordered) - executed,
         )
         return results
-    
+
     # ── Options methods ──────────────────────────────────────────────
 
     def get_option_contracts(
@@ -343,17 +382,23 @@ class AlpacaBroker:
             resp = self.client.get_option_contracts(req)
             contracts = resp.option_contracts if hasattr(resp, "option_contracts") else resp
             results = []
-            for c in (contracts or []):
-                results.append({
-                    "symbol": c.symbol,
-                    "underlying": c.underlying_symbol,
-                    "strike": float(c.strike_price) if c.strike_price else 0.0,
-                    "expiry": str(c.expiration_date),
-                    "type": str(c.type) if hasattr(c, "type") else option_type,
-                    "open_interest": int(c.open_interest) if hasattr(c, "open_interest") and c.open_interest else 0,
-                    "close_price": float(c.close_price) if hasattr(c, "close_price") and c.close_price else 0.0,
-                    "tradable": getattr(c, "tradable", True),
-                })
+            for c in contracts or []:
+                results.append(
+                    {
+                        "symbol": c.symbol,
+                        "underlying": c.underlying_symbol,
+                        "strike": float(c.strike_price) if c.strike_price else 0.0,
+                        "expiry": str(c.expiration_date),
+                        "type": str(c.type) if hasattr(c, "type") else option_type,
+                        "open_interest": int(c.open_interest)
+                        if hasattr(c, "open_interest") and c.open_interest
+                        else 0,
+                        "close_price": float(c.close_price)
+                        if hasattr(c, "close_price") and c.close_price
+                        else 0.0,
+                        "tradable": getattr(c, "tradable", True),
+                    }
+                )
             logger.info("Option contracts fetched", underlying=underlying, count=len(results))
             return results
         except Exception as e:
@@ -402,7 +447,9 @@ class AlpacaBroker:
                 "symbol": order.symbol,
                 "qty": int(order.qty) if order.qty else qty,
                 "side": side,
-                "status": str(order.status) if hasattr(order.status, "value") else str(order.status),
+                "status": str(order.status)
+                if hasattr(order.status, "value")
+                else str(order.status),
             }
         except Exception as e:
             logger.error("Option order failed", contract=contract_symbol, error=str(e))
@@ -413,17 +460,19 @@ class AlpacaBroker:
         try:
             positions = self.client.get_all_positions()
             results = []
-            for pos in (positions or []):
+            for pos in positions or []:
                 sym = pos.symbol or ""
                 if len(sym) > 10:
-                    results.append({
-                        "symbol": sym,
-                        "qty": abs(int(float(pos.qty))),
-                        "side": "short" if int(float(pos.qty)) < 0 else "long",
-                        "avg_entry_price": float(pos.avg_entry_price),
-                        "market_value": float(pos.market_value),
-                        "underlying": sym[:4].rstrip("0123456789"),
-                    })
+                    results.append(
+                        {
+                            "symbol": sym,
+                            "qty": abs(int(float(pos.qty))),
+                            "side": "short" if int(float(pos.qty)) < 0 else "long",
+                            "avg_entry_price": float(pos.avg_entry_price),
+                            "market_value": float(pos.market_value),
+                            "underlying": sym[:4].rstrip("0123456789"),
+                        }
+                    )
             return results
         except Exception as e:
             logger.error("Failed to fetch option positions", error=str(e))
@@ -432,47 +481,48 @@ class AlpacaBroker:
     def sync_portfolio(self) -> Portfolio:
         """
         Sync portfolio state from Alpaca
-        
+
         Returns:
             Portfolio object with current state
         """
         try:
             account = self.get_account()
             positions = self.get_positions()
-            
+
             portfolio = Portfolio(
-                cash=account['cash'],
+                cash=account["cash"],
                 margin_requirement=0.5,  # Default margin requirement
                 margin_used=0.0,  # Calculate if needed
             )
-            
+
             for ticker, pos_data in positions.items():
-                if pos_data['side'] == 'long':
+                if pos_data["side"] == "long":
                     portfolio.positions[ticker] = Position(
-                        long=pos_data['qty'],
+                        long=pos_data["qty"],
                         short=0,
-                        long_cost_basis=pos_data['avg_entry_price'],
+                        long_cost_basis=pos_data["avg_entry_price"],
                         short_cost_basis=0.0,
                         short_margin_used=0.0,
                     )
-                elif pos_data['side'] == 'short':
+                elif pos_data["side"] == "short":
                     portfolio.positions[ticker] = Position(
                         long=0,
-                        short=pos_data['qty'],
+                        short=pos_data["qty"],
                         long_cost_basis=0.0,
-                        short_cost_basis=pos_data['avg_entry_price'],
-                        short_margin_used=pos_data['market_value'] * 0.5,  # Estimate
+                        short_cost_basis=pos_data["avg_entry_price"],
+                        short_margin_used=pos_data["market_value"] * 0.5,  # Estimate
                     )
-            
+
             logger.info(
                 "Portfolio synced from broker",
                 cash=round(portfolio.cash, 2),
                 position_count=len(portfolio.positions),
-                positions={t: {"long": p.long, "short": p.short} for t, p in portfolio.positions.items()},
+                positions={
+                    t: {"long": p.long, "short": p.short} for t, p in portfolio.positions.items()
+                },
             )
             return portfolio
-        
+
         except Exception as e:
             logger.error("Portfolio sync failed", error=str(e))
             raise
-
