@@ -2,14 +2,18 @@ name: Biotech Catalyst Scan
 
 on:
   schedule:
-    # Same as weekly stock scan: Mondays 17:45 UTC
-    - cron: "45 17 * * 1"
+    # Same as weekly stock scan: 16:00 UTC (~9:00 AM Pacific during PDT)
+    - cron: "0 16 * * 1"
   workflow_dispatch:
     inputs:
       tickers:
         description: Optional comma-separated tickers (leave empty to use watchlist / BIOTECH_TICKERS)
         required: false
         default: ""
+      from_watchlist:
+        description: "true to force watchlist mode instead of catalyst-first discovery"
+        required: false
+        default: "false"
       dry_run:
         description: "true to skip Alpaca paper execution (analysis only)"
         required: false
@@ -54,16 +58,19 @@ jobs:
         run: |
           set -e
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            poetry run python biotech_catalyst_scan.py --from-watchlist
+            poetry run python biotech_catalyst_scan.py --discover-candidates
             exit 0
           fi
           T="${{ github.event.inputs.tickers }}"
+          FW="${{ github.event.inputs.from_watchlist }}"
           DRY="${{ github.event.inputs.dry_run }}"
           SF="${{ github.event.inputs.skip_readout_filter }}"
           if [ -n "$T" ]; then
             ARGS=(--tickers "$T")
-          else
+          elif [ "$FW" = "true" ]; then
             ARGS=(--from-watchlist)
+          else
+            ARGS=(--discover-candidates)
           fi
           if [ "$DRY" = "true" ]; then
             ARGS+=(--no-paper-execute)

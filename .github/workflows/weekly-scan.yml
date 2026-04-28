@@ -2,8 +2,8 @@ name: Weekly Scan & Rebalance
 
 on:
   schedule:
-    # 5:45 PM UTC ~ 9:45 AM Pacific (PST); differs by one hour under PDT
-    - cron: '45 17 * * 1'
+    # 16:00 UTC = ~9:00 AM Pacific during PDT
+    - cron: '0 16 * * 1'
   workflow_dispatch: # Manual trigger from GitHub UI
 
 jobs:
