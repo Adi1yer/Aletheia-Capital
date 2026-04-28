@@ -169,6 +169,11 @@ class TradingPipeline:
                     sym, d = fut.result()
                     next_earnings_by_ticker[sym] = d
 
+        learning_context: Dict[str, Any] = {
+            "feedback_refresh_ok": False,
+            "feedback_refresh_error": "",
+            "scorecard_present": False,
+        }
         if scan_cache is not None and run_config.get("refresh_agent_feedback", True):
             try:
                 from src.backtesting.feedback import refresh_feedback_from_cache
@@ -177,8 +182,18 @@ class TradingPipeline:
                     scan_cache,
                     max_run_pairs=int(run_config.get("scorecard_run_pairs", 20)),
                 )
+                learning_context["feedback_refresh_ok"] = True
             except Exception as e:
                 logger.warning("Agent feedback refresh failed", error=str(e))
+                learning_context["feedback_refresh_error"] = str(e)
+        try:
+            from pathlib import Path
+
+            learning_context["scorecard_present"] = bool(
+                Path("data/performance/agent_scorecard.json").is_file()
+            )
+        except Exception:
+            learning_context["scorecard_present"] = False
 
         # Intra-week main paper account context (daily snapshots → agent prompts via contextvar)
         intraweek_token = None
@@ -263,6 +278,9 @@ class TradingPipeline:
             )
 
         cc_lot_tickers = getattr(self.portfolio_manager, "_last_cc_lot_tickers", [])
+        decision_diagnostics = (
+            getattr(self.portfolio_manager, "_last_rebalance_diagnostics", {}) or {}
+        )
 
         # 8. Execute trades (if enabled)
         execution_results = None
@@ -446,6 +464,8 @@ class TradingPipeline:
             "execution_results": execution_results,
             "covered_call_results": cc_results,
             "covered_call_diagnostics": cc_diagnostics,
+            "decision_diagnostics": decision_diagnostics,
+            "learning_context": learning_context,
             "csp_results": csp_results,
         }
 

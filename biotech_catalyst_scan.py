@@ -31,6 +31,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 import structlog
 
 from src.biotech.analyzer import analyze_snapshot
+from src.biotech.candidate_discovery import discover_catalyst_candidates
 from src.biotech.calibration import apply_gates
 from src.biotech.dataset import append_run
 from src.biotech.execution import execute_straddle_paper
@@ -50,6 +51,8 @@ logger = structlog.get_logger()
 
 
 def _resolve_tickers(args: argparse.Namespace) -> list[str]:
+    if args.discover_candidates:
+        return []
     if args.from_watchlist:
         tickers = load_biotech_tickers()
         if not tickers:
@@ -71,6 +74,8 @@ def _build_biotech_email(
     grace: int,
     position_lifecycle_by_ticker: Dict[str, str] | None = None,
     week_lifecycle_markdown: str = "",
+    discovery_info: Dict[str, Any] | None = None,
+    fallback_info: Dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     analyzed = [r for r in results if not r.get("skipped")]
     executed = [
@@ -92,6 +97,29 @@ def _build_biotech_email(
     lines.append(
         f"Summary: analyzed={len(analyzed)}, executed={len(executed)}, skipped_no_window={len(skipped)}"
     )
+    d_info = discovery_info or {}
+    if d_info:
+        lines.append(
+            "Discovery: "
+            f"seed={int(d_info.get('seed_count', 0))}, "
+            f"profiled={int(d_info.get('profiled_count', 0))}, "
+            f"candidates={int(d_info.get('candidate_count', 0))}, "
+            f"selected={int(d_info.get('selected_count', 0))}"
+        )
+        lines.append(
+            "Exclusions: "
+            f"non_biotech={int(d_info.get('excluded_non_biotech', 0))}, "
+            f"illiquid={int(d_info.get('excluded_illiquid', 0))}, "
+            f"non_optionable={int(d_info.get('excluded_non_optionable', 0))}, "
+            f"no_readout_window={int(d_info.get('excluded_no_readout_window', 0))}"
+        )
+    f_info = fallback_info or {}
+    if f_info:
+        lines.append(
+            f"Fallback: invoked={bool(f_info.get('invoked'))}, "
+            f"selected={int(f_info.get('selected_count', 0))}, "
+            f"window=today-{int(f_info.get('past_grace_days', 0))}d to today+{int(f_info.get('forward_days', 0))}d"
+        )
     lines.append("")
     lc_map = position_lifecycle_by_ticker or {}
     if week_lifecycle_markdown.strip():
@@ -172,7 +200,7 @@ def _build_biotech_email(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Biotech catalyst scan (isolated from weekly pipeline)")
-    g = p.add_mutually_exclusive_group(required=True)
+    g = p.add_mutually_exclusive_group(required=False)
     g.add_argument(
         "--tickers",
         type=str,
@@ -182,6 +210,11 @@ def main() -> int:
         "--from-watchlist",
         action="store_true",
         help="Use BIOTECH_TICKERS env or config/biotech_watchlist.txt",
+    )
+    g.add_argument(
+        "--discover-candidates",
+        action="store_true",
+        help="Discover catalyst-first biotech candidates from broad market universe (default)",
     )
     p.add_argument(
         "--no-paper-execute",
@@ -211,7 +244,33 @@ def main() -> int:
         action="store_true",
         help="Analyze every ticker even if no trial is in the readout window (not recommended)",
     )
+    p.add_argument(
+        "--max-discovery-universe",
+        type=int,
+        default=320,
+        help="Max broad-market names considered during catalyst-first discovery",
+    )
+    p.add_argument(
+        "--max-discovery-candidates",
+        type=int,
+        default=20,
+        help="Max catalyst-first candidates to analyze after filters",
+    )
+    p.add_argument(
+        "--fallback-forward-days",
+        type=int,
+        default=180,
+        help="Forward readout window for fallback discovery if strict window yields zero",
+    )
+    p.add_argument(
+        "--fallback-past-grace-days",
+        type=int,
+        default=60,
+        help="Past grace days for fallback discovery if strict window yields zero",
+    )
     args = p.parse_args()
+    if not args.tickers and not args.from_watchlist and not args.discover_candidates:
+        args.discover_candidates = True
 
     tickers = _resolve_tickers(args)
     paper_execute = not bool(args.no_paper_execute)
@@ -238,6 +297,35 @@ def main() -> int:
 
     fwd = int(settings.biotech_readout_forward_days)
     grace = int(settings.biotech_readout_past_grace_days)
+    discovery_info: Dict[str, Any] = {}
+    fallback_info: Dict[str, Any] = {}
+    if args.discover_candidates:
+        tickers, discovery_info = discover_catalyst_candidates(
+            forward_days=fwd,
+            past_grace_days=grace,
+            max_universe=int(args.max_discovery_universe),
+            max_candidates=int(args.max_discovery_candidates),
+            broker=broker,
+        )
+        if not tickers:
+            fallback_info = {
+                "invoked": True,
+                "forward_days": int(args.fallback_forward_days),
+                "past_grace_days": int(args.fallback_past_grace_days),
+            }
+            tickers, fb_diag = discover_catalyst_candidates(
+                forward_days=int(args.fallback_forward_days),
+                past_grace_days=int(args.fallback_past_grace_days),
+                max_universe=int(args.max_discovery_universe),
+                max_candidates=int(args.max_discovery_candidates),
+                broker=broker,
+            )
+            fallback_info["selected_count"] = len(tickers)
+            fallback_info["discovery"] = fb_diag
+    if not tickers:
+        logger.warning(
+            "No biotech candidates selected", discovery=discovery_info, fallback=fallback_info
+        )
 
     biotech_intraweek = ""
     week_lc_md = ""
@@ -328,6 +416,8 @@ def main() -> int:
                 grace=grace,
                 position_lifecycle_by_ticker=lc_by_ticker,
                 week_lifecycle_markdown=week_lc_md,
+                discovery_info=discovery_info,
+                fallback_info=fallback_info,
             )
             sent = get_email_notifier().send_email(
                 recipient=recipient,

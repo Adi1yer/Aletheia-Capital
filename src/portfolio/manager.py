@@ -1,6 +1,6 @@
 """Portfolio management agent - makes final trading decisions"""
 
-from typing import Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 from datetime import datetime
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
@@ -41,6 +41,7 @@ VALUE_AGENTS: Set[str] = {
 
 class PortfolioDecision(BaseModel):
     """Final trading decision for a ticker"""
+
     action: Literal["buy", "sell", "short", "cover", "hold"]
     quantity: int = Field(ge=0, description="Number of shares")
     confidence: int = Field(ge=0, le=100)
@@ -49,17 +50,20 @@ class PortfolioDecision(BaseModel):
 
 class PortfolioManagerOutput(BaseModel):
     """Portfolio manager output"""
+
     decisions: Dict[str, PortfolioDecision] = Field(description="Ticker to decision mapping")
 
 
 class PortfolioManager:
     """Makes final trading decisions based on agent signals and risk limits"""
-    
+
     def __init__(self):
         self.risk_manager = RiskManager()
+        self._last_rebalance_diagnostics: Dict[str, Any] = {}
+        self._last_cc_lot_tickers: List[str] = []
         self._last_csp_tickers: List[str] = []
         self._last_csp_scores: Dict[str, int] = {}
-    
+
     def generate_decisions(
         self,
         tickers: List[str],
@@ -75,41 +79,36 @@ class PortfolioManager:
         """
         logger.info("Generating portfolio decisions", ticker_count=len(tickers))
         pending_orders_by_symbol = pending_orders_by_symbol or {}
-        
+
         decisions = {}
-        current_prices = {t: risk_analysis[t]['current_price'] for t in tickers}
-        
+        current_prices = {t: risk_analysis[t]["current_price"] for t in tickers}
+
         for ticker in tickers:
             if ticker not in risk_analysis:
                 decisions[ticker] = PortfolioDecision(
-                    action="hold",
-                    quantity=0,
-                    confidence=0,
-                    reasoning="No risk analysis available"
+                    action="hold", quantity=0, confidence=0, reasoning="No risk analysis available"
                 )
                 continue
-            
+
             # Calculate allowed actions (capped by pending orders)
             allowed_actions = self._calculate_allowed_actions(
-                ticker, portfolio, current_prices, risk_analysis[ticker],
+                ticker,
+                portfolio,
+                current_prices,
+                risk_analysis[ticker],
                 pending_orders=pending_orders_by_symbol.get(ticker),
             )
-            
+
             # Aggregate weighted signals
-            aggregated_signal = self._aggregate_signals(
-                ticker, agent_signals, agent_weights
-            )
-            
+            aggregated_signal = self._aggregate_signals(ticker, agent_signals, agent_weights)
+
             # If only hold is allowed, default to hold
             if set(allowed_actions.keys()) == {"hold"}:
                 decisions[ticker] = PortfolioDecision(
-                    action="hold",
-                    quantity=0,
-                    confidence=0,
-                    reasoning="No valid trade available"
+                    action="hold", quantity=0, confidence=0, reasoning="No valid trade available"
                 )
                 continue
-            
+
             # Generate decision using LLM (pass pending order context when present)
             pending = pending_orders_by_symbol.get(ticker) or {}
             try:
@@ -125,12 +124,9 @@ class PortfolioManager:
             except Exception as e:
                 logger.error("Decision generation failed", ticker=ticker, error=str(e))
                 decisions[ticker] = PortfolioDecision(
-                    action="hold",
-                    quantity=0,
-                    confidence=0,
-                    reasoning=f"Decision error: {str(e)}"
+                    action="hold", quantity=0, confidence=0, reasoning=f"Decision error: {str(e)}"
                 )
-        
+
         logger.info("Portfolio decisions generated", decision_count=len(decisions))
         return decisions
 
@@ -168,8 +164,23 @@ class PortfolioManager:
         pending_orders_by_symbol = pending_orders_by_symbol or {}
         decisions: Dict[str, PortfolioDecision] = {}
         next_earnings_by_ticker = next_earnings_by_ticker or {}
+        diagnostics: Dict[str, Any] = {
+            "ticker_count": len(tickers),
+            "min_buy_confidence": int(min_buy_confidence),
+            "min_sell_confidence": int(min_sell_confidence),
+            "buy_signal_count": 0,
+            "sell_signal_on_held_count": 0,
+            "buy_candidates_pre_rank": 0,
+            "buy_candidates_post_rank": 0,
+            "cc_scored_count": 0,
+            "cc_passed_threshold_count": 0,
+            "buy_blocked_by_risk_or_sizing_count": 0,
+            "buy_blockers": {},
+        }
 
-        current_prices = {t: (risk_analysis.get(t) or {}).get("current_price", 0.0) for t in tickers}
+        current_prices = {
+            t: (risk_analysis.get(t) or {}).get("current_price", 0.0) for t in tickers
+        }
 
         def _earnings_blocks_buy(t: str) -> bool:
             if earnings_blackout_days <= 0:
@@ -197,6 +208,13 @@ class PortfolioManager:
             agg = aggregated_by_ticker[ticker]
             if agg["signal"] == "bullish" and agg["confidence"] >= min_buy_confidence:
                 buy_scores_preview[ticker] = int(agg["confidence"])
+                diagnostics["buy_signal_count"] += 1
+            if (
+                agg["signal"] == "bearish"
+                and agg["confidence"] >= min_sell_confidence
+                and portfolio.get_position(ticker).long > 0
+            ):
+                diagnostics["sell_signal_on_held_count"] += 1
 
         max_opp_score = max(buy_scores_preview.values()) if buy_scores_preview else 0
 
@@ -213,7 +231,11 @@ class PortfolioManager:
             pending = pending_orders_by_symbol.get(ticker) or {}
             pending_sell = int(pending.get("sell_qty", 0) or 0)
 
-            if position.long > 0 and aggregated["signal"] == "bearish" and aggregated["confidence"] >= min_sell_confidence:
+            if (
+                position.long > 0
+                and aggregated["signal"] == "bearish"
+                and aggregated["confidence"] >= min_sell_confidence
+            ):
                 qty = max(0, int(position.long) - pending_sell)
                 if qty > 0:
                     sell_quantities[ticker] = qty
@@ -258,18 +280,22 @@ class PortfolioManager:
                 buy_candidates.append((ticker, int(aggregated["confidence"])))
                 slotted = True
             if not slotted and enable_covered_calls:
+                diagnostics["cc_scored_count"] += 1
                 cc_score = self._score_covered_call(ticker, agent_signals, agent_weights)
                 if cc_score >= min_cc_score:
                     cc_candidates.append((ticker, int(cc_score)))
+                    diagnostics["cc_passed_threshold_count"] += 1
                     slotted = True
             if not slotted and enable_cash_secured_puts:
                 csp_score = self._score_cash_secured_put(ticker, agent_signals, agent_weights)
                 if csp_score >= min_csp_score:
                     csp_candidates.append((ticker, int(csp_score)))
 
+        diagnostics["buy_candidates_pre_rank"] = len(buy_candidates)
         buy_candidates.sort(key=lambda x: x[1], reverse=True)
         buy_candidates = buy_candidates[: max(0, int(max_buy_tickers))]
         buy_candidate_set = {t for t, _ in buy_candidates}
+        diagnostics["buy_candidates_post_rank"] = len(buy_candidates)
 
         # Build unified ranked list: (ticker, score, type)
         unified: List[Tuple[str, int, str]] = []
@@ -297,7 +323,9 @@ class PortfolioManager:
             risk = risk_analysis.get(ticker)
             price = float(current_prices.get(ticker) or 0.0)
             if not risk or price <= 0:
-                decisions[ticker] = PortfolioDecision(action="hold", quantity=0, confidence=0, reasoning="No risk/price data")
+                decisions[ticker] = PortfolioDecision(
+                    action="hold", quantity=0, confidence=0, reasoning="No risk/price data"
+                )
                 continue
 
             aggregated = aggregated_by_ticker[ticker]
@@ -340,9 +368,13 @@ class PortfolioManager:
                 continue
 
             hold_reason = self._explain_hold(
-                ticker, aggregated, position,
-                min_buy_confidence, min_sell_confidence,
-                buy_candidate_set, budget,
+                ticker,
+                aggregated,
+                position,
+                min_buy_confidence,
+                min_sell_confidence,
+                buy_candidate_set,
+                budget,
             )
             decisions[ticker] = PortfolioDecision(
                 action="hold",
@@ -356,6 +388,7 @@ class PortfolioManager:
         csp_lot_tickers: List[str] = []
         csp_scores: Dict[str, int] = {}
         if budget > 0 and unified:
+            blocker_counts: Dict[str, int] = {}
             for ticker, score, opp_type in unified:
                 if budget <= 0:
                     break
@@ -381,6 +414,8 @@ class PortfolioManager:
                 max_by_cash = int(budget // price)
                 max_buy = max(0, min(max_by_risk, max_by_cash) - pending_buy)
                 if max_buy <= 0:
+                    blocker = "risk_cap" if max_by_risk <= 0 else "cash_or_pending"
+                    blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
                     continue
 
                 if opp_type == "cc":
@@ -405,6 +440,9 @@ class PortfolioManager:
                     alloc = budget * (float(score) / float(total_buy_score))
                     qty = min(max_buy, int(alloc // price))
                     if qty <= 0:
+                        blocker_counts["allocation_rounding"] = (
+                            blocker_counts.get("allocation_rounding", 0) + 1
+                        )
                         continue
                     decisions[ticker] = PortfolioDecision(
                         action="buy",
@@ -413,6 +451,8 @@ class PortfolioManager:
                         reasoning=f"Rebalance: bullish {score}",
                     )
                     budget -= qty * price
+            diagnostics["buy_blocked_by_risk_or_sizing_count"] = int(sum(blocker_counts.values()))
+            diagnostics["buy_blockers"] = blocker_counts
 
         if cc_lot_tickers:
             logger.info("CC lot builds selected", tickers=cc_lot_tickers)
@@ -422,6 +462,7 @@ class PortfolioManager:
         self._last_cc_lot_tickers = cc_lot_tickers
         self._last_csp_tickers = csp_lot_tickers
         self._last_csp_scores = csp_scores
+        self._last_rebalance_diagnostics = diagnostics
         return decisions
 
     @staticmethod
@@ -552,7 +593,7 @@ class PortfolioManager:
         """Calculate allowed actions and max quantities. Caps by open orders so we don't over-order."""
         position = portfolio.get_position(ticker)
         price = current_prices[ticker]
-        remaining_limit = risk_data['remaining_position_limit']
+        remaining_limit = risk_data["remaining_position_limit"]
         pending = pending_orders or {}
         pending_buy = int(pending.get("buy_qty", 0) or 0)
         pending_sell = int(pending.get("sell_qty", 0) or 0)
@@ -577,7 +618,7 @@ class PortfolioManager:
             allowed["cover"] = position.short
 
         return allowed
-    
+
     def _aggregate_signals(
         self,
         ticker: str,
@@ -589,37 +630,45 @@ class PortfolioManager:
         bearish_score = 0.0
         total_weight = 0.0
         signal_details = []
-        
+
         for agent_key, ticker_signals in agent_signals.items():
             if ticker not in ticker_signals:
                 continue
-            
+
             signal = ticker_signals[ticker]
             weight = agent_weights.get(agent_key, 1.0)
-            sig_signal = signal.signal if hasattr(signal, "signal") else signal.get("signal", "neutral")
-            sig_conf = signal.confidence if hasattr(signal, "confidence") else signal.get("confidence", 0)
-            sig_reasoning = (signal.reasoning if hasattr(signal, "reasoning") else signal.get("reasoning", ""))
+            sig_signal = (
+                signal.signal if hasattr(signal, "signal") else signal.get("signal", "neutral")
+            )
+            sig_conf = (
+                signal.confidence if hasattr(signal, "confidence") else signal.get("confidence", 0)
+            )
+            sig_reasoning = (
+                signal.reasoning if hasattr(signal, "reasoning") else signal.get("reasoning", "")
+            )
             weighted_confidence = sig_conf * weight
-            
+
             if sig_signal == "bullish":
                 bullish_score += weighted_confidence
             elif sig_signal == "bearish":
                 bearish_score += weighted_confidence
-            
+
             total_weight += weight
-            signal_details.append({
-                'agent': agent_key,
-                'signal': sig_signal,
-                'confidence': sig_conf,
-                'weight': weight,
-                'reasoning': str(sig_reasoning)[:100],
-            })
-        
+            signal_details.append(
+                {
+                    "agent": agent_key,
+                    "signal": sig_signal,
+                    "confidence": sig_conf,
+                    "weight": weight,
+                    "reasoning": str(sig_reasoning)[:100],
+                }
+            )
+
         # Normalize scores
         if total_weight > 0:
             bullish_score /= total_weight
             bearish_score /= total_weight
-        
+
         # Determine overall signal (5-point threshold to reduce neutral dead zone)
         if bullish_score > bearish_score + 5:
             overall_signal = "bullish"
@@ -630,15 +679,15 @@ class PortfolioManager:
         else:
             overall_signal = "neutral"
             overall_confidence = int(abs(bullish_score - bearish_score))
-        
+
         return {
-            'signal': overall_signal,
-            'confidence': overall_confidence,
-            'bullish_score': bullish_score,
-            'bearish_score': bearish_score,
-            'details': signal_details,
+            "signal": overall_signal,
+            "confidence": overall_confidence,
+            "bullish_score": bullish_score,
+            "bearish_score": bearish_score,
+            "details": signal_details,
         }
-    
+
     def _generate_decision_with_llm(
         self,
         ticker: str,
@@ -653,8 +702,11 @@ class PortfolioManager:
         if pending_buy_qty or pending_sell_qty:
             pending_note = f"\nOpen orders (not yet filled): {pending_buy_qty} shares on buy, {pending_sell_qty} on sell. Allowed quantities below already account for these.\n"
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a portfolio manager making trading decisions.
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """You are a portfolio manager making trading decisions.
 
 Inputs:
 - Aggregated agent signals (weighted by agent performance)
@@ -662,8 +714,12 @@ Inputs:
 
 Your task: Pick one allowed action per ticker and a quantity ≤ the max. Keep reasoning concise (max 100 chars).
 
-""" + JSON_ONLY_INSTRUCTION),
-            ("human", """Ticker: {ticker}
+"""
+                    + JSON_ONLY_INSTRUCTION,
+                ),
+                (
+                    "human",
+                    """Ticker: {ticker}
 Current Price: ${price:.2f}
 {pending_note}
 Aggregated Signal:
@@ -673,10 +729,14 @@ Allowed Actions (with max quantities):
 {allowed}
 
 Return exactly one JSON object with keys: action, quantity, confidence, reasoning. No other text.
-Example: """ + PM_JSON_EXAMPLE + """
-""")
-        ])
-        
+Example: """
+                    + PM_JSON_EXAMPLE
+                    + """
+""",
+                ),
+            ]
+        )
+
         formatted_prompt = prompt.format(
             ticker=ticker,
             price=current_price,
@@ -695,7 +755,7 @@ Example: """ + PM_JSON_EXAMPLE + """
             prompt=HumanMessage(content=formatted_prompt),
             output_model=PortfolioDecision,
         )
-        
+
         # Safely extract fields (DeepSeek sometimes returns quoted keys that raise KeyError)
         try:
             action = response.action
@@ -711,5 +771,6 @@ Example: """ + PM_JSON_EXAMPLE + """
             )
         if action in allowed_actions:
             quantity = min(quantity, allowed_actions[action])
-        return PortfolioDecision(action=action, quantity=quantity, confidence=confidence, reasoning=reasoning)
-
+        return PortfolioDecision(
+            action=action, quantity=quantity, confidence=confidence, reasoning=reasoning
+        )

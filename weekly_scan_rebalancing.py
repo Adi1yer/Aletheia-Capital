@@ -20,6 +20,7 @@ from pathlib import Path
 
 # Load .env from project root so Alpaca keys are found regardless of cwd.
 from dotenv import load_dotenv
+
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import structlog
@@ -55,7 +56,9 @@ def main() -> None:
     )
 
     # Rebalance knobs
-    p.add_argument("--min-buy-confidence", type=int, default=50, help="Min confidence to buy (default 50)")
+    p.add_argument(
+        "--min-buy-confidence", type=int, default=50, help="Min confidence to buy (default 50)"
+    )
     p.add_argument(
         "--min-sell-confidence",
         type=int,
@@ -140,6 +143,13 @@ def main() -> None:
         default=25,
         help="Min gap vs best buy score to trigger conviction sell",
     )
+    p.add_argument(
+        "--profile",
+        type=str,
+        choices=("balanced", "conservative", "aggressive"),
+        default="balanced",
+        help="Strategy profile preset for thresholds/rebalance knobs (default balanced).",
+    )
     args = p.parse_args()
 
     # If you just run `python weekly_scan_rebalancing.py` with no arguments,
@@ -148,9 +158,26 @@ def main() -> None:
         args.max_stocks = 500
         args.execute = True
         args.enable_covered_calls = True
+        args.profile = "balanced"
         default_recipient = (settings.recipient_email or "").strip()
         if default_recipient:
             args.email_to = default_recipient
+
+    # Balanced profile: modestly more active than conservative, with guarded conviction rotation.
+    if args.profile == "balanced":
+        args.min_buy_confidence = min(int(args.min_buy_confidence), 49)
+        args.enable_conviction_rebalance = True
+        args.conviction_score_gap = max(int(args.conviction_score_gap), 30)
+        args.min_sell_confidence = max(int(args.min_sell_confidence), 60)
+    elif args.profile == "conservative":
+        args.min_buy_confidence = max(int(args.min_buy_confidence), 52)
+        args.enable_conviction_rebalance = False
+        args.min_sell_confidence = max(int(args.min_sell_confidence), 62)
+    elif args.profile == "aggressive":
+        args.min_buy_confidence = min(int(args.min_buy_confidence), 47)
+        args.enable_conviction_rebalance = True
+        args.conviction_score_gap = min(int(args.conviction_score_gap), 25)
+        args.min_sell_confidence = min(int(args.min_sell_confidence), 58)
 
     if args.max_stocks <= 0:
         raise SystemExit("--max-stocks must be > 0")
@@ -180,6 +207,7 @@ def main() -> None:
 
     # ── Verify Alpaca connection before doing any real work. ──
     from src.broker.alpaca import AlpacaBroker
+
     try:
         broker = AlpacaBroker()
         acct = broker.get_account()
@@ -236,6 +264,7 @@ def main() -> None:
         "min_csp_score": int(args.min_csp_score),
         "enable_conviction_rebalance": bool(args.enable_conviction_rebalance),
         "conviction_score_gap": int(args.conviction_score_gap),
+        "profile": str(args.profile),
     }
 
     pipeline = TradingPipeline(broker=broker)

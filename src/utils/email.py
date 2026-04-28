@@ -289,6 +289,19 @@ class EmailNotifier:
             for ak, acc, cw, obs in lb:
                 text.append(f"  {ak}: acc {acc:.0%}, cw-ret {cw:.2f}, n={obs}")
             text.append("")
+        learning = results.get("learning_context") or {}
+        if learning:
+            text.append("LEARNING CONTEXT")
+            text.append("-" * 40)
+            text.append(
+                f"  Feedback refresh: {'ok' if learning.get('feedback_refresh_ok') else 'failed'}"
+            )
+            text.append(
+                f"  Scorecard present: {'yes' if learning.get('scorecard_present') else 'no'}"
+            )
+            if learning.get("feedback_refresh_error"):
+                text.append(f"  Refresh error: {str(learning.get('feedback_refresh_error'))[:200]}")
+            text.append("")
 
         # Open and recent orders (if any)
         open_orders = results.get("open_orders") or []
@@ -344,6 +357,30 @@ class EmailNotifier:
                     if reasoning:
                         text.append(f"    Reason: {reasoning[:200]}")
                 text.append("")
+        dd = results.get("decision_diagnostics") or {}
+        if dd:
+            text.append("DECISION DIAGNOSTICS")
+            text.append("-" * 80)
+            text.append(
+                f"Signals: bullish>=buy={int(dd.get('buy_signal_count', 0))}, "
+                f"bearish>=sell on held={int(dd.get('sell_signal_on_held_count', 0))}"
+            )
+            text.append(
+                f"Buy candidates: pre-rank={int(dd.get('buy_candidates_pre_rank', 0))}, "
+                f"post-rank={int(dd.get('buy_candidates_post_rank', 0))}"
+            )
+            text.append(
+                f"CC candidates: scored={int(dd.get('cc_scored_count', 0))}, "
+                f"passed_threshold={int(dd.get('cc_passed_threshold_count', 0))}"
+            )
+            text.append(
+                f"Sizing/risk blocked buys: {int(dd.get('buy_blocked_by_risk_or_sizing_count', 0))}"
+            )
+            blockers = dd.get("buy_blockers") or {}
+            if isinstance(blockers, dict) and blockers:
+                pairs = [f"{k}={int(v)}" for k, v in blockers.items()]
+                text.append("Top blockers: " + ", ".join(pairs[:6]))
+            text.append("")
 
             if sells:
                 text.append("SELL ORDERS")
@@ -606,6 +643,18 @@ class EmailNotifier:
                 <tr><td>{html_escape(ak)}</td><td>{acc:.0%}</td><td>{cw:.2f}</td><td>{obs}</td></tr>
                 """
             html += "</table></div>"
+        learning = results.get("learning_context") or {}
+        if learning:
+            html += f"""
+            <div class="section">
+                <h2>Learning context</h2>
+                <p>
+                    <strong>Feedback refresh:</strong> {"ok" if learning.get("feedback_refresh_ok") else "failed"}<br/>
+                    <strong>Scorecard present:</strong> {"yes" if learning.get("scorecard_present") else "no"}
+                    {f'<br/><strong>Refresh error:</strong> {html_escape(str(learning.get("feedback_refresh_error"))[:200])}' if learning.get("feedback_refresh_error") else ""}
+                </p>
+            </div>
+            """
 
         # Decisions -- buys and sells first, then top holds
         decisions = results.get("decisions", {})
@@ -685,6 +734,27 @@ class EmailNotifier:
                     </tr>
                     """
                 html += """
+                    </table>
+                </div>
+                """
+            dd = results.get("decision_diagnostics") or {}
+            if dd:
+                blockers = dd.get("buy_blockers") or {}
+                blocker_text = ""
+                if isinstance(blockers, dict) and blockers:
+                    pairs = [f"{k}={int(v)}" for k, v in blockers.items()]
+                    blocker_text = ", ".join(pairs[:6])
+                html += f"""
+                <div class="section">
+                    <h2>Decision Diagnostics</h2>
+                    <table>
+                        <tr><th>Metric</th><th>Value</th></tr>
+                        <tr><td>Signals (bullish &gt;= buy)</td><td>{int(dd.get("buy_signal_count", 0))}</td></tr>
+                        <tr><td>Signals (bearish &gt;= sell on held)</td><td>{int(dd.get("sell_signal_on_held_count", 0))}</td></tr>
+                        <tr><td>Buy candidates pre/post rank</td><td>{int(dd.get("buy_candidates_pre_rank", 0))} / {int(dd.get("buy_candidates_post_rank", 0))}</td></tr>
+                        <tr><td>CC scored / passed</td><td>{int(dd.get("cc_scored_count", 0))} / {int(dd.get("cc_passed_threshold_count", 0))}</td></tr>
+                        <tr><td>Blocked by risk/sizing</td><td>{int(dd.get("buy_blocked_by_risk_or_sizing_count", 0))}</td></tr>
+                        <tr><td>Top blockers</td><td>{html_escape(blocker_text) if blocker_text else "-"}</td></tr>
                     </table>
                 </div>
                 """
