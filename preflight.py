@@ -13,7 +13,6 @@ import structlog
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
-from src.broker.alpaca import AlpacaBroker
 from src.config.settings import settings
 from src.llm.models import get_llm_for_agent
 
@@ -22,10 +21,29 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 logger = structlog.get_logger()
 
 
+def _alpaca_account_request(api_key: str, secret_key: str) -> dict:
+    resp = requests.get(
+        "https://paper-api.alpaca.markets/v2/account",
+        headers={
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": secret_key,
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, dict) or "equity" not in payload:
+        raise RuntimeError("Unexpected Alpaca account payload")
+    return payload
+
+
 def _check_main_alpaca() -> None:
     logger.info("MAIN CHECK: Alpaca account lookup")
-    broker = AlpacaBroker()
-    account = broker.get_account()
+    key = (settings.alpaca_api_key or "").strip()
+    sec = (settings.alpaca_secret_key or "").strip()
+    if not key or not sec:
+        raise RuntimeError("Missing ALPACA_API_KEY and/or ALPACA_SECRET_KEY")
+    account = _alpaca_account_request(key, sec)
     logger.info("MAIN OK", equity=account.get("equity"), cash=account.get("cash"))
 
 
@@ -35,8 +53,7 @@ def _check_biotech_alpaca() -> None:
     sec = (settings.biotech_alpaca_secret_key or "").strip()
     if not key or not sec:
         raise RuntimeError("Missing BIOTECH_ALPACA_API_KEY and/or BIOTECH_ALPACA_SECRET_KEY")
-    broker = AlpacaBroker(api_key=key, secret_key=sec)
-    account = broker.get_account()
+    account = _alpaca_account_request(key, sec)
     logger.info("BIOTECH OK", equity=account.get("equity"), cash=account.get("cash"))
 
 
