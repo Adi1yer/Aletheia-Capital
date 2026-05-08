@@ -22,6 +22,9 @@ logger = structlog.get_logger()
 
 
 def _alpaca_account_request(api_key: str, secret_key: str) -> dict:
+    # Intentionally uses direct REST instead of importing src.broker.alpaca / alpaca.trading.*
+    # because those SDK import paths segfault (exit 139) in some local environments.
+    # Keep preflight read-only and runtime-stable by checking account connectivity via HTTPS.
     resp = requests.get(
         "https://paper-api.alpaca.markets/v2/account",
         headers={
