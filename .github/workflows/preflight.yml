@@ -1,15 +1,12 @@
-name: Daily Position Health Check
+name: Preflight Connectivity Checks
 
 on:
-  schedule:
-    # 16:00 UTC = ~9:00 AM Pacific during PDT
-    - cron: "0 16 * * 1-5"
   workflow_dispatch:
 
 jobs:
-  health:
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v5
@@ -26,10 +23,17 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
-      - name: Daily snapshots (main + biotech paper)
+      - name: Run preflight checks
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
           BIOTECH_ALPACA_API_KEY: ${{ secrets.BIOTECH_ALPACA_API_KEY }}
           BIOTECH_ALPACA_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
-        run: poetry run python daily_health_check.py --account both
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        run: poetry run python preflight.py

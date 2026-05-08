@@ -221,16 +221,24 @@ poetry run python weekly_scan_rebalancing.py \
 poetry run python weekly_scan_rebalancing.py --max-stocks 100
 ```
 
-### Automated Weekly Runs
+### Automated Workflows
 
-The system runs automatically via GitHub Actions every Monday at 9:00 AM PST. To set up:
+GitHub Actions schedules are defined in UTC:
+
+- Weekly scan + rebalance: `0 16 * * 1` (Monday)
+- Biotech catalyst scan: `0 16 * * 1` (Monday)
+- Daily position health check: `0 16 * * 1-5` (Monday-Friday)
+
+At `16:00 UTC`, runs are around `9:00 AM` Pacific during daylight time and around `8:00 AM` Pacific during standard time.
+
+To set up:
 
 1. Push code to your GitHub repo
 2. Add secrets in **Settings → Secrets and variables → Actions**:
-   - `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL`
-   - `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`
-   - `SMTP_SERVER`, `SMTP_PORT`, `SENDER_EMAIL`, `SENDER_PASSWORD`, `RECIPIENT_EMAIL`
-3. The workflow triggers automatically, or manually via **Actions → Run workflow**
+   - Weekly scan + rebalance: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL`, `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`, `SMTP_SERVER`, `SMTP_PORT`, `SENDER_EMAIL`, `SENDER_PASSWORD`, `RECIPIENT_EMAIL`
+   - Biotech catalyst scan: `BIOTECH_ALPACA_API_KEY`, `BIOTECH_ALPACA_SECRET_KEY`, `DEEPSEEK_API_KEY`, `SMTP_SERVER`, `SMTP_PORT`, `SENDER_EMAIL`, `SENDER_PASSWORD`, `RECIPIENT_EMAIL` (optional: `BIOTECH_RECIPIENT_EMAIL`, `BIOTECH_TICKERS`)
+   - Daily position health check: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `BIOTECH_ALPACA_API_KEY`, `BIOTECH_ALPACA_SECRET_KEY`
+3. Workflows trigger automatically on schedule, or manually via **Actions → Run workflow**
 
 ## Weekly Email Report
 
