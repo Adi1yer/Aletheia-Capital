@@ -25,7 +25,13 @@ def _base_results():
             "buy_blocked_by_risk_or_sizing_count": 2,
             "buy_blockers": {"risk_cap": 1, "cash_or_pending": 1},
         },
-        "learning_context": {"feedback_refresh_ok": True, "scorecard_present": True},
+        "learning_context": {
+            "feedback_refresh_ok": True,
+            "scorecard_present": False,
+            "scan_cache_run_count": 1,
+            "scorecard_agent_count": 0,
+            "scorecard_skip_reason": "need_at_least_2_cached_runs",
+        },
     }
 
 
@@ -35,6 +41,8 @@ def test_text_email_contains_diagnostics_blocks():
     assert "DECISION DIAGNOSTICS" in text
     assert "Signals: bullish>=buy=3" in text
     assert "LEARNING CONTEXT" in text
+    assert "Scan cache runs" in text
+    assert "Scorecard note" in text
 
 
 def test_html_email_contains_diagnostics_blocks():
@@ -42,3 +50,5 @@ def test_html_email_contains_diagnostics_blocks():
     html = notifier._format_trading_results_html(_base_results(), past_perf=None, outlook=None)
     assert "Decision Diagnostics" in html
     assert "Learning context" in html
+    assert "Scan cache runs" in html
+    assert "Scorecard note" in html

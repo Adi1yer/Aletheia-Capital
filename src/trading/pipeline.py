@@ -173,25 +173,40 @@ class TradingPipeline:
             "feedback_refresh_ok": False,
             "feedback_refresh_error": "",
             "scorecard_present": False,
+            "scan_cache_run_count": 0,
+            "scorecard_agent_count": 0,
+            "scorecard_pairs_used": 0,
+            "scorecard_skip_reason": "",
+            "wrote_scorecard_file": False,
+            "wrote_agent_feedback": False,
         }
         if scan_cache is not None and run_config.get("refresh_agent_feedback", True):
             try:
                 from src.backtesting.feedback import refresh_feedback_from_cache
 
-                refresh_feedback_from_cache(
+                fb_meta = refresh_feedback_from_cache(
                     scan_cache,
                     max_run_pairs=int(run_config.get("scorecard_run_pairs", 20)),
                 )
                 learning_context["feedback_refresh_ok"] = True
+                for k in (
+                    "scan_cache_run_count",
+                    "scorecard_agent_count",
+                    "scorecard_pairs_used",
+                    "scorecard_skip_reason",
+                    "wrote_scorecard_file",
+                    "wrote_agent_feedback",
+                ):
+                    if isinstance(fb_meta, dict) and k in fb_meta:
+                        learning_context[k] = fb_meta[k]
             except Exception as e:
                 logger.warning("Agent feedback refresh failed", error=str(e))
                 learning_context["feedback_refresh_error"] = str(e)
         try:
-            from pathlib import Path
+            from src.backtesting.agent_evaluator import load_scorecard
 
-            learning_context["scorecard_present"] = bool(
-                Path("data/performance/agent_scorecard.json").is_file()
-            )
+            sc_agents = (load_scorecard() or {}).get("agents") or {}
+            learning_context["scorecard_present"] = len(sc_agents) > 0
         except Exception:
             learning_context["scorecard_present"] = False
 
@@ -266,6 +281,8 @@ class TradingPipeline:
                 min_hold_confidence_for_rotation=int(
                     run_config.get("min_hold_confidence_for_rotation", 45)
                 ),
+                enable_cash_rotation=bool(run_config.get("enable_cash_rotation", False)),
+                cash_rotation_min_edge=int(run_config.get("cash_rotation_min_edge", 5)),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(

@@ -299,6 +299,14 @@ class EmailNotifier:
             text.append(
                 f"  Scorecard present: {'yes' if learning.get('scorecard_present') else 'no'}"
             )
+            if learning.get("scan_cache_run_count") is not None:
+                text.append(
+                    f"  Scan cache runs (loaded): {int(learning.get('scan_cache_run_count', 0))}"
+                )
+            if learning.get("scorecard_agent_count") is not None:
+                text.append(f"  Scorecard agents: {int(learning.get('scorecard_agent_count', 0))}")
+            if learning.get("scorecard_skip_reason"):
+                text.append(f"  Scorecard note: {str(learning.get('scorecard_skip_reason'))[:200]}")
             if learning.get("feedback_refresh_error"):
                 text.append(f"  Refresh error: {str(learning.get('feedback_refresh_error'))[:200]}")
             text.append("")
@@ -380,6 +388,12 @@ class EmailNotifier:
             if isinstance(blockers, dict) and blockers:
                 pairs = [f"{k}={int(v)}" for k, v in blockers.items()]
                 text.append("Top blockers: " + ", ".join(pairs[:6]))
+            if int(dd.get("cash_rotation_sell_count", 0) or 0) > 0:
+                text.append(
+                    f"Cash rotation sells: {int(dd.get('cash_rotation_sell_count', 0))} "
+                    f"(skipped edge={int(dd.get('cash_rotation_skipped_edge', 0))}, "
+                    f"skipped risk={int(dd.get('cash_rotation_skipped_risk', 0))})"
+                )
             text.append("")
 
             if sells:
@@ -650,8 +664,11 @@ class EmailNotifier:
                 <h2>Learning context</h2>
                 <p>
                     <strong>Feedback refresh:</strong> {"ok" if learning.get("feedback_refresh_ok") else "failed"}<br/>
-                    <strong>Scorecard present:</strong> {"yes" if learning.get("scorecard_present") else "no"}
-                    {f'<br/><strong>Refresh error:</strong> {html_escape(str(learning.get("feedback_refresh_error"))[:200])}' if learning.get("feedback_refresh_error") else ""}
+                    <strong>Scorecard present:</strong> {"yes" if learning.get("scorecard_present") else "no"}<br/>
+                    <strong>Scan cache runs:</strong> {int(learning.get("scan_cache_run_count", 0) or 0)}<br/>
+                    <strong>Scorecard agents:</strong> {int(learning.get("scorecard_agent_count", 0) or 0)}<br/>
+                    {f'<strong>Scorecard note:</strong> {html_escape(str(learning.get("scorecard_skip_reason"))[:200])}<br/>' if learning.get("scorecard_skip_reason") else ""}
+                    {f'<strong>Refresh error:</strong> {html_escape(str(learning.get("feedback_refresh_error"))[:200])}' if learning.get("feedback_refresh_error") else ""}
                 </p>
             </div>
             """
@@ -755,6 +772,8 @@ class EmailNotifier:
                         <tr><td>CC scored / passed</td><td>{int(dd.get("cc_scored_count", 0))} / {int(dd.get("cc_passed_threshold_count", 0))}</td></tr>
                         <tr><td>Blocked by risk/sizing</td><td>{int(dd.get("buy_blocked_by_risk_or_sizing_count", 0))}</td></tr>
                         <tr><td>Top blockers</td><td>{html_escape(blocker_text) if blocker_text else "-"}</td></tr>
+                        <tr><td>Cash rotation sells</td><td>{int(dd.get("cash_rotation_sell_count", 0))}</td></tr>
+                        <tr><td>Cash rotation skipped (edge / risk)</td><td>{int(dd.get("cash_rotation_skipped_edge", 0))} / {int(dd.get("cash_rotation_skipped_risk", 0))}</td></tr>
                     </table>
                 </div>
                 """

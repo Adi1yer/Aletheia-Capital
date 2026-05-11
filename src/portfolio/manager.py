@@ -151,6 +151,8 @@ class PortfolioManager:
         enable_conviction_rebalance: bool = False,
         conviction_score_gap: int = 25,
         min_hold_confidence_for_rotation: int = 45,
+        enable_cash_rotation: bool = False,
+        cash_rotation_min_edge: int = 5,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -176,7 +178,11 @@ class PortfolioManager:
             "cc_passed_threshold_count": 0,
             "buy_blocked_by_risk_or_sizing_count": 0,
             "buy_blockers": {},
+            "cash_rotation_sell_count": 0,
+            "cash_rotation_skipped_edge": 0,
+            "cash_rotation_skipped_risk": 0,
         }
+        self._cash_rotation_reasons: Dict[str, str] = {}
 
         current_prices = {
             t: (risk_analysis.get(t) or {}).get("current_price", 0.0) for t in tickers
@@ -297,6 +303,72 @@ class PortfolioManager:
         buy_candidate_set = {t for t, _ in buy_candidates}
         diagnostics["buy_candidates_post_rank"] = len(buy_candidates)
 
+        # 3b) Optional cash rotation: sell weaker held longs (not current buy targets) to fund buys
+        if enable_cash_rotation and buy_candidates:
+            best_buy_score = int(buy_candidates[0][1])
+            buy_keys_rotation = {t for t, _ in buy_candidates}
+            rotation_excluded: Set[str] = set()
+            max_steps = max(len(tickers), 1) + 10
+            for _ in range(max_steps):
+                if self._any_buy_allocatable_for_budget(
+                    buy_candidates,
+                    budget,
+                    current_prices,
+                    risk_analysis,
+                    pending_orders_by_symbol,
+                ):
+                    break
+                weakest: Optional[str] = None
+                weakest_metric = 10**9
+                for t in tickers:
+                    if t in sell_quantities or t in rotation_excluded or t in buy_keys_rotation:
+                        continue
+                    pos = portfolio.get_position(t)
+                    if not pos or pos.long <= 0:
+                        continue
+                    risk = risk_analysis.get(t) or {}
+                    price = float(current_prices.get(t) or 0.0)
+                    if not risk or price <= 0:
+                        continue
+                    agg = aggregated_by_ticker.get(t) or {}
+                    metric = self._hold_bullish_metric(agg)
+                    if metric < weakest_metric:
+                        weakest_metric = metric
+                        weakest = t
+                if weakest is None:
+                    break
+                if best_buy_score < weakest_metric + int(cash_rotation_min_edge):
+                    diagnostics["cash_rotation_skipped_edge"] += 1
+                    break
+                allowed = self._calculate_allowed_actions(
+                    weakest,
+                    portfolio,
+                    {t: float(p) for t, p in current_prices.items() if p},
+                    risk_analysis[weakest],
+                    pending_orders=pending_orders_by_symbol.get(weakest),
+                )
+                if "sell" not in allowed or int(allowed.get("sell", 0) or 0) <= 0:
+                    rotation_excluded.add(weakest)
+                    diagnostics["cash_rotation_skipped_risk"] += 1
+                    continue
+                pos_w = portfolio.get_position(weakest)
+                pend_w = pending_orders_by_symbol.get(weakest) or {}
+                pending_sell_w = int(pend_w.get("sell_qty", 0) or 0)
+                qty_w = max(0, int(pos_w.long) - pending_sell_w)
+                if qty_w <= 0:
+                    rotation_excluded.add(weakest)
+                    diagnostics["cash_rotation_skipped_risk"] += 1
+                    continue
+                sell_quantities[weakest] = qty_w
+                px_w = float(current_prices.get(weakest) or 0.0)
+                proceeds += qty_w * px_w
+                budget = max(0.0, float(portfolio.cash) + float(proceeds) - buffer)
+                diagnostics["cash_rotation_sell_count"] += 1
+                self._cash_rotation_reasons[weakest] = (
+                    f"Cash rotation: sell long to fund buy candidates "
+                    f"(held bullish metric {weakest_metric} vs best buy {best_buy_score})"
+                )
+
         # Build unified ranked list: (ticker, score, type)
         unified: List[Tuple[str, int, str]] = []
         for t, s in buy_candidates:
@@ -345,11 +417,13 @@ class PortfolioManager:
                     and aggregated["signal"] == "bearish"
                     and aggregated["confidence"] >= min_sell_confidence
                 )
-                reason = (
-                    f"Rebalance: bearish {aggregated['confidence']}"
-                    if bear_sell
-                    else f"Conviction rotation: weaker hold vs opportunities (conf {aggregated['confidence']})"
-                )
+                reason = self._cash_rotation_reasons.get(ticker)
+                if not reason:
+                    reason = (
+                        f"Rebalance: bearish {aggregated['confidence']}"
+                        if bear_sell
+                        else f"Conviction rotation: weaker hold vs opportunities (conf {aggregated['confidence']})"
+                    )
                 decisions[ticker] = PortfolioDecision(
                     action="sell",
                     quantity=qty,
@@ -387,11 +461,9 @@ class PortfolioManager:
         cc_lot_tickers: List[str] = []
         csp_lot_tickers: List[str] = []
         csp_scores: Dict[str, int] = {}
-        if budget > 0 and unified:
+        if unified:
             blocker_counts: Dict[str, int] = {}
             for ticker, score, opp_type in unified:
-                if budget <= 0:
-                    break
                 risk = risk_analysis.get(ticker) or {}
                 price = float(current_prices.get(ticker) or 0.0)
                 if price <= 0:
@@ -400,6 +472,8 @@ class PortfolioManager:
                 pending_buy = int(pending.get("buy_qty", 0) or 0)
 
                 if opp_type == "csp":
+                    if budget <= 0:
+                        continue
                     strike_approx = price * 0.95
                     collateral = strike_approx * 100.0
                     if collateral <= 0 or budget < collateral * 1.01:
@@ -411,16 +485,20 @@ class PortfolioManager:
 
                 remaining_dollars = float(risk.get("remaining_position_limit") or 0.0)
                 max_by_risk = int(remaining_dollars // price) if remaining_dollars > 0 else 0
-                max_by_cash = int(budget // price)
+                max_by_cash = int(budget // price) if budget > 0 else 0
                 max_buy = max(0, min(max_by_risk, max_by_cash) - pending_buy)
-                if max_buy <= 0:
-                    blocker = "risk_cap" if max_by_risk <= 0 else "cash_or_pending"
-                    blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
-                    continue
 
                 if opp_type == "cc":
                     position = portfolio.get_position(ticker)
                     current_long = position.long if position else 0
+                    if current_long >= 100:
+                        if ticker not in cc_lot_tickers:
+                            cc_lot_tickers.append(ticker)
+                        continue
+                    if budget <= 0 or max_buy <= 0:
+                        blocker = "risk_cap" if max_by_risk <= 0 else "cash_or_pending"
+                        blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
+                        continue
                     needed = max(0, 100 - current_long - pending_buy)
                     if needed <= 0:
                         continue
@@ -436,6 +514,10 @@ class PortfolioManager:
                     cc_lot_tickers.append(ticker)
                     budget -= qty * price
                 else:
+                    if budget <= 0 or max_buy <= 0:
+                        blocker = "risk_cap" if max_by_risk <= 0 else "cash_or_pending"
+                        blocker_counts[blocker] = blocker_counts.get(blocker, 0) + 1
+                        continue
                     total_buy_score = sum(s for _, s, tp in unified if tp == "buy") or 1
                     alloc = budget * (float(score) / float(total_buy_score))
                     qty = min(max_buy, int(alloc // price))
@@ -496,6 +578,36 @@ class PortfolioManager:
         if budget <= 0:
             return f"Bullish {conf}% but no budget remaining for new buys"
         return f"Bullish {conf}% (bull {bull} vs bear {bear}); sizing produced 0 shares"
+
+    @staticmethod
+    def _hold_bullish_metric(aggregated: Dict[str, Any]) -> int:
+        """Comparable bullish strength for held names (matches buy-side bullish confidence when bullish)."""
+        if aggregated.get("signal") == "bullish":
+            return int(aggregated.get("confidence") or 0)
+        return int(min(100.0, float(aggregated.get("bullish_score") or 0.0)))
+
+    @staticmethod
+    def _any_buy_allocatable_for_budget(
+        buy_candidates: List[Tuple[str, int]],
+        budget: float,
+        current_prices: Dict[str, float],
+        risk_analysis: Dict[str, Dict],
+        pending_orders_by_symbol: Dict[str, Dict[str, int]],
+    ) -> bool:
+        for ticker, _score in buy_candidates:
+            risk = risk_analysis.get(ticker) or {}
+            price = float(current_prices.get(ticker) or 0.0)
+            if price <= 0 or not risk:
+                continue
+            remaining_dollars = float(risk.get("remaining_position_limit") or 0.0)
+            max_by_risk = int(remaining_dollars // price) if remaining_dollars > 0 else 0
+            max_by_cash = int(budget // price)
+            pending = pending_orders_by_symbol.get(ticker) or {}
+            pending_buy = int(pending.get("buy_qty", 0) or 0)
+            max_buy = max(0, min(max_by_risk, max_by_cash) - pending_buy)
+            if max_buy >= 1:
+                return True
+        return False
 
     @staticmethod
     def _score_covered_call(

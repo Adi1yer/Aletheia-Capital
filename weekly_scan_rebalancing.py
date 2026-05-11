@@ -144,6 +144,17 @@ def main() -> None:
         help="Min gap vs best buy score to trigger conviction sell",
     )
     p.add_argument(
+        "--enable-cash-rotation",
+        action="store_true",
+        help="When buys are cash-blocked, sell weakest held longs (not buy targets) to fund buys; see --cash-rotation-min-edge.",
+    )
+    p.add_argument(
+        "--cash-rotation-min-edge",
+        type=int,
+        default=5,
+        help="Minimum buy-confidence edge over held bullish metric to allow a rotation sell (default 5).",
+    )
+    p.add_argument(
         "--profile",
         type=str,
         choices=("balanced", "conservative", "aggressive"),
@@ -265,6 +276,8 @@ def main() -> None:
         "enable_conviction_rebalance": bool(args.enable_conviction_rebalance),
         "conviction_score_gap": int(args.conviction_score_gap),
         "profile": str(args.profile),
+        "enable_cash_rotation": bool(args.enable_cash_rotation),
+        "cash_rotation_min_edge": int(args.cash_rotation_min_edge),
     }
 
     pipeline = TradingPipeline(broker=broker)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import structlog
@@ -40,20 +41,47 @@ def build_feedback_payload(scorecard: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def refresh_feedback_from_cache(scan_cache: Any, max_run_pairs: int = 20) -> None:
-    """Regenerate scorecard, per-ticker calibration, and agent_feedback.json for prompt injection."""
+def refresh_feedback_from_cache(scan_cache: Any, max_run_pairs: int = 20) -> Dict[str, Any]:
+    """Regenerate scorecard, per-ticker calibration, and agent_feedback.json for prompt injection.
+
+    Returns metadata for UI/email (scan cache size, whether scorecard was produced, skip reasons).
+    """
+    meta: Dict[str, Any] = {
+        "scan_cache_run_count": 0,
+        "scorecard_pairs_used": 0,
+        "scorecard_agent_count": 0,
+        "wrote_agent_feedback": False,
+        "wrote_scorecard_file": False,
+        "scorecard_skip_reason": "",
+    }
+    runs = scan_cache.list_runs(limit=500)
+    meta["scan_cache_run_count"] = len(runs)
+    if len(runs) < 2:
+        meta["scorecard_skip_reason"] = "need_at_least_2_cached_runs"
+        return meta
+
     sc = evaluate_scan_cache(scan_cache, max_run_pairs=max_run_pairs)
+    meta["scorecard_pairs_used"] = int((sc or {}).get("run_pairs_used") or 0)
+    meta["scorecard_agent_count"] = len((sc or {}).get("agents") or {})
+    meta["wrote_scorecard_file"] = Path("data/performance/agent_scorecard.json").is_file()
+
     try:
         rebuild_ticker_agent_calibration(scan_cache, max_run_pairs=max_run_pairs)
     except Exception as e:
         logger.warning("Ticker-agent calibration rebuild failed", error=str(e))
     if not sc:
-        return
+        if not meta.get("scorecard_skip_reason"):
+            meta["scorecard_skip_reason"] = "evaluate_scan_cache_returned_empty"
+        return meta
+    if meta["scorecard_agent_count"] <= 0 and not meta.get("scorecard_skip_reason"):
+        meta["scorecard_skip_reason"] = "no_agent_metrics_from_run_pairs"
     payload = build_feedback_payload(sc)
     os.makedirs(os.path.dirname(DEFAULT_FEEDBACK_PATH) or ".", exist_ok=True)
     with open(DEFAULT_FEEDBACK_PATH, "w") as f:
         json.dump(payload, f, indent=2)
+    meta["wrote_agent_feedback"] = True
     logger.info("Wrote agent feedback for prompts", path=DEFAULT_FEEDBACK_PATH)
+    return meta
 
 
 def block_for_agent(agent_key: str, path: str = DEFAULT_FEEDBACK_PATH) -> str:
