@@ -3,12 +3,9 @@
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 from datetime import datetime
 from pydantic import BaseModel, Field
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage
 from src.agents.base import AgentSignal
 from src.portfolio.models import Portfolio, Position
 from src.risk.manager import RiskManager
-from src.llm.models import get_llm_for_agent
 from src.llm.utils import call_llm_with_retry
 from src.agents.prompt_helpers import JSON_ONLY_INSTRUCTION, PM_JSON_EXAMPLE
 import structlog
@@ -810,6 +807,11 @@ class PortfolioManager:
         pending_sell_qty: int = 0,
     ) -> PortfolioDecision:
         """Generate decision using LLM. Pending quantities are open orders not yet filled."""
+        from langchain_core.messages import HumanMessage
+        from langchain_core.prompts import ChatPromptTemplate
+
+        from src.llm.models import get_llm_for_agent
+
         pending_note = ""
         if pending_buy_qty or pending_sell_qty:
             pending_note = f"\nOpen orders (not yet filled): {pending_buy_qty} shares on buy, {pending_sell_qty} on sell. Allowed quantities below already account for these.\n"

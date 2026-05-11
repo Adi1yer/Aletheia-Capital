@@ -12,7 +12,6 @@ from src.agents.base import AgentSignal
 from src.risk.manager import RiskManager
 from src.portfolio.manager import PortfolioManager
 from src.portfolio.models import Portfolio
-from src.data.providers.aggregator import get_data_provider
 from src.performance.tracker import PerformanceTracker
 from src.performance.cycle_tracker import CyclePerformanceTracker
 
@@ -39,6 +38,12 @@ def get_alpaca_broker():
 logger = structlog.get_logger()
 
 
+def _get_pipeline_data_provider():
+    from src.data.providers.aggregator import get_data_provider
+
+    return get_data_provider()
+
+
 class TradingPipeline:
     """Main trading pipeline for weekly execution"""
 
@@ -58,7 +63,7 @@ class TradingPipeline:
         self.portfolio_manager = PortfolioManager()
         self._broker_class = get_alpaca_broker()
         self.broker = broker
-        self.data_provider = get_data_provider()
+        self._data_provider = None
         self.performance_tracker = PerformanceTracker()
         self.cycle_tracker = CyclePerformanceTracker()
         self.parallel_agents = parallel_agents
@@ -68,6 +73,16 @@ class TradingPipeline:
             parallel_agents=parallel_agents,
             max_workers=max_workers,
         )
+
+    @property
+    def data_provider(self):
+        if self._data_provider is None:
+            self._data_provider = _get_pipeline_data_provider()
+        return self._data_provider
+
+    @data_provider.setter
+    def data_provider(self, value):
+        self._data_provider = value
 
     def run_weekly_trading(
         self,

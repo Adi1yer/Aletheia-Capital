@@ -1,6 +1,5 @@
 """Yahoo Finance data provider (free)"""
 
-import yfinance as yf
 from typing import List, Optional
 from datetime import datetime, date
 from src.data.models import Price, FinancialMetrics, LineItem, CompanyNews
@@ -20,6 +19,8 @@ class YahooFinanceProvider(DataProvider):
         end_date: str,
     ) -> List[Price]:
         """Fetch historical price data from Yahoo Finance"""
+        import yfinance as yf
+
         try:
             stock = yf.Ticker(ticker)
             df = stock.history(start=start_date, end=end_date)
@@ -54,6 +55,8 @@ class YahooFinanceProvider(DataProvider):
         limit: int = 10,
     ) -> List[FinancialMetrics]:
         """Fetch financial metrics from Yahoo Finance"""
+        import yfinance as yf
+
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -93,6 +96,8 @@ class YahooFinanceProvider(DataProvider):
         limit: int = 10,
     ) -> List[LineItem]:
         """Fetch financial statement line items from Yahoo Finance"""
+        import yfinance as yf
+
         try:
             stock = yf.Ticker(ticker)
             
@@ -175,6 +180,8 @@ class YahooFinanceProvider(DataProvider):
         limit: int = 1000,
     ) -> List[CompanyNews]:
         """Fetch company news from Yahoo Finance (yfinance)"""
+        import yfinance as yf
+
         try:
             stock = yf.Ticker(ticker)
             raw = getattr(stock, "news", None)
@@ -210,6 +217,8 @@ class YahooFinanceProvider(DataProvider):
 
     def get_next_earnings_date(self, ticker: str) -> Optional[str]:
         """Next reported earnings date as YYYY-MM-DD, or None if unknown."""
+        import yfinance as yf
+
         try:
             stock = yf.Ticker(ticker)
             info = stock.info or {}

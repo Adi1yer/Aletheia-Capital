@@ -4,13 +4,9 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from pydantic import BaseModel
-from src.trading.pipeline import TradingPipeline
-from src.agents.initialize import initialize_agents
-from src.data.providers.aggregator import get_data_provider
 from src.portfolio.models import Portfolio
 from src.performance.tracker import PerformanceTracker
 import structlog
-import pandas as pd
 
 logger = structlog.get_logger()
 
@@ -41,9 +37,21 @@ class BacktestingEngine:
     """
     
     def __init__(self):
-        self.data_provider = get_data_provider()
+        self._data_provider = None
         self.performance_tracker = PerformanceTracker()
         logger.info("Initialized backtesting engine")
+
+    @property
+    def data_provider(self):
+        if self._data_provider is None:
+            from src.data.providers.aggregator import get_data_provider
+
+            self._data_provider = get_data_provider()
+        return self._data_provider
+
+    @data_provider.setter
+    def data_provider(self, value):
+        self._data_provider = value
     
     def run_backtest(
         self,
@@ -97,6 +105,9 @@ class BacktestingEngine:
         current_prices = {}
         
         # Initialize agents
+        from src.agents.initialize import initialize_agents
+        from src.trading.pipeline import TradingPipeline
+
         initialize_agents()
         pipeline = TradingPipeline()
         
@@ -209,6 +220,8 @@ class BacktestingEngine:
         # Calculate Sharpe ratio
         sharpe_ratio = None
         if daily_returns and len(daily_returns) > 1:
+            import pandas as pd
+
             returns_series = pd.Series(daily_returns)
             if returns_series.std() > 0:
                 sharpe_ratio = (returns_series.mean() / returns_series.std()) * (252 ** 0.5)  # Annualized

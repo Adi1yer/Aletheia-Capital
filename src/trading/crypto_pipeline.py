@@ -12,7 +12,6 @@ from src.agents.crypto_analyst import CryptoAnalystAgent
 from src.risk.manager import RiskManager
 from src.portfolio.manager import PortfolioManager
 from src.portfolio.models import Portfolio
-from src.data.providers.aggregator import get_data_provider
 from src.data.providers.crypto import CRYPTO_IDS
 
 logger = structlog.get_logger()
@@ -26,9 +25,21 @@ class CryptoTradingPipeline:
     def __init__(self):
         self.risk_manager = RiskManager()
         self.portfolio_manager = PortfolioManager()
-        self.data_provider = get_data_provider()
+        self._data_provider = None
         self._crypto_registry = None
         logger.info("Initialized crypto trading pipeline")
+
+    @property
+    def data_provider(self):
+        if self._data_provider is None:
+            from src.data.providers.aggregator import get_data_provider
+
+            self._data_provider = get_data_provider()
+        return self._data_provider
+
+    @data_provider.setter
+    def data_provider(self, value):
+        self._data_provider = value
 
     def _get_crypto_registry(self):
         """Get or create registry with only crypto agents."""

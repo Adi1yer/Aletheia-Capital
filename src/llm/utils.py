@@ -1,12 +1,12 @@
 """LLM utility functions"""
 
-import re
-from typing import Optional, TypeVar, Type
-from pydantic import BaseModel
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_openai import ChatOpenAI
+from __future__ import annotations
+
 import json
+import re
+from typing import Optional, Type, TypeVar
+
+from pydantic import BaseModel
 import structlog
 
 logger = structlog.get_logger()
@@ -14,8 +14,10 @@ logger = structlog.get_logger()
 T = TypeVar("T", bound=BaseModel)
 
 
-def _is_deepseek_llm(llm: BaseChatModel) -> bool:
+def _is_deepseek_llm(llm: object) -> bool:
     """Detect whether this LLM is talking to DeepSeek's OpenAI-compatible API."""
+    from langchain_openai import ChatOpenAI
+
     try:
         if isinstance(llm, ChatOpenAI):
             base_url = getattr(llm, "base_url", "") or getattr(llm, "openai_api_base", "")
@@ -199,8 +201,8 @@ def _make_fallback_output(output_model: Type[T], error: str) -> T:
 
 
 def call_llm_with_retry(
-    llm: BaseChatModel,
-    prompt: BaseMessage | list[BaseMessage],
+    llm: object,
+    prompt: object,
     output_model: Type[T],
     max_retries: int = 3,
 ) -> T:
@@ -212,6 +214,8 @@ def call_llm_with_retry(
     - For other providers (Ollama, Groq, etc.), we use LangChain's
       `with_structured_output` helper.
     """
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+
     try:
         use_deepseek_path = _is_deepseek_llm(llm)
     except Exception:

@@ -19,8 +19,8 @@ class TestWarrenBuffettAgent:
         assert agent.investing_style is not None
         assert agent.data_provider is not None
 
-    @patch("src.agents.warren_buffett.call_llm_with_retry")
-    @patch("src.agents.base.get_data_provider")
+    @patch("src.llm.utils.call_llm_with_retry")
+    @patch("src.data.providers.aggregator.get_data_provider")
     def test_analyze_with_data(
         self, mock_get_provider, mock_call_llm, sample_prices, sample_metrics, sample_line_items
     ):
@@ -48,7 +48,7 @@ class TestWarrenBuffettAgent:
         assert isinstance(result.reasoning, str)
         assert len(result.reasoning) > 0
 
-    @patch("src.agents.base.get_data_provider")
+    @patch("src.data.providers.aggregator.get_data_provider")
     def test_analyze_without_data(self, mock_get_provider):
         """Test agent handles missing data gracefully"""
         mock_provider = Mock()
@@ -66,8 +66,8 @@ class TestWarrenBuffettAgent:
 
     def test_analyze_multiple_tickers(self, sample_prices, sample_metrics, sample_line_items):
         """Test analyzing multiple tickers"""
-        with patch("src.agents.base.get_data_provider") as mock_get_provider, patch(
-            "src.agents.warren_buffett.call_llm_with_retry"
+        with patch("src.data.providers.aggregator.get_data_provider") as mock_get_provider, patch(
+            "src.llm.utils.call_llm_with_retry"
         ) as mock_call_llm:
             mock_provider = Mock()
             mock_provider.get_prices = Mock(return_value=sample_prices)

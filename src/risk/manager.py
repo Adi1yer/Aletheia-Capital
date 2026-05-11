@@ -1,9 +1,7 @@
 """Risk management agent - calculates position limits based on volatility and correlation"""
 
 from typing import Dict, List
-import numpy as np
-import pandas as pd
-from src.data.providers.aggregator import get_data_provider
+
 from src.portfolio.models import Portfolio
 import structlog
 
@@ -14,7 +12,19 @@ class RiskManager:
     """Manages risk through volatility and correlation-adjusted position limits"""
     
     def __init__(self):
-        self.data_provider = get_data_provider()
+        self._data_provider = None
+
+    @property
+    def data_provider(self):
+        if self._data_provider is None:
+            from src.data.providers.aggregator import get_data_provider
+
+            self._data_provider = get_data_provider()
+        return self._data_provider
+
+    @data_provider.setter
+    def data_provider(self, value):
+        self._data_provider = value
     
     def calculate_position_limits(
         self,
@@ -39,8 +49,11 @@ class RiskManager:
             - volatility_metrics: Volatility statistics
             - correlation_metrics: Correlation with other positions
         """
+        import numpy as np
+        import pandas as pd
+
         logger.info("Calculating position limits", ticker_count=len(tickers))
-        
+
         # Fetch prices for all tickers
         prices_by_ticker: Dict[str, pd.DataFrame] = {}
         current_prices: Dict[str, float] = {}

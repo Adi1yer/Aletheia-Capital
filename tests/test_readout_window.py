@@ -61,3 +61,37 @@ def test_snapshot_has_catalyst():
         )
         is True
     )
+
+
+def test_snapshot_min_phase_filters_phase1():
+    today = date(2025, 6, 1)
+    snap = BiotechSnapshot(
+        ticker="X",
+        as_of="2025-06-01",
+        trials=[
+            TrialSummary(
+                nct_id="a",
+                phase="Phase 1",
+                primary_completion_date="2025-07-15",
+            )
+        ],
+    )
+    assert snapshot_has_readout_catalyst(
+        snap, today=today, forward_days=120, past_grace_days=30, min_phase=2
+    ) is False
+    assert snapshot_has_readout_catalyst(
+        snap, today=today, forward_days=120, past_grace_days=30, min_phase=1
+    ) is True
+
+
+def test_readout_forward_cap_excludes_far_trial():
+    today = date(2025, 6, 1)
+    # Within 120d window from 2025-06-01 but beyond 60d cap.
+    t = TrialSummary(nct_id="NCT1", primary_completion_date="2025-08-15")
+    assert trial_in_readout_window(t, today, forward_days=120, past_grace_days=30) is True
+    assert (
+        trial_in_readout_window(
+            t, today, forward_days=120, past_grace_days=30, forward_days_cap=60
+        )
+        is False
+    )

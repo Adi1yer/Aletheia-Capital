@@ -13,7 +13,7 @@ class TestBacktestingEngine:
     def backtesting_engine(self):
         """Create backtesting engine instance"""
         with patch("src.backtesting.engine.initialize_agents"), patch(
-            "src.backtesting.engine.get_data_provider"
+            "src.data.providers.aggregator.get_data_provider"
         ):
             return BacktestingEngine()
 

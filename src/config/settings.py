@@ -1,11 +1,18 @@
 """Application settings and configuration"""
 
-from pydantic_settings import BaseSettings
 from typing import Optional
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
 
     # Alpaca API (required for trading, optional for testing)
     alpaca_api_key: Optional[str] = None
@@ -42,6 +49,14 @@ class Settings(BaseSettings):
     # Include trials whose primary/completion date falls in [today - grace, today + forward] (catalyst window).
     biotech_readout_forward_days: int = 120
     biotech_readout_past_grace_days: int = 45
+    # Catalyst-first discovery (broad universe): cap mega-names, optional blocklist, phase/readout caps.
+    biotech_discovery_min_market_cap_usd: float = 500_000_000.0  # 0 disables minimum
+    biotech_discovery_max_market_cap_usd: float = 50_000_000_000.0  # 0 or negative disables maximum
+    biotech_discovery_exclude_missing_market_cap: bool = True
+    biotech_discovery_blocklist_path: str = "config/biotech_discovery_blocklist.txt"
+    biotech_discovery_min_phase: int = 0  # 0 = no phase filter; 2 = Phase 2+ trials only
+    # 0 = use full forward_days upper bound; >0 caps to today+min(forward, this)
+    biotech_discovery_readout_max_forward_days: int = 0
 
     # Email Configuration (for notifications)
     smtp_server: Optional[str] = None  # e.g., 'smtp.gmail.com'
@@ -57,11 +72,6 @@ class Settings(BaseSettings):
     trading_frequency: str = "weekly"
     log_level: str = "INFO"
     environment: str = "production"
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
 
 
 # Global settings instance

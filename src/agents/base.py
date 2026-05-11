@@ -3,8 +3,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
-from src.data.providers.aggregator import get_data_provider
-from src.llm.models import get_llm_for_agent
 import structlog
 
 logger = structlog.get_logger()
@@ -46,8 +44,20 @@ class BaseAgent(ABC):
         self.weight = weight
         self.llm_model = llm_model
         self.llm_provider = llm_provider
-        self.data_provider = get_data_provider()
+        self._data_provider = None
         logger.info("Initialized agent", agent=name, weight=weight)
+
+    @property
+    def data_provider(self):
+        if self._data_provider is None:
+            from src.data.providers.aggregator import get_data_provider
+
+            self._data_provider = get_data_provider()
+        return self._data_provider
+
+    @data_provider.setter
+    def data_provider(self, value):
+        self._data_provider = value
     
     @abstractmethod
     def analyze(
@@ -73,6 +83,8 @@ class BaseAgent(ABC):
     
     def get_llm(self):
         """Get LLM instance for this agent"""
+        from src.llm.models import get_llm_for_agent
+
         return get_llm_for_agent(self.llm_model, self.llm_provider)
 
     @staticmethod

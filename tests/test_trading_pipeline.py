@@ -22,7 +22,7 @@ class TestTradingPipeline:
     def trading_pipeline(self, mock_registry):
         """Create trading pipeline with mocked dependencies"""
         with patch("src.trading.pipeline.AgentRegistry") as mock_registry_class, patch(
-            "src.trading.pipeline.get_data_provider"
+            "src.data.providers.aggregator.get_data_provider"
         ) as mock_data_provider, patch(
             "src.trading.pipeline.RiskManager"
         ) as mock_risk_manager, patch(

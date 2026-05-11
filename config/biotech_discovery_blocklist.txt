@@ -1,0 +1,2 @@
+# One ticker per line (uppercase optional). Lines after # are ignored.
+# Example: JNJ

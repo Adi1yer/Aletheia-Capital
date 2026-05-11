@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import List
 
 import structlog
-import yfinance as yf
 
 from src.biotech.clinicaltrials import search_trials_by_term
 from src.biotech.edgar import recent_filings
@@ -16,6 +15,8 @@ logger = structlog.get_logger()
 
 
 def build_snapshot(ticker: str, news_limit: int = 12) -> BiotechSnapshot:
+    import yfinance as yf
+
     t = ticker.upper().strip()
     end = datetime.now().strftime("%Y-%m-%d")
 

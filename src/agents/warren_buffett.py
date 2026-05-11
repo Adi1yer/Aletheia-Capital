@@ -1,10 +1,7 @@
 """Warren Buffett investment agent"""
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage
 from src.agents.base import BaseAgent, AgentSignal
 from src.agents.prompt_helpers import format_insider_for_prompt, JSON_ONLY_INSTRUCTION, AGENT_JSON_EXAMPLE, with_performance_feedback
-from src.llm.utils import call_llm_with_retry
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
 import structlog
@@ -34,6 +31,11 @@ class WarrenBuffettAgent(BaseAgent):
     
     def analyze(self, ticker: str, start_date: str, end_date: str, **kwargs) -> AgentSignal:
         """Analyze using Buffett's principles"""
+        from langchain_core.messages import HumanMessage
+        from langchain_core.prompts import ChatPromptTemplate
+
+        from src.llm.utils import call_llm_with_retry
+
         logger.info("Starting Buffett analysis", ticker=ticker)
         
         # Fetch data

@@ -22,7 +22,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -110,8 +110,18 @@ def _build_biotech_email(
             "Exclusions: "
             f"non_biotech={int(d_info.get('excluded_non_biotech', 0))}, "
             f"illiquid={int(d_info.get('excluded_illiquid', 0))}, "
+            f"cap_too_small={int(d_info.get('excluded_market_cap_too_small', 0))}, "
+            f"cap_too_large={int(d_info.get('excluded_market_cap_too_large', 0))}, "
+            f"missing_cap={int(d_info.get('excluded_missing_market_cap', 0))}, "
+            f"blocklist={int(d_info.get('excluded_blocklist', 0))}, "
             f"non_optionable={int(d_info.get('excluded_non_optionable', 0))}, "
             f"no_readout_window={int(d_info.get('excluded_no_readout_window', 0))}"
+        )
+        rd_cap_disp = d_info.get("discovery_readout_max_forward_days")
+        lines.append(
+            "Discovery readout gates: "
+            f"min_phase={int(d_info.get('discovery_min_phase', 0))}, "
+            f"readout_max_forward_days={rd_cap_disp if rd_cap_disp is not None else 'off'}"
         )
     f_info = fallback_info or {}
     if f_info:
@@ -268,6 +278,35 @@ def main() -> int:
         default=60,
         help="Past grace days for fallback discovery if strict window yields zero",
     )
+    p.add_argument(
+        "--discovery-min-market-cap-usd",
+        type=float,
+        default=None,
+        help="Minimum market cap for discovery (default from BIOTECH_DISCOVERY_MIN_MARKET_CAP_USD; 0 disables)",
+    )
+    p.add_argument(
+        "--discovery-max-market-cap-usd",
+        type=float,
+        default=None,
+        help="Maximum market cap for discovery (default from BIOTECH_DISCOVERY_MAX_MARKET_CAP_USD; 0 disables)",
+    )
+    p.add_argument(
+        "--discovery-allow-missing-market-cap",
+        action="store_true",
+        help="Allow names with unknown Yahoo marketCap through discovery (default: exclude)",
+    )
+    p.add_argument(
+        "--discovery-min-phase",
+        type=int,
+        default=None,
+        help="Minimum trial phase (0=off; default BIOTECH_DISCOVERY_MIN_PHASE)",
+    )
+    p.add_argument(
+        "--discovery-readout-max-forward-days",
+        type=int,
+        default=None,
+        help="Cap forward readout horizon (0=use full forward window; default BIOTECH_DISCOVERY_READOUT_MAX_FORWARD_DAYS)",
+    )
     args = p.parse_args()
     if not args.tickers and not args.from_watchlist and not args.discover_candidates:
         args.discover_candidates = True
@@ -297,6 +336,38 @@ def main() -> int:
 
     fwd = int(settings.biotech_readout_forward_days)
     grace = int(settings.biotech_readout_past_grace_days)
+    scan_min_phase = (
+        int(settings.biotech_discovery_min_phase)
+        if args.discovery_min_phase is None
+        else int(args.discovery_min_phase)
+    )
+    _rd_raw = (
+        int(settings.biotech_discovery_readout_max_forward_days)
+        if args.discovery_readout_max_forward_days is None
+        else int(args.discovery_readout_max_forward_days)
+    )
+    scan_readout_max_forward_days: Optional[int] = _rd_raw if _rd_raw > 0 else None
+
+    discovery_kw: Dict[str, Any] = {}
+    if args.discovery_min_market_cap_usd is not None:
+        discovery_kw["min_market_cap_usd"] = float(args.discovery_min_market_cap_usd)
+    if args.discovery_max_market_cap_usd is not None:
+        discovery_kw["max_market_cap_usd"] = float(args.discovery_max_market_cap_usd)
+    if args.discovery_allow_missing_market_cap:
+        discovery_kw["exclude_missing_market_cap"] = False
+    if args.discovery_min_phase is not None:
+        discovery_kw["min_phase"] = int(args.discovery_min_phase)
+    if args.discovery_readout_max_forward_days is not None:
+        discovery_kw["readout_max_forward_days"] = int(args.discovery_readout_max_forward_days)
+
+    # Phase / readout-horizon caps apply only in catalyst-first discovery, not watchlist/--tickers.
+    if args.discover_candidates:
+        readout_loop_min_phase = scan_min_phase
+        readout_loop_max_forward_days = scan_readout_max_forward_days
+    else:
+        readout_loop_min_phase = 0
+        readout_loop_max_forward_days = None
+
     discovery_info: Dict[str, Any] = {}
     fallback_info: Dict[str, Any] = {}
     if args.discover_candidates:
@@ -306,6 +377,7 @@ def main() -> int:
             max_universe=int(args.max_discovery_universe),
             max_candidates=int(args.max_discovery_candidates),
             broker=broker,
+            **discovery_kw,
         )
         if not tickers:
             fallback_info = {
@@ -319,6 +391,7 @@ def main() -> int:
                 max_universe=int(args.max_discovery_universe),
                 max_candidates=int(args.max_discovery_candidates),
                 broker=broker,
+                **discovery_kw,
             )
             fallback_info["selected_count"] = len(tickers)
             fallback_info["discovery"] = fb_diag
@@ -350,12 +423,16 @@ def main() -> int:
             snap,
             forward_days=fwd,
             past_grace_days=grace,
+            min_phase=readout_loop_min_phase,
+            readout_max_forward_days=readout_loop_max_forward_days,
         ):
             logger.info(
                 "Skipping ticker — no trial in readout window",
                 ticker=t,
                 forward_days=fwd,
                 past_grace_days=grace,
+                min_phase=readout_loop_min_phase,
+                readout_max_forward_days=readout_loop_max_forward_days,
             )
             row = {
                 "ticker": t,

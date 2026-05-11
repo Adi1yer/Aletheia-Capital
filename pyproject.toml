@@ -49,3 +49,11 @@ target-version = ['py39']
 [tool.isort]
 profile = "black"
 
+# Heavy deps (langchain, yfinance, pandas) load lazily in app code so `pytest` stays import-safe in sandboxes.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # urllib3 / LibreSSL noise on some macOS Python builds (class name varies by urllib3 version).
+    "ignore:urllib3 v2 only supports OpenSSL:UserWarning",
+]
+

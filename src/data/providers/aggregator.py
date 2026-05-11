@@ -3,10 +3,7 @@
 from typing import List, Optional, Any, Dict
 from src.data.models import Price, FinancialMetrics, LineItem, InsiderTrade, CompanyNews
 from src.data.providers.base import DataProvider
-from src.data.providers.yahoo import YahooFinanceProvider
-from src.data.providers.finnhub import FinnhubProvider
-from src.data.providers.congressional import CongressionalProvider
-from src.data.providers.crypto import CryptoProvider, CRYPTO_IDS
+from src.data.providers.crypto import CRYPTO_IDS
 from src.data.cache.memory import get_cache, MemoryCache
 from src.data.cache.redis import RedisCache
 from src.config.settings import settings
@@ -25,6 +22,11 @@ class DataAggregator(DataProvider):
         Args:
             redis_client: Optional Redis client for distributed caching (falls back to memory cache)
         """
+        from src.data.providers.yahoo import YahooFinanceProvider
+        from src.data.providers.finnhub import FinnhubProvider
+        from src.data.providers.congressional import CongressionalProvider
+        from src.data.providers.crypto import CryptoProvider
+
         self.providers: List[DataProvider] = [
             YahooFinanceProvider(),  # Primary provider (free, reliable)
         ]

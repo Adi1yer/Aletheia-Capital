@@ -15,14 +15,10 @@ import urllib.request
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
-import pandas as pd
-import yfinance as yf
 import structlog
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-
-from src.data.providers.aggregator import get_data_provider
 
 logger = structlog.get_logger()
 
@@ -63,6 +59,8 @@ def _parse_txt_symbols(raw: str) -> List[str]:
 
 def _parse_csv_symbols(raw: str, symbol_columns: tuple = ("Symbol", "symbol")) -> List[str]:
     """Parse CSV; use first present of Symbol/symbol column."""
+    import pandas as pd
+
     df = pd.read_csv(io.StringIO(raw))
     for col in symbol_columns:
         if col in df.columns:
@@ -100,13 +98,25 @@ class StockUniverse:
         self.exclude_otc = exclude_otc
         self.exclude_penny_stocks = exclude_penny_stocks
         self.min_price = min_price
-        self.data_provider = get_data_provider()
+        self._data_provider = None
         logger.info(
             "Initialized stock universe",
             min_market_cap=min_market_cap,
             min_volume=min_volume,
             exclude_otc=exclude_otc,
         )
+
+    @property
+    def data_provider(self):
+        if self._data_provider is None:
+            from src.data.providers.aggregator import get_data_provider
+
+            self._data_provider = get_data_provider()
+        return self._data_provider
+
+    @data_provider.setter
+    def data_provider(self, value):
+        self._data_provider = value
 
     def _load_from_bundled_csv(self) -> List[str]:
         """Load tickers from bundled CSV (no network)."""
@@ -195,6 +205,8 @@ class StockUniverse:
 
     def filter_by_liquidity(self, tickers: List[str], max_tickers: Optional[int] = None) -> List[str]:
         """Filter tickers by liquidity criteria."""
+        import yfinance as yf
+
         logger.info("Filtering tickers by liquidity", input_count=len(tickers))
         filtered = []
         failed = 0

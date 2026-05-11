@@ -1,13 +1,22 @@
 """Pytest configuration and fixtures"""
 
+import os
 from datetime import datetime
 from unittest.mock import Mock
 
 import pytest
 
-from src.agents.base import AgentSignal
-from src.data.models import FinancialMetrics, LineItem, Price
-from src.portfolio.models import Portfolio, Position
+# Limit BLAS/OpenMP threads before tests import numpy/pandas (reduces rare SIGSEGV in sandboxes).
+for _k, _v in (
+    ("OMP_NUM_THREADS", "1"),
+    ("OPENBLAS_NUM_THREADS", "1"),
+    ("MKL_NUM_THREADS", "1"),
+    ("VECLIB_MAXIMUM_THREADS", "1"),
+    ("NUMEXPR_NUM_THREADS", "1"),
+):
+    os.environ.setdefault(_k, _v)
+
+# Avoid importing `src` (and thus numpy/pandas) at conftest collection time — some sandboxes SIGSEGV.
 
 
 @pytest.fixture
@@ -29,6 +38,8 @@ def sample_dates():
 @pytest.fixture
 def sample_prices():
     """Sample price data"""
+    from src.data.models import Price
+
     return [
         Price(
             time=datetime(2024, 1, 1, 0, 0, 0),
@@ -52,6 +63,8 @@ def sample_prices():
 @pytest.fixture
 def sample_metrics():
     """Sample financial metrics"""
+    from src.data.models import FinancialMetrics
+
     rp = datetime(2024, 1, 1)
     return [
         FinancialMetrics(
@@ -68,6 +81,8 @@ def sample_metrics():
 @pytest.fixture
 def sample_line_items():
     """Sample line items"""
+    from src.data.models import LineItem
+
     rp = datetime(2024, 1, 1)
     return [
         LineItem(
@@ -103,6 +118,8 @@ def mock_data_provider(sample_prices, sample_metrics, sample_line_items):
 @pytest.fixture
 def sample_portfolio():
     """Sample portfolio for testing"""
+    from src.portfolio.models import Portfolio, Position
+
     portfolio = Portfolio(cash=100000.0)
     portfolio.positions["AAPL"] = Position(long=100, long_cost_basis=150.0)
     portfolio.positions["MSFT"] = Position(long=50, long_cost_basis=300.0)
@@ -112,6 +129,8 @@ def sample_portfolio():
 @pytest.fixture
 def sample_agent_signal():
     """Sample agent signal"""
+    from src.agents.base import AgentSignal
+
     return AgentSignal(
         signal="bullish",
         confidence=75,
@@ -122,6 +141,8 @@ def sample_agent_signal():
 @pytest.fixture
 def mock_llm():
     """Mock LLM for testing"""
+    from src.agents.base import AgentSignal
+
     llm = Mock()
     llm.with_structured_output = Mock(return_value=llm)
     llm.invoke = Mock(
