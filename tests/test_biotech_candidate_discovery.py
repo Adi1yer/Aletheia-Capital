@@ -217,3 +217,60 @@ def test_discovery_market_cap_bounds(monkeypatch):
     assert tickers == []
     assert diag["excluded_market_cap_too_small"] == 1
     assert diag["excluded_market_cap_too_large"] == 1
+
+
+def test_discovery_passes_phase_and_readout_cap_to_catalyst_check(monkeypatch):
+    captured: list = []
+
+    def _capture(*args, **kwargs):
+        captured.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "src.data.universe.StockUniverse.get_trading_universe",
+        lambda self, **kwargs: ["AAA"],
+    )
+    monkeypatch.setattr(
+        cd,
+        "_profile_ticker",
+        lambda t: {
+            "ticker": t,
+            "is_biotech": True,
+            "last_price": 10.0,
+            "avg_dollar_volume_30d": 30_000_000.0,
+            "has_yf_options": True,
+            "market_cap": 2_000_000_000.0,
+            "error": "",
+        },
+    )
+    monkeypatch.setattr(
+        cd,
+        "build_snapshot",
+        lambda t: BiotechSnapshot(
+            ticker=t,
+            as_of="2026-01-01",
+            trials=[
+                TrialSummary(
+                    nct_id="x",
+                    phase="Phase 2",
+                    primary_completion_date="2026-05-01",
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(cd, "snapshot_has_readout_catalyst", _capture)
+
+    tickers, diag = cd.discover_catalyst_candidates(
+        forward_days=120,
+        past_grace_days=45,
+        max_universe=10,
+        max_candidates=5,
+        min_phase=2,
+        readout_max_forward_days=90,
+    )
+    assert tickers == ["AAA"]
+    assert diag["discovery_min_phase"] == 2
+    assert diag["discovery_readout_max_forward_days"] == 90
+    assert captured
+    assert captured[0]["min_phase"] == 2
+    assert captured[0]["readout_max_forward_days"] == 90

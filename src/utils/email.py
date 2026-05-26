@@ -388,11 +388,24 @@ class EmailNotifier:
             if isinstance(blockers, dict) and blockers:
                 pairs = [f"{k}={int(v)}" for k, v in blockers.items()]
                 text.append("Top blockers: " + ", ".join(pairs[:6]))
-            if int(dd.get("cash_rotation_sell_count", 0) or 0) > 0:
+                cash_blk = int(blockers.get("cash_or_pending", 0) or 0)
+                if cash_blk >= int(dd.get("buy_blocked_by_risk_or_sizing_count", 0) or 0) // 2:
+                    text.append(
+                        "Note: top buys often blocked by insufficient cash for meaningful position size"
+                    )
+            if dd.get("enable_cash_rotation"):
                 text.append(
                     f"Cash rotation sells: {int(dd.get('cash_rotation_sell_count', 0))} "
                     f"(skipped edge={int(dd.get('cash_rotation_skipped_edge', 0))}, "
                     f"skipped risk={int(dd.get('cash_rotation_skipped_risk', 0))})"
+                )
+                rot_skip = str(dd.get("cash_rotation_skip_reason") or "").strip()
+                if rot_skip and int(dd.get("cash_rotation_sell_count", 0) or 0) == 0:
+                    text.append(f"Cash rotation note: {rot_skip}")
+            if int(dd.get("cc_held_lot_count", 0) or 0) or int(dd.get("cc_lot_build_count", 0) or 0):
+                text.append(
+                    f"CC lots: held={int(dd.get('cc_held_lot_count', 0))}, "
+                    f"lot_build={int(dd.get('cc_lot_build_count', 0))}"
                 )
             text.append("")
 
@@ -774,6 +787,8 @@ class EmailNotifier:
                         <tr><td>Top blockers</td><td>{html_escape(blocker_text) if blocker_text else "-"}</td></tr>
                         <tr><td>Cash rotation sells</td><td>{int(dd.get("cash_rotation_sell_count", 0))}</td></tr>
                         <tr><td>Cash rotation skipped (edge / risk)</td><td>{int(dd.get("cash_rotation_skipped_edge", 0))} / {int(dd.get("cash_rotation_skipped_risk", 0))}</td></tr>
+                        <tr><td>Cash rotation note</td><td>{html_escape(str(dd.get("cash_rotation_skip_reason") or "-"))}</td></tr>
+                        <tr><td>CC lots (held / build)</td><td>{int(dd.get("cc_held_lot_count", 0))} / {int(dd.get("cc_lot_build_count", 0))}</td></tr>
                     </table>
                 </div>
                 """

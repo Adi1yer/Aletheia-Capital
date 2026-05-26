@@ -35,6 +35,17 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
+      - name: Restore scan cache and performance data
+        uses: actions/cache/restore@v4
+        id: scan_cache_restore
+        with:
+          path: |
+            data/scan_cache
+            data/performance
+          key: scan-cache-${{ github.repository }}-${{ github.ref_name }}
+          restore-keys: |
+            scan-cache-${{ github.repository }}-
+
       - name: Run weekly scan & rebalance
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
@@ -48,3 +59,12 @@ jobs:
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: poetry run python weekly_scan_rebalancing.py --max-stocks 500 --stop-loss-pct 0.08 --enable-covered-calls --execute --enable-cash-rotation --cash-rotation-min-edge 8
+
+      - name: Save scan cache and performance data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/scan_cache
+            data/performance
+          key: scan-cache-${{ github.repository }}-${{ github.ref_name }}

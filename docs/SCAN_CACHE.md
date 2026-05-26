@@ -72,6 +72,10 @@ Use the cached runs to analyze without re-running the pipeline:
 
 Storage is local only (`data/scan_cache/` is under `data/` and ignored by git). Clear old runs by deleting subdirectories under `data/scan_cache/` if you need to free space.
 
+### GitHub Actions (weekly scan)
+
+The [weekly-scan workflow](.github/workflows/weekly-scan.yml) restores and saves `data/scan_cache` and `data/performance` via `actions/cache` so consecutive Monday runs can build agent scorecards (`need_at_least_2_cached_runs`). Local development is unchanged; only CI persists cache across ephemeral runners.
+
 ---
 
 ## Storage per scan (estimate)

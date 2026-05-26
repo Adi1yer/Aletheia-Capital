@@ -150,6 +150,8 @@ class PortfolioManager:
         min_hold_confidence_for_rotation: int = 45,
         enable_cash_rotation: bool = False,
         cash_rotation_min_edge: int = 5,
+        cash_rotation_min_buy_notional_usd: float = 1500.0,
+        cash_rotation_min_buy_notional_pct_equity: float = 0.02,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -178,6 +180,10 @@ class PortfolioManager:
             "cash_rotation_sell_count": 0,
             "cash_rotation_skipped_edge": 0,
             "cash_rotation_skipped_risk": 0,
+            "cash_rotation_skip_reason": "",
+            "enable_cash_rotation": bool(enable_cash_rotation),
+            "cc_held_lot_count": 0,
+            "cc_lot_build_count": 0,
         }
         self._cash_rotation_reasons: Dict[str, str] = {}
 
@@ -300,6 +306,11 @@ class PortfolioManager:
         buy_candidate_set = {t for t, _ in buy_candidates}
         diagnostics["buy_candidates_post_rank"] = len(buy_candidates)
 
+        min_rotation_notional = max(
+            float(cash_rotation_min_buy_notional_usd),
+            float(equity) * float(cash_rotation_min_buy_notional_pct_equity),
+        )
+
         # 3b) Optional cash rotation: sell weaker held longs (not current buy targets) to fund buys
         if enable_cash_rotation and buy_candidates:
             best_buy_score = int(buy_candidates[0][1])
@@ -313,7 +324,9 @@ class PortfolioManager:
                     current_prices,
                     risk_analysis,
                     pending_orders_by_symbol,
+                    min_notional=min_rotation_notional,
                 ):
+                    diagnostics["cash_rotation_skip_reason"] = "buy_meaningfully_allocatable"
                     break
                 weakest: Optional[str] = None
                 weakest_metric = 10**9
@@ -456,6 +469,7 @@ class PortfolioManager:
 
         # 5) Allocate capital down the unified ranked list
         cc_lot_tickers: List[str] = []
+        cc_lot_build_count = 0
         csp_lot_tickers: List[str] = []
         csp_scores: Dict[str, int] = {}
         if unified:
@@ -509,6 +523,7 @@ class PortfolioManager:
                         reasoning=f"CC lot build: buy to 100 shares (cc_score={score})",
                     )
                     cc_lot_tickers.append(ticker)
+                    cc_lot_build_count += 1
                     budget -= qty * price
                 else:
                     if budget <= 0 or max_buy <= 0:
@@ -532,6 +547,21 @@ class PortfolioManager:
                     budget -= qty * price
             diagnostics["buy_blocked_by_risk_or_sizing_count"] = int(sum(blocker_counts.values()))
             diagnostics["buy_blockers"] = blocker_counts
+
+        # Existing 100+ share lots eligible for CC (even when bullish consumed the buy slot).
+        if enable_covered_calls:
+            for t in tickers:
+                pos = portfolio.get_position(t)
+                if not pos or pos.long < 100:
+                    continue
+                if t in cc_lot_tickers:
+                    continue
+                cc_score = self._score_covered_call(t, agent_signals, agent_weights)
+                if cc_score >= min_cc_score:
+                    cc_lot_tickers.append(t)
+
+        diagnostics["cc_lot_build_count"] = cc_lot_build_count
+        diagnostics["cc_held_lot_count"] = max(0, len(cc_lot_tickers) - cc_lot_build_count)
 
         if cc_lot_tickers:
             logger.info("CC lot builds selected", tickers=cc_lot_tickers)
@@ -590,19 +620,25 @@ class PortfolioManager:
         current_prices: Dict[str, float],
         risk_analysis: Dict[str, Dict],
         pending_orders_by_symbol: Dict[str, Dict[str, int]],
+        min_notional: float = 1500.0,
     ) -> bool:
-        for ticker, _score in buy_candidates:
+        total_buy_score = sum(s for _, s in buy_candidates) or 1
+        for ticker, score in buy_candidates:
             risk = risk_analysis.get(ticker) or {}
             price = float(current_prices.get(ticker) or 0.0)
             if price <= 0 or not risk:
                 continue
             remaining_dollars = float(risk.get("remaining_position_limit") or 0.0)
             max_by_risk = int(remaining_dollars // price) if remaining_dollars > 0 else 0
-            max_by_cash = int(budget // price)
+            max_by_cash = int(budget // price) if budget > 0 else 0
             pending = pending_orders_by_symbol.get(ticker) or {}
             pending_buy = int(pending.get("buy_qty", 0) or 0)
             max_buy = max(0, min(max_by_risk, max_by_cash) - pending_buy)
-            if max_buy >= 1:
+            if max_buy < 1:
+                continue
+            alloc = budget * (float(score) / float(total_buy_score))
+            qty = min(max_buy, int(alloc // price))
+            if qty >= 1 and (qty * price) >= float(min_notional):
                 return True
         return False
 

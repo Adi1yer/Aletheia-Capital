@@ -136,3 +136,51 @@ def test_cc_existing_long_round_lot_without_cash_budget():
     )
 
     assert pm._last_cc_lot_tickers == ["CCONLY"]
+    dd = pm._last_rebalance_diagnostics
+    assert int(dd.get("cc_held_lot_count", 0)) >= 1
+
+
+def test_cash_rotation_when_buys_not_meaningfully_allocatable():
+    """Rotation should sell a weak hold when top buys cannot meet min notional (not one cheap share)."""
+    pm = PortfolioManager()
+    portfolio = Portfolio(cash=2000.0)
+    portfolio.positions["WEAK"] = Position(long=50, long_cost_basis=5.0)
+
+    tickers = ["WEAK", "EXP"]
+    agent_signals = {
+        "growth": {
+            "WEAK": AgentSignal(signal="bearish", confidence=70, reasoning="x"),
+            "EXP": AgentSignal(signal="bullish", confidence=95, reasoning="x"),
+        },
+        "value": {
+            "WEAK": AgentSignal(signal="bearish", confidence=70, reasoning="x"),
+            "EXP": AgentSignal(signal="bullish", confidence=95, reasoning="x"),
+        },
+    }
+    agent_weights = {"growth": 1.0, "value": 1.0}
+    risk_analysis = {
+        "WEAK": {"remaining_position_limit": 500_000.0, "current_price": 10.0},
+        "EXP": {"remaining_position_limit": 500_000.0, "current_price": 2500.0},
+    }
+
+    decisions = pm.generate_rebalance_decisions(
+        tickers=tickers,
+        agent_signals=agent_signals,
+        risk_analysis=risk_analysis,
+        portfolio=portfolio,
+        agent_weights=agent_weights,
+        pending_orders_by_symbol={},
+        min_buy_confidence=50,
+        min_sell_confidence=75,
+        cash_buffer_pct=0.03,
+        max_buy_tickers=20,
+        enable_covered_calls=False,
+        enable_cash_rotation=True,
+        cash_rotation_min_edge=5,
+        cash_rotation_min_buy_notional_usd=1500.0,
+        cash_rotation_min_buy_notional_pct_equity=0.02,
+    )
+
+    assert decisions["WEAK"].action == "sell"
+    dd = pm._last_rebalance_diagnostics
+    assert int(dd.get("cash_rotation_sell_count", 0)) >= 1

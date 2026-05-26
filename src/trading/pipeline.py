@@ -298,6 +298,12 @@ class TradingPipeline:
                 ),
                 enable_cash_rotation=bool(run_config.get("enable_cash_rotation", False)),
                 cash_rotation_min_edge=int(run_config.get("cash_rotation_min_edge", 5)),
+                cash_rotation_min_buy_notional_usd=float(
+                    run_config.get("cash_rotation_min_buy_notional_usd", 1500.0)
+                ),
+                cash_rotation_min_buy_notional_pct_equity=float(
+                    run_config.get("cash_rotation_min_buy_notional_pct_equity", 0.02)
+                ),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(

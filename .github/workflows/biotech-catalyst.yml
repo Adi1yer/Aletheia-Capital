@@ -45,6 +45,8 @@ jobs:
 
       - name: Run biotech catalyst scan
         env:
+          BIOTECH_DISCOVERY_MIN_PHASE: "2"
+          BIOTECH_DISCOVERY_READOUT_MAX_FORWARD_DAYS: "90"
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           BIOTECH_ALPACA_API_KEY: ${{ secrets.BIOTECH_ALPACA_API_KEY }}
           BIOTECH_ALPACA_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}

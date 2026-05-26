@@ -155,6 +155,18 @@ def main() -> None:
         help="Minimum buy-confidence edge over held bullish metric to allow a rotation sell (default 5).",
     )
     p.add_argument(
+        "--cash-rotation-min-buy-notional-usd",
+        type=float,
+        default=1500.0,
+        help="Min dollar size for a buy to count as 'allocatable' for cash rotation (default 1500).",
+    )
+    p.add_argument(
+        "--cash-rotation-min-buy-notional-pct-equity",
+        type=float,
+        default=0.02,
+        help="Min buy size as fraction of equity (used with --cash-rotation-min-buy-notional-usd, whichever is larger).",
+    )
+    p.add_argument(
         "--profile",
         type=str,
         choices=("balanced", "conservative", "aggressive"),
@@ -278,6 +290,10 @@ def main() -> None:
         "profile": str(args.profile),
         "enable_cash_rotation": bool(args.enable_cash_rotation),
         "cash_rotation_min_edge": int(args.cash_rotation_min_edge),
+        "cash_rotation_min_buy_notional_usd": float(args.cash_rotation_min_buy_notional_usd),
+        "cash_rotation_min_buy_notional_pct_equity": float(
+            args.cash_rotation_min_buy_notional_pct_equity
+        ),
     }
 
     pipeline = TradingPipeline(broker=broker)

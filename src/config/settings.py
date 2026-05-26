@@ -54,9 +54,9 @@ class Settings(BaseSettings):
     biotech_discovery_max_market_cap_usd: float = 50_000_000_000.0  # 0 or negative disables maximum
     biotech_discovery_exclude_missing_market_cap: bool = True
     biotech_discovery_blocklist_path: str = "config/biotech_discovery_blocklist.txt"
-    biotech_discovery_min_phase: int = 0  # 0 = no phase filter; 2 = Phase 2+ trials only
+    biotech_discovery_min_phase: int = 2  # 0 = no phase filter; 2 = Phase 2+ trials only
     # 0 = use full forward_days upper bound; >0 caps to today+min(forward, this)
-    biotech_discovery_readout_max_forward_days: int = 0
+    biotech_discovery_readout_max_forward_days: int = 90
 
     # Email Configuration (for notifications)
     smtp_server: Optional[str] = None  # e.g., 'smtp.gmail.com'

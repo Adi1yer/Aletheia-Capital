@@ -24,6 +24,10 @@ def _base_results():
             "cc_passed_threshold_count": 4,
             "buy_blocked_by_risk_or_sizing_count": 2,
             "buy_blockers": {"risk_cap": 1, "cash_or_pending": 1},
+            "enable_cash_rotation": True,
+            "cash_rotation_skip_reason": "buy_meaningfully_allocatable",
+            "cc_held_lot_count": 2,
+            "cc_lot_build_count": 0,
         },
         "learning_context": {
             "feedback_refresh_ok": True,
@@ -43,6 +47,8 @@ def test_text_email_contains_diagnostics_blocks():
     assert "LEARNING CONTEXT" in text
     assert "Scan cache runs" in text
     assert "Scorecard note" in text
+    assert "Cash rotation note" in text
+    assert "CC lots: held=" in text
 
 
 def test_html_email_contains_diagnostics_blocks():
@@ -52,3 +58,5 @@ def test_html_email_contains_diagnostics_blocks():
     assert "Learning context" in html
     assert "Scan cache runs" in html
     assert "Scorecard note" in html
+    assert "Cash rotation note" in html
+    assert "CC lots (held / build)" in html
