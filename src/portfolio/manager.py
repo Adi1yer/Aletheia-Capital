@@ -152,6 +152,12 @@ class PortfolioManager:
         cash_rotation_min_edge: int = 5,
         cash_rotation_min_buy_notional_usd: float = 1500.0,
         cash_rotation_min_buy_notional_pct_equity: float = 0.02,
+        max_position_pct: float = 0.20,
+        max_sector_pct: float = 0.35,
+        max_csp_tickers: int = 2,
+        max_csp_collateral_pct: float = 0.10,
+        wash_sale_days: int = 0,
+        buy_disagreement_penalty: int = 5,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -184,12 +190,33 @@ class PortfolioManager:
             "enable_cash_rotation": bool(enable_cash_rotation),
             "cc_held_lot_count": 0,
             "cc_lot_build_count": 0,
+            "concentration_blocks": 0,
+            "sector_blocks": 0,
+            "csp_scored_count": 0,
+            "csp_collateral_reserved": 0.0,
+            "csp_skipped_cap": 0,
+            "wash_sale_blocks": 0,
+            "buy_disagreement_flags": 0,
         }
         self._cash_rotation_reasons: Dict[str, str] = {}
+
+        from src.portfolio.wash_sale import blocked_tickers, record_sell
+        from src.portfolio.sectors import get_sector
+
+        wash_blocked = blocked_tickers(int(wash_sale_days))
+        sector_value: Dict[str, float] = {}
 
         current_prices = {
             t: (risk_analysis.get(t) or {}).get("current_price", 0.0) for t in tickers
         }
+        equity = portfolio.get_equity({t: float(p) for t, p in current_prices.items() if p})
+        for t, pos in (portfolio.positions or {}).items():
+            px = float(current_prices.get(t) or 0.0)
+            if pos and pos.long > 0 and px > 0:
+                sec = get_sector(t)
+                sector_value[sec] = sector_value.get(sec, 0.0) + pos.long * px
+        max_csp_collateral = float(equity) * float(max_csp_collateral_pct)
+        csp_collateral_used = 0.0
 
         def _earnings_blocks_buy(t: str) -> bool:
             if earnings_blackout_days <= 0:
@@ -263,7 +290,6 @@ class PortfolioManager:
                     proceeds += qty * price
 
         # 2) Compute budget for buys + CC lot builds
-        equity = portfolio.get_equity({t: float(p) for t, p in current_prices.items() if p})
         buffer = max(0.0, float(equity) * float(cash_buffer_pct))
         budget = max(0.0, float(portfolio.cash) + float(proceeds) - buffer)
 
@@ -286,8 +312,15 @@ class PortfolioManager:
 
             slotted = False
             if aggregated["signal"] == "bullish" and aggregated["confidence"] >= min_buy_confidence:
-                buy_candidates.append((ticker, int(aggregated["confidence"])))
-                slotted = True
+                eff_min = int(min_buy_confidence)
+                if self._buy_has_camp_disagreement(ticker, agent_signals):
+                    diagnostics["buy_disagreement_flags"] += 1
+                    eff_min += int(buy_disagreement_penalty)
+                if ticker in wash_blocked:
+                    diagnostics["wash_sale_blocks"] += 1
+                elif int(aggregated["confidence"]) >= eff_min:
+                    buy_candidates.append((ticker, int(aggregated["confidence"])))
+                    slotted = True
             if not slotted and enable_covered_calls:
                 diagnostics["cc_scored_count"] += 1
                 cc_score = self._score_covered_call(ticker, agent_signals, agent_weights)
@@ -296,6 +329,7 @@ class PortfolioManager:
                     diagnostics["cc_passed_threshold_count"] += 1
                     slotted = True
             if not slotted and enable_cash_secured_puts:
+                diagnostics["csp_scored_count"] += 1
                 csp_score = self._score_cash_secured_put(ticker, agent_signals, agent_weights)
                 if csp_score >= min_csp_score:
                     csp_candidates.append((ticker, int(csp_score)))
@@ -483,15 +517,22 @@ class PortfolioManager:
                 pending_buy = int(pending.get("buy_qty", 0) or 0)
 
                 if opp_type == "csp":
+                    if len(csp_lot_tickers) >= int(max_csp_tickers):
+                        diagnostics["csp_skipped_cap"] += 1
+                        continue
                     if budget <= 0:
                         continue
                     strike_approx = price * 0.95
                     collateral = strike_approx * 100.0
                     if collateral <= 0 or budget < collateral * 1.01:
                         continue
+                    if csp_collateral_used + collateral > max_csp_collateral:
+                        diagnostics["csp_skipped_cap"] += 1
+                        continue
                     csp_lot_tickers.append(ticker)
                     csp_scores[ticker] = int(score)
                     budget -= collateral
+                    csp_collateral_used += collateral
                     continue
 
                 remaining_dollars = float(risk.get("remaining_position_limit") or 0.0)
@@ -533,6 +574,20 @@ class PortfolioManager:
                     total_buy_score = sum(s for _, s, tp in unified if tp == "buy") or 1
                     alloc = budget * (float(score) / float(total_buy_score))
                     qty = min(max_buy, int(alloc // price))
+                    position = portfolio.get_position(ticker)
+                    held_val = (position.long if position else 0) * price
+                    max_pos_dollars = float(equity) * float(max_position_pct)
+                    if held_val + qty * price > max_pos_dollars:
+                        qty = max(0, int((max_pos_dollars - held_val) // price))
+                        if qty <= 0:
+                            diagnostics["concentration_blocks"] += 1
+                            continue
+                    sec = get_sector(ticker)
+                    if sec != "Unknown":
+                        sec_cap = float(equity) * float(max_sector_pct)
+                        if sector_value.get(sec, 0.0) + qty * price > sec_cap:
+                            diagnostics["sector_blocks"] += 1
+                            continue
                     if qty <= 0:
                         blocker_counts["allocation_rounding"] = (
                             blocker_counts.get("allocation_rounding", 0) + 1
@@ -545,6 +600,8 @@ class PortfolioManager:
                         reasoning=f"Rebalance: bullish {score}",
                     )
                     budget -= qty * price
+                    if sec != "Unknown":
+                        sector_value[sec] = sector_value.get(sec, 0.0) + qty * price
             diagnostics["buy_blocked_by_risk_or_sizing_count"] = int(sum(blocker_counts.values()))
             diagnostics["buy_blockers"] = blocker_counts
 
@@ -562,6 +619,12 @@ class PortfolioManager:
 
         diagnostics["cc_lot_build_count"] = cc_lot_build_count
         diagnostics["cc_held_lot_count"] = max(0, len(cc_lot_tickers) - cc_lot_build_count)
+        diagnostics["csp_collateral_reserved"] = round(csp_collateral_used, 2)
+
+        if wash_sale_days > 0:
+            for t, d in decisions.items():
+                if d.action == "sell" and d.quantity > 0:
+                    record_sell(t)
 
         if cc_lot_tickers:
             logger.info("CC lot builds selected", tickers=cc_lot_tickers)
@@ -641,6 +704,30 @@ class PortfolioManager:
             if qty >= 1 and (qty * price) >= float(min_notional):
                 return True
         return False
+
+    @staticmethod
+    def _buy_has_camp_disagreement(
+        ticker: str,
+        agent_signals: Dict[str, Dict[str, AgentSignal]],
+    ) -> bool:
+        """True when value and growth camps disagree on direction for this ticker."""
+        value_bull = value_bear = growth_bull = growth_bear = 0
+        for agent_key, ticker_signals in agent_signals.items():
+            if ticker not in ticker_signals:
+                continue
+            sig = ticker_signals[ticker]
+            sig_signal = sig.signal if hasattr(sig, "signal") else sig.get("signal", "neutral")
+            if agent_key in GROWTH_AGENTS:
+                if sig_signal == "bullish":
+                    growth_bull += 1
+                elif sig_signal == "bearish":
+                    growth_bear += 1
+            elif agent_key in VALUE_AGENTS:
+                if sig_signal == "bullish":
+                    value_bull += 1
+                elif sig_signal == "bearish":
+                    value_bear += 1
+        return (value_bull > 0 and growth_bear > 0) or (value_bear > 0 and growth_bull > 0)
 
     @staticmethod
     def _score_covered_call(

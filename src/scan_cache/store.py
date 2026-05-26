@@ -116,6 +116,8 @@ class ScanCache:
             "end_date": end_date,
             "duration_seconds": duration_seconds,
             "saved_at": datetime.now().isoformat(),
+            "active_agents": config.get("active_agents") or [],
+            "skipped_agents": config.get("skipped_agents") or [],
         }
         _write_json(run_path / "meta.json", meta)
 

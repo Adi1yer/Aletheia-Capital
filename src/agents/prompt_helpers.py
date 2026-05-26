@@ -32,7 +32,19 @@ JSON_ONLY_INSTRUCTION = (
     "For any field named `signal`, you MUST use exactly one of these lowercase strings: "
     '"bullish", "bearish", or "neutral" (do not use words like buy, sell, overvalued, etc.).'
 )
-AGENT_JSON_EXAMPLE = '{{"signal":"neutral","confidence":50,"reasoning":"Brief reason"}}'
+AGENT_JSON_EXAMPLE = (
+    '{{"signal":"neutral","confidence":50,"reasoning":"Brief reason",'
+    '"override":false,"override_reason":""}}'
+)
+HYBRID_JSON_EXAMPLE = AGENT_JSON_EXAMPLE
+
+CONFIDENCE_DISCIPLINE = (
+    "Confidence discipline: use 40-60 when data is thin; cap at 85 unless at least 3 checks passed. "
+    "In reasoning, cite check names from the rule engine (e.g. roe, golden_cross). "
+    "You may adjust confidence by at most ±15 from the rule confidence. "
+    "Set override=true only if you must change the suggested signal; cite a specific fact."
+)
+
 PM_JSON_EXAMPLE = '{{"action":"hold","quantity":0,"confidence":0,"reasoning":"Brief reason"}}'
 
 
@@ -108,6 +120,41 @@ def compute_return_vs_index(
     ticker_ret = (ticker_prices[-1].close - ticker_prices[0].close) / ticker_prices[0].close * 100
     index_ret = (index_prices[-1].close - index_prices[0].close) / index_prices[0].close * 100
     return round(ticker_ret - index_ret, 2)
+
+
+def format_rule_score_for_prompt(rule) -> str:
+    lines = [
+        f"Suggested signal: {rule.suggested_signal}",
+        f"Rule confidence: {rule.rule_confidence}",
+        f"Lane: {rule.lane}",
+    ]
+    for c in rule.checks[:12]:
+        status = "PASS" if c.get("pass") else "FAIL"
+        lines.append(
+            f"  - {c.get('name')}: {status} (value={c.get('value')}, threshold={c.get('threshold')})"
+        )
+    return "\n".join(lines)
+
+
+def format_dossier_for_prompt(inputs, max_chars: int = 4000) -> str:
+    from src.agents.inputs import AgentInputs
+
+    if not isinstance(inputs, AgentInputs):
+        return str(inputs)[:max_chars]
+    d = inputs.dossier
+    ctx = inputs.context
+    parts = [
+        f"Ticker: {inputs.ticker}",
+        f"Sector: {ctx.get('sector')} | Cap bucket: {ctx.get('cap_bucket')} | Market cap: {ctx.get('market_cap')}",
+        f"Trends: {inputs.trends}",
+        f"Technicals: {inputs.technicals}",
+        f"Latest metrics: {inputs.latest_metrics}",
+        f"Insider: {inputs.insider_summary[:500]}",
+    ]
+    if inputs.news_titles:
+        parts.append("News: " + "; ".join(inputs.news_titles[:5]))
+    text = "\n".join(parts)
+    return text[:max_chars]
 
 
 def with_performance_feedback(system_text: str, agent, ticker: Optional[str] = None) -> str:

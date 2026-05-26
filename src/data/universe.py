@@ -207,7 +207,15 @@ class StockUniverse:
         """Filter tickers by liquidity criteria."""
         import yfinance as yf
 
+        from src.data.liquidity_cache import (
+            cache_stats,
+            lookup_cached_pass,
+            record_liquidity_result,
+        )
+
         logger.info("Filtering tickers by liquidity", input_count=len(tickers))
+        hits, misses = cache_stats(tickers)
+        logger.info("Liquidity cache lookup", hits=hits, misses=misses)
         filtered = []
         failed = 0
         batch_size = 50
@@ -215,28 +223,48 @@ class StockUniverse:
             batch = tickers[i : i + batch_size]
             logger.info("Processing batch", batch_num=i // batch_size + 1, batch_size=len(batch))
             for ticker in batch:
+                cached = lookup_cached_pass(ticker)
+                if cached is True:
+                    filtered.append(ticker)
+                    if max_tickers and len(filtered) >= max_tickers:
+                        break
+                    continue
+                if cached is False:
+                    continue
                 try:
                     stock = yf.Ticker(ticker)
                     info = stock.info
                     market_cap = info.get("marketCap", 0)
+                    passed = True
                     if market_cap and market_cap < self.min_market_cap:
-                        continue
+                        passed = False
                     current_price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
-                    if self.exclude_penny_stocks and current_price < self.min_price:
-                        continue
+                    if passed and self.exclude_penny_stocks and current_price < self.min_price:
+                        passed = False
                     exchange = (info.get("exchange") or "").upper()
-                    if self.exclude_otc and "OTC" in exchange:
-                        continue
+                    if passed and self.exclude_otc and "OTC" in exchange:
+                        passed = False
                     try:
                         hist = stock.history(period="5d")
-                        if not hist.empty and hist["Volume"].mean() < self.min_volume:
-                            continue
+                        if (
+                            passed
+                            and not hist.empty
+                            and hist["Volume"].mean() < self.min_volume
+                        ):
+                            passed = False
                     except Exception:
                         pass
-                    filtered.append(ticker)
+                    record_liquidity_result(
+                        ticker,
+                        passed,
+                        meta={"market_cap": market_cap, "price": current_price},
+                    )
+                    if passed:
+                        filtered.append(ticker)
                     time.sleep(0.1)
                 except Exception as e:
                     failed += 1
+                    record_liquidity_result(ticker, False, meta={"error": str(e)[:120]})
                     logger.debug("Failed to filter ticker", ticker=ticker, error=str(e))
                 if max_tickers and len(filtered) >= max_tickers:
                     break

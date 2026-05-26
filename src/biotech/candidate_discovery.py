@@ -252,6 +252,9 @@ def discover_catalyst_candidates(
     selected = [t for t, _ in survivors[: max(0, int(max_candidates))]]
     diagnostics["selected_count"] = len(selected)
     diagnostics["selected_tickers"] = selected
+    diagnostics["candidate_summaries"] = [
+        {"ticker": t, "readout_date": rd or "n/a"} for t, rd in survivors[:50]
+    ]
 
     logger.info("Biotech candidate discovery", **diagnostics)
     return selected, diagnostics

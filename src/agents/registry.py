@@ -32,6 +32,15 @@ class AgentRegistry:
     def get_all(self) -> Dict[str, BaseAgent]:
         """Get all registered agents"""
         return self._agents.copy()
+
+    def get_active(
+        self, active_keys: Optional[List[str]] = None
+    ) -> Dict[str, BaseAgent]:
+        """Return registered agents filtered to active_keys (all if None)."""
+        if not active_keys:
+            return self.get_all()
+        key_set = set(active_keys)
+        return {k: a for k, a in self._agents.items() if k in key_set}
     
     def get_agent_keys(self) -> List[str]:
         """Get list of all agent keys"""

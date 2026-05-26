@@ -131,6 +131,32 @@ def _build_biotech_email(
             f"window=today-{int(f_info.get('past_grace_days', 0))}d to today+{int(f_info.get('forward_days', 0))}d"
         )
     lines.append("")
+    try:
+        from src.biotech.pnl_ledger import weekly_summary
+
+        ledger = weekly_summary()
+        if ledger.get("count"):
+            lines.append("STRADDLE P&L LEDGER (paper)")
+            lines.append("-" * 70)
+            lines.append(f"  Total entries: {ledger['count']}")
+            for ent in ledger.get("entries") or []:
+                lines.append(
+                    f"  {ent.get('ticker')}: {ent.get('status')} "
+                    f"premium={ent.get('premium')} @ {str(ent.get('recorded_at', ''))[:10]}"
+                )
+            lines.append("")
+    except Exception:
+        pass
+    d_cal = (discovery_info or {}).get("candidate_summaries") or []
+    if d_cal:
+        lines.append("CATALYST CALENDAR (discovery candidates, readout window)")
+        lines.append("-" * 70)
+        for c in d_cal[:25]:
+            lines.append(
+                f"  {c.get('ticker')}: phase={c.get('phase')} "
+                f"readout~{c.get('readout_date', 'n/a')}"
+            )
+        lines.append("")
     lc_map = position_lifecycle_by_ticker or {}
     if week_lifecycle_markdown.strip():
         lines.append("POSITION LIFECYCLE (7d option book — from daily snapshots)")
@@ -453,6 +479,27 @@ def main() -> int:
         exec_result = None
         if paper_execute and broker and gates_ok:
             exec_result = execute_straddle_paper(broker, snap, budget)
+            if isinstance(exec_result, dict) and exec_result.get("status") == "executed":
+                try:
+                    from src.biotech.pnl_ledger import append_entry
+
+                    append_entry(
+                        {
+                            "ticker": t,
+                            "status": "executed",
+                            "premium": exec_result.get("total_premium"),
+                            "execution": exec_result,
+                        }
+                    )
+                    from src.utils.alerts import send_alert
+
+                    send_alert(
+                        "Biotech straddle executed",
+                        f"{t}: paper straddle opened",
+                        exec_result,
+                    )
+                except Exception:
+                    pass
         elif paper_execute and broker and not gates_ok:
             exec_result = {"status": "skipped", "reasons": gate_reasons}
 

@@ -1,0 +1,32 @@
+{
+  "ci-full": {
+    "max_stocks": 500,
+    "agent_tier_mode": "tiered",
+    "execute": true,
+    "llm_cache": true,
+    "financial_limit": 1,
+    "dossier_financial_limit": 5,
+    "save_to_cache": true,
+    "broker_required": true
+  },
+  "dev-smoke": {
+    "max_stocks": 10,
+    "agent_tier_mode": "core",
+    "execute": false,
+    "llm_cache": true,
+    "financial_limit": 1,
+    "dossier_financial_limit": 5,
+    "save_to_cache": false,
+    "broker_required": false
+  },
+  "research": {
+    "max_stocks": 100,
+    "agent_tier_mode": "tiered",
+    "execute": false,
+    "llm_cache": true,
+    "financial_limit": 1,
+    "dossier_financial_limit": 5,
+    "save_to_cache": false,
+    "broker_required": false
+  }
+}

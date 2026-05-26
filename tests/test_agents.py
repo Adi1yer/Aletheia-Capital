@@ -5,7 +5,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.agents.base import AgentSignal
-from src.agents.warren_buffett import BuffettSignal, WarrenBuffettAgent
+from src.agents.hybrid import HybridExplainOutput
+from src.agents.warren_buffett import WarrenBuffettAgent
 
 
 class TestWarrenBuffettAgent:
@@ -33,14 +34,31 @@ class TestWarrenBuffettAgent:
         mock_provider.get_insider_trades = Mock(return_value=[])
         mock_get_provider.return_value = mock_provider
 
-        mock_call_llm.return_value = BuffettSignal(
+        mock_call_llm.return_value = HybridExplainOutput(
             signal="bullish",
-            confidence=80,
-            reasoning="Strong moat and consistent earnings",
+            confidence=60,
+            reasoning="Checks: roe, debt_to_equity passed; quality compounder",
+            override=False,
+            override_reason="",
         )
 
+        dossier = {
+            "version": 2,
+            "metrics": [
+                {
+                    "price_to_book_ratio": 4.0,
+                    "debt_to_equity": 0.8,
+                    "roe": 0.15,
+                }
+            ],
+            "trends": {"revenue_yoy_pct": 5.0},
+            "line_items": [],
+            "prices": {},
+            "technicals": {},
+            "context": {},
+        }
         agent = WarrenBuffettAgent()
-        result = agent.analyze("AAPL", "2024-01-01", "2024-01-02")
+        result = agent.analyze("AAPL", "2024-01-01", "2024-01-02", dossier=dossier)
 
         assert isinstance(result, AgentSignal)
         assert result.signal in ("bullish", "bearish", "neutral")
@@ -55,10 +73,16 @@ class TestWarrenBuffettAgent:
         mock_provider.get_prices = Mock(return_value=[])
         mock_provider.get_financial_metrics = Mock(return_value=[])
         mock_provider.get_line_items = Mock(return_value=[])
+        mock_provider.get_market_cap = Mock(return_value=None)
         mock_get_provider.return_value = mock_provider
 
         agent = WarrenBuffettAgent()
-        result = agent.analyze("INVALID", "2024-01-01", "2024-01-02")
+        result = agent.analyze(
+            "INVALID",
+            "2024-01-01",
+            "2024-01-02",
+            dossier={"version": 2, "metrics": [], "line_items": []},
+        )
 
         assert isinstance(result, AgentSignal)
         assert result.signal in ("bullish", "bearish", "neutral")
@@ -77,14 +101,30 @@ class TestWarrenBuffettAgent:
             mock_provider.get_insider_trades = Mock(return_value=[])
             mock_get_provider.return_value = mock_provider
 
-            mock_call_llm.return_value = BuffettSignal(
+            mock_call_llm.return_value = HybridExplainOutput(
                 signal="bullish",
-                confidence=75,
-                reasoning="Test",
+                confidence=55,
+                reasoning="Checks: roe passed",
+                override=False,
+                override_reason="",
             )
 
+            dossier = {
+                "version": 2,
+                "metrics": [{"price_to_book_ratio": 3.0, "debt_to_equity": 0.5, "roe": 0.12}],
+                "trends": {},
+                "line_items": [],
+                "prices": {},
+                "technicals": {},
+                "context": {},
+            }
             agent = WarrenBuffettAgent()
-            results = agent.analyze_multiple(["AAPL", "MSFT"], "2024-01-01", "2024-01-02")
+            results = agent.analyze_multiple(
+                ["AAPL", "MSFT"],
+                "2024-01-01",
+                "2024-01-02",
+                dossiers={"AAPL": dossier, "MSFT": dossier},
+            )
 
             assert isinstance(results, dict)
             assert "AAPL" in results

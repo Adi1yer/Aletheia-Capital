@@ -88,8 +88,8 @@ Goal: make the email **prettier** and **more insightful** so it’s something pe
 |----|------|--------|
 | 1 | Immediate: Audit errors/warnings; fix critical gaps | Completed |
 | 2 | Improve: Tighten agent/PM prompts for JSON-only DeepSeek | Completed |
-| 3 | Improve: Redesign weekly email – richer content, AI insights, past performance | Pending |
-| 4 | Optimize: Remove unused code, redundant files, non-essential deps | Pending |
+| 3 | Improve: Redesign weekly email – richer content, AI insights, past performance | Completed |
+| 4 | Optimize: Remove unused code, redundant files, non-essential deps | In progress |
 | 5 | Universe + cache: Expand universe; cache only weekly runs; prune old | Completed |
 | 6 | Exploratory: Crypto arm, other ideas | Pending |
 

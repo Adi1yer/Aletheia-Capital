@@ -138,8 +138,31 @@ class BaseAgent(ABC):
             
             def analyze_ticker(ticker: str) -> tuple[str, AgentSignal]:
                 """Analyze a single ticker with timeout protection"""
+                from src.llm.response_cache import (
+                    LlmCacheContext,
+                    dossier_fingerprint,
+                    set_llm_cache_context,
+                )
+
+                dossiers = kwargs.get("dossiers") or {}
+                agent_key = kwargs.get("agent_key") or self.name.lower().replace(" ", "_")
+                use_cache = kwargs.get("llm_cache", True)
+                ctx = LlmCacheContext(
+                    enabled=bool(use_cache),
+                    agent_key=agent_key,
+                    ticker=ticker,
+                    end_date=end_date,
+                    dossier_fingerprint=dossier_fingerprint(dossiers.get(ticker)),
+                )
+                set_llm_cache_context(ctx)
                 try:
-                    signal = self.analyze(ticker, start_date, end_date, **kwargs)
+                    signal = self.analyze(
+                        ticker,
+                        start_date,
+                        end_date,
+                        dossier=dossiers.get(ticker),
+                        **{k: v for k, v in kwargs.items() if k not in ("dossiers", "agent_key", "llm_cache")},
+                    )
                     # Ensure we can read .signal (guard against malformed LLM response objects)
                     _ = signal.signal
                     logger.info("Agent analysis complete", agent=self.name, ticker=ticker, signal=signal.signal)
@@ -151,6 +174,8 @@ class BaseAgent(ABC):
                         confidence=0,
                         reasoning=f"Analysis failed: {str(e)}"
                     )
+                finally:
+                    set_llm_cache_context(None)
             
             # Process tickers in parallel with limited concurrency
             # Limit to 5 workers per agent to avoid overwhelming Ollama
@@ -192,8 +217,30 @@ class BaseAgent(ABC):
         else:
             # Sequential processing for single ticker or when parallel is disabled
             for ticker in tickers:
+                from src.llm.response_cache import (
+                    LlmCacheContext,
+                    dossier_fingerprint,
+                    set_llm_cache_context,
+                )
+
+                dossiers = kwargs.get("dossiers") or {}
+                agent_key = kwargs.get("agent_key") or self.name.lower().replace(" ", "_")
+                ctx = LlmCacheContext(
+                    enabled=bool(kwargs.get("llm_cache", True)),
+                    agent_key=agent_key,
+                    ticker=ticker,
+                    end_date=end_date,
+                    dossier_fingerprint=dossier_fingerprint(dossiers.get(ticker)),
+                )
+                set_llm_cache_context(ctx)
                 try:
-                    signal = self.analyze(ticker, start_date, end_date, **kwargs)
+                    signal = self.analyze(
+                        ticker,
+                        start_date,
+                        end_date,
+                        dossier=dossiers.get(ticker),
+                        **{k: v for k, v in kwargs.items() if k not in ("dossiers", "agent_key", "llm_cache")},
+                    )
                     _ = signal.signal  # validate before using
                     results[ticker] = signal
                     logger.info("Agent analysis complete", agent=self.name, ticker=ticker, signal=signal.signal)
@@ -204,6 +251,8 @@ class BaseAgent(ABC):
                         confidence=0,
                         reasoning=f"Analysis failed: {str(e)}"
                     )
+                finally:
+                    set_llm_cache_context(None)
         
         return results
     

@@ -16,6 +16,7 @@ from src.config.settings import settings
 from src.data.universe import StockUniverse
 from src.utils.email import get_email_notifier
 from src.scan_cache import ScanCache
+from src.trading.run_config import merge_run_profile
 
 # Configure logging
 log_level = getattr(settings, 'log_level', 'INFO').upper()
@@ -95,6 +96,17 @@ def main():
         "--crypto",
         action="store_true",
         help="Run crypto trading pipeline (BTC, ETH, etc.) instead of stocks",
+    )
+    parser.add_argument(
+        "--run-profile",
+        type=str,
+        default="",
+        help="Merge config/run_profiles.json preset (dev-smoke, research, ci-full)",
+    )
+    parser.add_argument(
+        "--no-broker",
+        action="store_true",
+        help="Analysis-only without Alpaca keys",
     )
     parser.add_argument(
         "--crypto-tickers",
@@ -183,8 +195,20 @@ def main():
         "ticker_source": "universe" if args.universe else "tickers",
         "weekly": bool(args.weekly),
         "save_to_cache": bool(args.universe and args.weekly),
+        "agent_tier_mode": "tiered",
+        "rebalance": bool(args.weekly),
     }
-    
+    if args.agents:
+        run_config["active_agent_keys"] = [
+            a.strip() for a in args.agents.split(",") if a.strip()
+        ]
+    if args.no_broker:
+        run_config["broker_required"] = False
+    profile_name = (args.run_profile or "").strip() or None
+    if profile_name:
+        run_config = merge_run_profile(run_config, profile_name)
+        run_config["run_profile"] = profile_name
+
     # Run trading pipeline
     pipeline = TradingPipeline()
     results = pipeline.run_weekly_trading(

@@ -35,6 +35,8 @@ poetry run python src/main.py --universe --max-stocks 500
 
 No flags needed; each run is appended under `data/scan_cache/`.
 
+By default `SCAN_CACHE_KEEP_WEEKS=26` (~6 months). Set `0` to retain all runs indefinitely.
+
 ## Listing and Inspecting Runs
 
 ```bash

@@ -1,0 +1,29 @@
+{
+  "core": [
+    "warren_buffett",
+    "aswath_damodaran",
+    "fundamentals_analyst",
+    "technicals_analyst",
+    "valuation_analyst",
+    "sentiment_analyst",
+    "stanley_druckenmiller",
+    "michael_burry"
+  ],
+  "extended": [
+    "ben_graham",
+    "bill_ackman",
+    "cathie_wood",
+    "charlie_munger",
+    "mohnish_pabrai",
+    "peter_lynch",
+    "phil_fisher",
+    "rakesh_jhunjhunwala",
+    "growth_analyst",
+    "news_sentiment_analyst",
+    "aditya_iyer",
+    "chamath_palihapitiya",
+    "ron_baron",
+    "congressional_trader"
+  ],
+  "extended_rotation_weeks": 2
+}

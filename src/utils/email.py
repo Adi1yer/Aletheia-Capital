@@ -311,6 +311,85 @@ class EmailNotifier:
                 text.append(f"  Refresh error: {str(learning.get('feedback_refresh_error'))[:200]}")
             text.append("")
 
+        regime = results.get("regime") or {}
+        if regime.get("mode"):
+            text.append("MARKET REGIME")
+            text.append("-" * 40)
+            text.append(
+                f"  {regime.get('mode')}: {regime.get('detail', '')} "
+                f"(SPY {regime.get('last_close')} vs SMA200 {regime.get('sma_200')})"
+            )
+            text.append("")
+
+        try:
+            from src.analytics.agent_correlation import top_redundant_pairs
+
+            pairs = top_redundant_pairs(results.get("agent_signals") or {})
+            if pairs:
+                text.append("AGENT REDUNDANCY (high agreement this run)")
+                text.append("-" * 40)
+                for p in pairs:
+                    text.append(
+                        f"  {p['agent_a']} & {p['agent_b']}: {p['agreement_pct']}% "
+                        f"(n={p['observations']})"
+                    )
+                text.append("")
+        except Exception:
+            pass
+
+        try:
+            from src.analytics.portfolio_metrics import compute_snapshot_metrics
+
+            pm = compute_snapshot_metrics()
+            if pm.get("max_drawdown_4w_pct") is not None:
+                text.append("PORTFOLIO RISK SNAPSHOT (daily snapshots)")
+                text.append("-" * 40)
+                text.append(f"  Max drawdown (4w): {pm['max_drawdown_4w_pct']}%")
+                if pm.get("herfindahl") is not None:
+                    text.append(f"  Concentration (HHI): {pm['herfindahl']}")
+                text.append("")
+        except Exception:
+            pass
+
+        outcomes = self._build_decision_outcomes(results)
+        if outcomes:
+            text.append("LAST RUN DECISIONS VS OUTCOME")
+            text.append("-" * 80)
+            for row in outcomes[:8]:
+                text.append(
+                    f"  {row['ticker']}: {row['action']} -> ret {row.get('return_pct', 'n/a')}%"
+                )
+            text.append("")
+
+        active = (results.get("learning_context") or {}).get("active_agents")
+        if not active and results.get("run_id"):
+            pass
+        if results.get("run_id"):
+            try:
+                import json as _json
+                from pathlib import Path
+
+                wpath = Path("config/agent_weights.json")
+                if wpath.is_file():
+                    text.append("ACTIVE AGENTS THIS RUN")
+                    text.append("-" * 40)
+                    meta_agents = []
+                    if results.get("run_id"):
+                        from src.scan_cache import ScanCache
+
+                        try:
+                            run = ScanCache().load_run(results["run_id"])
+                            meta_agents = (run.get("meta") or {}).get("active_agents") or []
+                        except Exception:
+                            meta_agents = []
+                    if meta_agents:
+                        text.append(f"  {len(meta_agents)} agents: " + ", ".join(meta_agents[:12]))
+                        if len(meta_agents) > 12:
+                            text.append(f"  ... +{len(meta_agents) - 12} more")
+                    text.append("")
+            except Exception:
+                pass
+
         # Open and recent orders (if any)
         open_orders = results.get("open_orders") or []
         recent_orders = results.get("recent_orders") or []
@@ -327,16 +406,29 @@ class EmailNotifier:
             text.append("")
 
         if recent_orders:
-            text.append("RECENT ORDERS")
+            text.append("RECENT ORDERS (incl. partial fills)")
             text.append("-" * 80)
             for o in recent_orders[:20]:
                 sym = o.get("symbol") or o.get("asset_id") or "?"
                 side = o.get("side") or "?"
-                qty = o.get("qty") or o.get("filled_qty") or 0
+                qty = o.get("qty") or 0
+                filled_qty = o.get("filled_qty") or 0
                 status = o.get("status") or ""
                 filled = (o.get("filled_at") or "")[:19]
-                text.append(f"{sym}: {side} {qty} - {status} {filled}")
+                partial = ""
+                if qty and filled_qty and int(filled_qty) < int(qty):
+                    partial = f" partial {filled_qty}/{qty}"
+                text.append(f"{sym}: {side} {qty}{partial} - {status} {filled}")
             text.append("")
+            exec_res = results.get("execution_results") or {}
+            failed = [
+                k
+                for k, v in exec_res.items()
+                if k != "error" and isinstance(v, dict) and v.get("status") == "failed"
+            ]
+            if failed:
+                text.append(f"Execution failures: {', '.join(failed[:10])}")
+                text.append("")
 
         # Decisions -- buys and sells first, then top holds
         decisions = results.get("decisions", {})
@@ -347,6 +439,11 @@ class EmailNotifier:
             buys.sort(key=lambda x: x[1].get("confidence", 0), reverse=True)
             sells.sort(key=lambda x: x[1].get("confidence", 0), reverse=True)
             holds.sort(key=lambda x: x[1].get("confidence", 0), reverse=True)
+            actionable_holds = [
+                (t, d)
+                for t, d in holds
+                if int(d.get("confidence", 0)) >= 55 and "bullish" in (d.get("reasoning") or "").lower()
+            ][:5]
 
             text.append(
                 f"DECISIONS SUMMARY: {len(buys)} buys, {len(sells)} sells, {len(holds)} holds"
@@ -993,6 +1090,38 @@ class EmailNotifier:
         return html
 
     # ---------- Helpers for past performance & AI outlook ----------
+
+    def _build_decision_outcomes(self, results: dict) -> list:
+        """Compare prior run buy/sell decisions to forward price change."""
+        run_id = results.get("run_id")
+        if not run_id:
+            return []
+        cache = ScanCache()
+        runs = cache.list_runs(limit=5)
+        prev_meta = None
+        for idx, meta in enumerate(runs):
+            if meta.get("run_id") == run_id and idx + 1 < len(runs):
+                prev_meta = runs[idx + 1]
+                break
+        if not prev_meta:
+            return []
+        prev = cache.load_run(prev_meta["run_id"])
+        prev_dec = prev.get("decisions") or {}
+        curr_risk = results.get("risk_analysis") or {}
+        prev_risk = prev.get("risk") or {}
+        rows = []
+        for ticker, dec in prev_dec.items():
+            action = dec.get("action") if isinstance(dec, dict) else getattr(dec, "action", "")
+            if action not in ("buy", "sell"):
+                continue
+            p0 = (prev_risk.get(ticker) or {}).get("current_price")
+            p1 = (curr_risk.get(ticker) or {}).get("current_price")
+            if not p0 or not p1:
+                continue
+            ret = (float(p1) - float(p0)) / float(p0) * 100.0
+            rows.append({"ticker": ticker, "action": action, "return_pct": round(ret, 2)})
+        rows.sort(key=lambda r: abs(r["return_pct"]), reverse=True)
+        return rows[:5]
 
     def _build_past_performance(self, results: dict) -> Optional[dict]:
         """Compare this run against the previous cached run, if available."""

@@ -173,6 +173,41 @@ def main() -> None:
         default="balanced",
         help="Strategy profile preset for thresholds/rebalance knobs (default balanced).",
     )
+    p.add_argument(
+        "--agent-tier-mode",
+        type=str,
+        choices=("full", "tiered", "core"),
+        default="tiered",
+        help="Agent set: tiered (core+rotating extended), full (all), core only (default tiered).",
+    )
+    p.add_argument(
+        "--agents",
+        type=str,
+        default="",
+        help="Comma-separated agent keys override (runs only these agents).",
+    )
+    p.add_argument(
+        "--run-profile",
+        type=str,
+        default="",
+        help="Merge settings from config/run_profiles.json (e.g. ci-full, dev-smoke).",
+    )
+    p.add_argument(
+        "--no-broker",
+        action="store_true",
+        help="Analysis-only: skip Alpaca key check and use empty portfolio.",
+    )
+    p.add_argument(
+        "--no-llm-cache",
+        action="store_true",
+        help="Disable disk LLM response cache for this run.",
+    )
+    p.add_argument("--max-position-pct", type=float, default=0.20)
+    p.add_argument("--max-sector-pct", type=float, default=0.35)
+    p.add_argument("--max-csp-tickers", type=int, default=2)
+    p.add_argument("--max-csp-collateral-pct", type=float, default=0.10)
+    p.add_argument("--regime-mode", type=str, default="", help="auto to adjust knobs from SPY regime")
+    p.add_argument("--wash-sale-days", type=int, default=0)
     args = p.parse_args()
 
     # If you just run `python weekly_scan_rebalancing.py` with no arguments,
@@ -205,10 +240,16 @@ def main() -> None:
     if args.max_stocks <= 0:
         raise SystemExit("--max-stocks must be > 0")
 
+    from src.trading.run_config import merge_run_profile
+
+    profile_name = (args.run_profile or "").strip() or None
+    profile_overrides = merge_run_profile({}, profile_name) if profile_name else {}
+    broker_required = not args.no_broker and profile_overrides.get("broker_required", True)
+
     # ── Require Alpaca keys — no fallbacks. Exit if missing or wrong. ──
     api_key = (settings.alpaca_api_key or "").strip()
     secret_key = (settings.alpaca_secret_key or "").strip()
-    if not api_key or not secret_key:
+    if broker_required and (not api_key or not secret_key):
         logger.error(
             "Alpaca API keys are not configured. Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env. "
             "No fallback; exiting."
@@ -228,36 +269,38 @@ def main() -> None:
         )
         raise SystemExit(1)
 
-    # ── Verify Alpaca connection before doing any real work. ──
-    from src.broker.alpaca import AlpacaBroker
+    broker = None
+    if broker_required:
+        from src.broker.alpaca import AlpacaBroker
 
-    try:
-        broker = AlpacaBroker()
-        acct = broker.get_account()
-    except Exception as e:
-        logger.error(
-            "Alpaca rejected the API key or connection failed. "
-            "Fix ALPACA_API_KEY and ALPACA_SECRET_KEY in .env, then retry.",
-            error=str(e),
+        try:
+            broker = AlpacaBroker()
+            acct = broker.get_account()
+        except Exception as e:
+            logger.error(
+                "Alpaca rejected the API key or connection failed. "
+                "Fix ALPACA_API_KEY and ALPACA_SECRET_KEY in .env, then retry.",
+                error=str(e),
+            )
+            raise SystemExit(1)
+
+        logger.info(
+            "Alpaca connection verified",
+            key_prefix=api_key[:4],
+            cash=acct.get("cash"),
+            equity=acct.get("equity"),
         )
-        raise SystemExit(1)
-
-    logger.info(
-        "Alpaca connection verified",
-        key_prefix=api_key[:4],
-        cash=acct.get("cash"),
-        equity=acct.get("equity"),
-    )
 
     # ── Run the pipeline ──
     logger.info("Initializing agents")
     initialize_agents()
 
-    logger.info("Loading universe", max_stocks=args.max_stocks)
+    max_stocks = int(profile_overrides.get("max_stocks", args.max_stocks))
+    logger.info("Loading universe", max_stocks=max_stocks)
     universe = StockUniverse()
     tickers = universe.get_trading_universe(
         full_market=True,
-        max_stocks=args.max_stocks,
+        max_stocks=max_stocks,
         apply_filters=True,
         rank_by_market_cap=True,
     )
@@ -294,7 +337,27 @@ def main() -> None:
         "cash_rotation_min_buy_notional_pct_equity": float(
             args.cash_rotation_min_buy_notional_pct_equity
         ),
+        "agent_tier_mode": str(args.agent_tier_mode),
+        "agent_tier_core_only": str(args.agent_tier_mode) == "core",
+        "financial_limit": 1,
+        "dossier_financial_limit": 5,
+        "llm_cache": not args.no_llm_cache,
+        "broker_required": broker_required,
+        "max_position_pct": float(args.max_position_pct),
+        "max_sector_pct": float(args.max_sector_pct),
+        "max_csp_tickers": int(args.max_csp_tickers),
+        "max_csp_collateral_pct": float(args.max_csp_collateral_pct),
+        "regime_mode": (args.regime_mode or "").strip(),
+        "wash_sale_days": int(args.wash_sale_days),
+        "min_agent_weight_to_run": 0.15,
     }
+    if profile_name:
+        run_config = merge_run_profile(run_config, profile_name)
+        run_config["run_profile"] = profile_name
+    if (args.agents or "").strip():
+        run_config["active_agent_keys"] = [
+            a.strip() for a in args.agents.split(",") if a.strip()
+        ]
 
     pipeline = TradingPipeline(broker=broker)
     results = pipeline.run_weekly_trading(
@@ -321,4 +384,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        try:
+            from src.utils.alerts import send_alert
+
+            send_alert("Weekly scan failed", str(e)[:500], {})
+        except Exception:
+            pass
+        raise

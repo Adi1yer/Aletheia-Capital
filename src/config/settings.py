@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     )
     scan_cache_dir: str = "data/scan_cache"  # Base directory for scan cache runs
     # 0 = never auto-delete cached runs (retain all history). >0 = prune runs older than N weeks.
-    scan_cache_keep_weeks: int = 0
+    scan_cache_keep_weeks: int = 26
 
     # Biotech catalyst scanner — watchlist file (one ticker per line); BIOTECH_TICKERS env overrides.
     biotech_watchlist_path: str = "config/biotech_watchlist.txt"
@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     trading_frequency: str = "weekly"
     log_level: str = "INFO"
     environment: str = "production"
+    alert_webhook_url: Optional[str] = None
 
 
 # Global settings instance

@@ -205,6 +205,7 @@ def call_llm_with_retry(
     prompt: object,
     output_model: Type[T],
     max_retries: int = 3,
+    use_llm_cache: bool = True,
 ) -> T:
     """
     Call LLM with structured output and retry logic.
@@ -216,10 +217,29 @@ def call_llm_with_retry(
     """
     from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+    from src.llm.response_cache import (
+        build_cache_key,
+        cache_enabled_globally,
+        get_cached_response,
+        get_llm_cache_context,
+        set_cached_response,
+    )
+
     try:
         use_deepseek_path = _is_deepseek_llm(llm)
     except Exception:
         use_deepseek_path = False
+
+    cache_ctx = get_llm_cache_context() if use_llm_cache and cache_enabled_globally() else None
+    cache_key = None
+    if cache_ctx and cache_ctx.agent_key and cache_ctx.ticker:
+        cache_key = build_cache_key(cache_ctx, output_model.__name__)
+        cached_text = get_cached_response(cache_key)
+        if cached_text:
+            try:
+                return _parse_structured_text(cached_text, output_model)
+            except Exception:
+                pass
 
     if isinstance(prompt, list):
         base_messages: list[BaseMessage] = list(prompt)
@@ -240,7 +260,10 @@ def call_llm_with_retry(
                     parsed = _parse_structured_text(text, output_model)
                     fields = getattr(output_model, "model_fields", {}) or {}
                     data = {name: getattr(parsed, name) for name in fields}
-                    return output_model.model_validate(data)
+                    result = output_model.model_validate(data)
+                    if cache_key:
+                        set_cached_response(cache_key, text)
+                    return result
                 except Exception as parse_err:
                     if attempt < max_retries - 1:
                         logger.warning(

@@ -9,6 +9,7 @@ import time
 import uuid
 from src.agents.registry import get_registry
 from src.agents.base import AgentSignal
+from src.agents.tiers import resolve_active_agent_keys, skipped_agent_keys
 from src.risk.manager import RiskManager
 from src.portfolio.manager import PortfolioManager
 from src.portfolio.models import Portfolio
@@ -153,7 +154,8 @@ class TradingPipeline:
                 "Pending orders by symbol (will cap decisions)", pending=pending_orders_by_symbol
             )
 
-        if not self._broker_class:
+        broker_required = run_config.get("broker_required", True)
+        if not self._broker_class and broker_required:
             logger.error(
                 "Alpaca keys required but not configured. Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env. No fallback."
             )
@@ -164,8 +166,28 @@ class TradingPipeline:
         start_date = (datetime.now() - relativedelta(months=3)).strftime("%Y-%m-%d")
 
         # 3. Refresh data (right before trading)
-        logger.info("Refreshing market data", start_date=start_date, end_date=end_date)
-        self._refresh_data(tickers, start_date, end_date)
+        financial_limit = int(run_config.get("financial_limit", 1))
+        logger.info(
+            "Refreshing market data",
+            start_date=start_date,
+            end_date=end_date,
+            financial_limit=financial_limit,
+        )
+        self._refresh_data(
+            tickers, start_date, end_date, financial_limit=financial_limit
+        )
+        from src.data.ticker_dossier import build_dossiers_for_tickers, refresh_benchmarks
+
+        refresh_benchmarks(self.data_provider, start_date, end_date)
+        dossier_limit = int(run_config.get("dossier_financial_limit", 5))
+        self._ticker_dossiers = build_dossiers_for_tickers(
+            self.data_provider,
+            tickers,
+            start_date,
+            end_date,
+            financial_limit=dossier_limit,
+        )
+        run_config["llm_cache"] = run_config.get("llm_cache", True)
 
         next_earnings_by_ticker: Dict[str, Optional[str]] = {}
         blackout = int(run_config.get("earnings_blackout_days", 0) or 0)
@@ -241,10 +263,46 @@ class TradingPipeline:
         except Exception as e:
             logger.warning("Could not load intra-week stock snapshots", error=str(e))
 
-        # 4. Run all agents
+        from src.portfolio.regime import apply_regime_to_run_config, detect_regime
+
+        regime = detect_regime(self.data_provider, start_date, end_date)
+        run_config = apply_regime_to_run_config(run_config, regime)
+
+        registered_keys = self.registry.get_agent_keys()
+        tier_mode = str(run_config.get("agent_tier_mode", "full"))
+        override_agents = run_config.get("active_agent_keys")
+        if isinstance(override_agents, str):
+            override_agents = [a.strip() for a in override_agents.split(",") if a.strip()]
+        active_agent_keys = resolve_active_agent_keys(
+            tier_mode=tier_mode,
+            config_path=run_config.get("agents_tiers_path"),
+            override=override_agents,
+            core_only=bool(run_config.get("agent_tier_core_only", False)),
+            registered_keys=registered_keys,
+        )
+        skipped = skipped_agent_keys(registered_keys, active_agent_keys)
+        min_w = float(run_config.get("min_agent_weight_to_run", 0.15))
+        weights = self.registry.get_weights()
+        if min_w > 0:
+            active_agent_keys = [
+                k for k in active_agent_keys if float(weights.get(k, 1.0)) >= min_w
+            ]
+            skipped = skipped_agent_keys(registered_keys, active_agent_keys)
+        run_config["active_agents"] = active_agent_keys
+        run_config["skipped_agents"] = skipped
+        logger.info(
+            "Resolved active agents",
+            tier_mode=tier_mode,
+            active_count=len(active_agent_keys),
+            skipped_count=len(skipped),
+        )
+
+        # 4. Run active agents
         logger.info("Running agent analysis")
         try:
-            agent_signals = self._run_agents(tickers, start_date, end_date)
+            agent_signals = self._run_agents(
+                tickers, start_date, end_date, active_agent_keys=active_agent_keys
+            )
         finally:
             if intraweek_token is not None:
                 try:
@@ -258,8 +316,9 @@ class TradingPipeline:
             tickers, portfolio, start_date, end_date
         )
 
-        # 6. Get agent weights
-        agent_weights = self.registry.get_weights()
+        # 6. Get agent weights (active agents only for aggregation)
+        all_weights = self.registry.get_weights()
+        agent_weights = {k: all_weights[k] for k in active_agent_keys if k in all_weights}
 
         # 7. Generate portfolio decisions
         enable_cc = bool(run_config.get("enable_covered_calls", False))
@@ -304,6 +363,12 @@ class TradingPipeline:
                 cash_rotation_min_buy_notional_pct_equity=float(
                     run_config.get("cash_rotation_min_buy_notional_pct_equity", 0.02)
                 ),
+                max_position_pct=float(run_config.get("max_position_pct", 0.20)),
+                max_sector_pct=float(run_config.get("max_sector_pct", 0.35)),
+                max_csp_tickers=int(run_config.get("max_csp_tickers", 2)),
+                max_csp_collateral_pct=float(run_config.get("max_csp_collateral_pct", 0.10)),
+                wash_sale_days=int(run_config.get("wash_sale_days", 0)),
+                buy_disagreement_penalty=int(run_config.get("buy_disagreement_penalty", 5)),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(
@@ -319,6 +384,17 @@ class TradingPipeline:
         decision_diagnostics = (
             getattr(self.portfolio_manager, "_last_rebalance_diagnostics", {}) or {}
         )
+        if int(decision_diagnostics.get("cash_rotation_sell_count", 0) or 0) > 0:
+            try:
+                from src.utils.alerts import send_alert
+
+                send_alert(
+                    "Cash rotation sells",
+                    f"{decision_diagnostics.get('cash_rotation_sell_count')} rotation sells this run",
+                    decision_diagnostics,
+                )
+            except Exception:
+                pass
 
         # 8. Execute trades (if enabled)
         execution_results = None
@@ -505,6 +581,7 @@ class TradingPipeline:
             "decision_diagnostics": decision_diagnostics,
             "learning_context": learning_context,
             "csp_results": csp_results,
+            "regime": run_config.get("regime") or {},
         }
 
         logger.info("Weekly trading cycle complete", decision_count=len(decisions))
@@ -559,6 +636,7 @@ class TradingPipeline:
         end_date: str,
         parallel: bool = True,
         max_workers: Optional[int] = None,
+        financial_limit: int = 1,
     ):
         """
         Refresh market data for all tickers (with optional parallel execution)
@@ -577,13 +655,15 @@ class TradingPipeline:
                 # Fetch prices (will be cached)
                 self.data_provider.get_prices(ticker, start_date, end_date)
                 # Fetch financial metrics
-                self.data_provider.get_financial_metrics(ticker, end_date, limit=10)
+                self.data_provider.get_financial_metrics(
+                    ticker, end_date, limit=financial_limit
+                )
                 # Fetch line items
                 self.data_provider.get_line_items(
                     ticker,
                     ["revenue", "net_income", "free_cash_flow", "total_debt"],
                     end_date,
-                    limit=10,
+                    limit=financial_limit,
                 )
                 return ticker, True, None
             except Exception as e:
@@ -612,17 +692,19 @@ class TradingPipeline:
         start_date: str,
         end_date: str,
         batch_size: int = 100,
+        active_agent_keys: Optional[List[str]] = None,
     ) -> Dict[str, Dict[str, AgentSignal]]:
         """
-        Run all registered agents on tickers (with optional parallel execution)
+        Run registered agents on tickers (with optional parallel execution)
 
         Args:
             tickers: List of tickers to analyze
             start_date: Analysis start date
             end_date: Analysis end date
             batch_size: Number of tickers to process per batch (for large universes)
+            active_agent_keys: Subset of agent keys to run (default: all registered)
         """
-        agents = self.registry.get_all()
+        agents = self.registry.get_active(active_agent_keys)
         agent_signals = {}
 
         # For large universes, process in batches
@@ -697,6 +779,12 @@ class TradingPipeline:
         batch_size: int,
     ) -> Dict[str, AgentSignal]:
         """Run a single agent on tickers"""
+        dossiers = getattr(self, "_ticker_dossiers", {}) or {}
+        analyze_kw = {
+            "dossiers": dossiers,
+            "agent_key": agent_key,
+            "llm_cache": True,
+        }
         try:
             use_batching = len(tickers) > batch_size
 
@@ -727,15 +815,13 @@ class TradingPipeline:
                     )
 
                     try:
-                        # Enable parallel processing for batches (but limit concurrency for local Ollama)
                         batch_signals = agent.analyze_multiple(
                             batch_tickers,
                             start_date,
                             end_date,
                             parallel=True,
-                            max_workers=min(
-                                2, len(batch_tickers)
-                            ),  # Limit to 2 concurrent per agent for local Ollama
+                            max_workers=min(2, len(batch_tickers)),
+                            **analyze_kw,
                         )
                         all_signals.update(batch_signals)
                     except Exception as e:
@@ -768,9 +854,8 @@ class TradingPipeline:
                     start_date,
                     end_date,
                     parallel=True,
-                    max_workers=min(
-                        2, len(tickers)
-                    ),  # Limit to 2 concurrent per agent for local Ollama
+                    max_workers=min(2, len(tickers)),
+                    **analyze_kw,
                 )
                 logger.info(
                     "Agent complete",
