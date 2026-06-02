@@ -108,6 +108,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--skip-deepseek", action="store_true", help="Skip DeepSeek check")
     p.add_argument("--skip-smtp", action="store_true", help="Skip SMTP login check")
     p.add_argument("--skip-finnhub", action="store_true", help="Skip Finnhub check")
+    p.add_argument(
+        "--skip-biotech",
+        action="store_true",
+        help="Skip biotech Alpaca check (weekly stock scan does not use biotech account)",
+    )
     return p.parse_args(argv)
 
 
@@ -115,8 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     checks: list[tuple[str, Callable[[], None]]] = [
         ("main_alpaca", _check_main_alpaca),
-        ("biotech_alpaca", _check_biotech_alpaca),
     ]
+    if not args.skip_biotech:
+        checks.append(("biotech_alpaca", _check_biotech_alpaca))
     if not args.skip_deepseek:
         checks.append(("deepseek", _check_deepseek))
     if not args.skip_smtp:
