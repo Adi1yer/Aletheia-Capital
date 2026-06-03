@@ -167,6 +167,30 @@ def main() -> None:
         help="Min buy size as fraction of equity (used with --cash-rotation-min-buy-notional-usd, whichever is larger).",
     )
     p.add_argument(
+        "--max-cash-rotation-sells",
+        type=int,
+        default=3,
+        help="Max cash-rotation sells per weekly rebalance (default 3).",
+    )
+    p.add_argument(
+        "--min-hold-weeks-before-rotation",
+        type=int,
+        default=2,
+        help="Skip cash-rotation sells for positions opened within N weeks (default 2).",
+    )
+    p.add_argument(
+        "--min-csp-premium-usd",
+        type=float,
+        default=75.0,
+        help="Minimum estimated CSP premium in USD (default 75).",
+    )
+    p.add_argument(
+        "--min-csp-annualized-yield-pct",
+        type=float,
+        default=3.0,
+        help="Minimum annualized CSP yield percent (default 3.0).",
+    )
+    p.add_argument(
         "--profile",
         type=str,
         choices=("balanced", "conservative", "aggressive"),
@@ -350,6 +374,10 @@ def main() -> None:
         "regime_mode": (args.regime_mode or "").strip(),
         "wash_sale_days": int(args.wash_sale_days),
         "min_agent_weight_to_run": 0.15,
+        "max_cash_rotation_sells": int(args.max_cash_rotation_sells),
+        "min_hold_weeks_before_rotation": int(args.min_hold_weeks_before_rotation),
+        "min_csp_premium_usd": float(args.min_csp_premium_usd),
+        "min_csp_annualized_yield_pct": float(args.min_csp_annualized_yield_pct),
     }
     if profile_name:
         run_config = merge_run_profile(run_config, profile_name)

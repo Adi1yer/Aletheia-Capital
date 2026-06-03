@@ -109,6 +109,28 @@ poetry run python src/backtest.py --tickers AAPL,MSFT --start-date 2023-01-01 --
 - Contains: Trade history, returns, win rates for each agent
 - Persists: Data saved between runs
 
+### Learning loop artifacts
+
+Weekly CI runs also persist:
+
+| File | Purpose |
+|------|---------|
+| `data/performance/agent_scorecard.json` | Directional accuracy + confidence-weighted returns |
+| `data/performance/agent_feedback.json` | Prompt injection blocks per agent |
+| `data/performance/policy_calibration.json` | Learned rebalance knobs (buy/sell confidence, rotation edge, CSP floor) |
+| `data/performance/decision_ledger.jsonl` | Buy/sell attribution with forward returns |
+| `data/performance/options_ledger.jsonl` | CC/CSP fill outcomes |
+| `data/performance/weekly_ledger.jsonl` | Compact run snapshot when full scan cache unavailable |
+| `data/performance/learning_changelog.jsonl` | Weight and policy changes per run |
+| `data/performance/fill_ledger.jsonl` | Alpaca fills with slippage vs decision price |
+| `data/performance/portfolio_attribution.jsonl` | Weekly equity delta, trading vs carry PnL |
+| `data/performance/counterfactual_ledger.jsonl` | High-conviction holds with forward returns |
+| `data/performance/confidence_calibration.json` | Empirical confidence bins per agent |
+
+Policy knobs load from the saved file when fresh (≤12 weeks), then apply bounded weekly deltas. Agent weights clamp between **0.1 and 3.0**. Weight updates use a **70/30 signal/dollar blend** when ≥4 weeks of portfolio attribution exist, and pass **walk-forward promotion gates** before saving.
+
+Monthly calibration A/B: `poetry run python scripts/calibration_eval.py --source scan_cache`
+
 ## Automatic Weight Updates
 
 ### When Weights Update

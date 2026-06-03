@@ -157,6 +157,14 @@ def enrich_payload_with_prior_day_lifecycle(account: Account, payload: Dict[str,
     delta = _lifecycle_delta_dict(prior, payload)
     delta["prior_snapshot_found"] = True
     payload["position_lifecycle_vs_prior_day"] = delta
+    payload["equity_delta_vs_prior"] = round(
+        float(payload.get("equity") or 0) - float(prior.get("equity") or 0), 2
+    )
+    pe = float(prior.get("equity") or 0)
+    if pe > 0:
+        payload["equity_delta_pct_vs_prior"] = round(
+            (float(payload.get("equity") or 0) - pe) / pe * 100, 4
+        )
 
 
 def _underlying_lifecycle_states(oldest: Dict[str, Any], newest: Dict[str, Any]) -> Dict[str, str]:

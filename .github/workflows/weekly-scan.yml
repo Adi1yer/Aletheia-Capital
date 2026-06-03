@@ -35,16 +35,31 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
-      - name: Restore scan cache and performance data
+      - name: Restore performance data (learning files)
+        uses: actions/cache/restore@v4
+        id: perf_cache_restore
+        with:
+          path: data/performance
+          key: perf-${{ github.repository }}-main
+          restore-keys: |
+            perf-${{ github.repository }}-
+
+      - name: Restore scan run cache
         uses: actions/cache/restore@v4
         id: scan_cache_restore
         with:
-          path: |
-            data/scan_cache
-            data/performance
-          key: scan-cache-${{ github.repository }}-${{ github.ref_name }}
+          path: data/scan_cache
+          key: scan-${{ github.repository }}-main
           restore-keys: |
-            scan-cache-${{ github.repository }}-
+            scan-${{ github.repository }}-
+
+      - name: Cache restore diagnostics
+        run: |
+          mkdir -p data/performance data/scan_cache
+          echo "performance cache hit: ${{ steps.perf_cache_restore.outputs.cache-hit }}"
+          echo "scan cache hit: ${{ steps.scan_cache_restore.outputs.cache-hit }}"
+          echo "performance files:" && ls -la data/performance/ 2>/dev/null || true
+          echo "scan_cache run dirs:" && ls data/scan_cache/ 2>/dev/null | wc -l
 
       - name: Preflight checks
         env:
@@ -62,6 +77,13 @@ jobs:
       - name: Run weekly scan & rebalance
         env:
           SCAN_CACHE_KEEP_WEEKS: "26"
+          CACHE_HIT_PERFORMANCE: ${{ steps.perf_cache_restore.outputs.cache-hit }}
+          CACHE_HIT_SCAN: ${{ steps.scan_cache_restore.outputs.cache-hit }}
+          SCAN_CACHE_S3_BUCKET: ${{ secrets.SCAN_CACHE_S3_BUCKET }}
+          SCAN_CACHE_S3_PREFIX: ${{ secrets.SCAN_CACHE_S3_PREFIX }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
@@ -80,16 +102,36 @@ jobs:
             --stop-loss-pct 0.08 \
             --enable-covered-calls \
             --execute \
-            --enable-cash-rotation --cash-rotation-min-edge 8 \
+            --enable-cash-rotation --cash-rotation-min-edge 12 \
+            --max-cash-rotation-sells 3 \
             --enable-cash-secured-puts --min-csp-score 45 --max-csp-tickers 2 --max-csp-collateral-pct 0.10 \
+            --min-csp-premium-usd 75 --min-csp-annualized-yield-pct 3.0 \
             --max-position-pct 0.20 --max-sector-pct 0.35 \
             --regime-mode auto
 
-      - name: Save scan cache and performance data
+      - name: Upload weekly run summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-run-summary-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            data/performance/
+            data/scan_cache/**/meta.json
+            data/scan_cache/**/decisions.json
+            data/scan_cache/**/execution_results.json
+          if-no-files-found: ignore
+
+      - name: Save performance data
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: |
-            data/scan_cache
-            data/performance
-          key: scan-cache-${{ github.repository }}-${{ github.ref_name }}
+          path: data/performance
+          key: perf-${{ github.repository }}-main
+
+      - name: Save scan run cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/scan_cache
+          key: scan-${{ github.repository }}-main

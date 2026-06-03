@@ -130,6 +130,10 @@ class AlpacaBroker:
                     "symbol": o.symbol,
                     "side": getattr(o.side, "value", str(o.side)).lower(),
                     "qty": int(float(o.qty)) if o.qty else 0,
+                    "filled_qty": int(float(o.filled_qty)) if getattr(o, "filled_qty", None) else int(float(o.qty)) if o.qty else 0,
+                    "filled_avg_price": float(o.filled_avg_price)
+                    if getattr(o, "filled_avg_price", None) is not None
+                    else None,
                     "status": getattr(o.status, "value", str(o.status)).lower(),
                     "filled_at": str(o.filled_at)
                     if hasattr(o, "filled_at") and o.filled_at

@@ -259,6 +259,6 @@ class BaseAgent(ABC):
     def update_weight(self, new_weight: float):
         """Update agent weight based on performance"""
         old_weight = self.weight
-        self.weight = max(0.0, min(2.0, new_weight))  # Clamp between 0 and 2
+        self.weight = max(0.0, min(3.0, new_weight))  # Clamp between 0 and 3 (matches PerformanceTracker)
         logger.info("Updated agent weight", agent=self.name, old_weight=old_weight, new_weight=self.weight)
 

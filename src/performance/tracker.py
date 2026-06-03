@@ -1,7 +1,8 @@
 """Agent performance tracking system"""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
+from pathlib import Path
 import math
 from pydantic import BaseModel
 from src.agents.base import AgentSignal
@@ -288,6 +289,101 @@ class PerformanceTracker:
             logger.warning("Could not load from scan cache", error=str(e))
             return 0
 
+    def load_from_weekly_ledger(
+        self,
+        limit_pairs: int = 5,
+        path: Optional[str] = None,
+    ) -> int:
+        """
+        Load performance from consecutive weekly ledger rows (scan_cache fallback).
+
+        Returns:
+            Number of agent-ticker observations added.
+        """
+        try:
+            from src.performance.weekly_ledger import LEDGER_PATH, _read_lines
+
+            ledger_path = Path(path) if path else LEDGER_PATH
+            rows = _read_lines(ledger_path)
+            if len(rows) < 2:
+                return 0
+
+            rows = sorted(rows, key=lambda r: r.get("run_date") or "")[-(limit_pairs + 1) :]
+            added = 0
+            for i in range(len(rows) - 1):
+                left, right = rows[i], rows[i + 1]
+                left_t = left.get("tickers") or {}
+                right_t = right.get("tickers") or {}
+                common = set(left_t) & set(right_t)
+                if not common:
+                    continue
+
+                for agent_key in set(
+                    ak
+                    for t in common
+                    for ak in ((left_t.get(t) or {}).get("agent_signals") or {})
+                ):
+                    if agent_key not in self._performance:
+                        self._performance[agent_key] = AgentPerformance(agent_key=agent_key)
+
+                    for ticker in common:
+                        sig = ((left_t.get(ticker) or {}).get("agent_signals") or {}).get(
+                            agent_key
+                        )
+                        if not isinstance(sig, dict):
+                            continue
+                        p0 = float((left_t[ticker] or {}).get("price") or 0)
+                        p1 = float((right_t[ticker] or {}).get("price") or 0)
+                        if p0 <= 0:
+                            continue
+                        ret_pct = ((p1 - p0) / p0) * 100
+
+                        sig_val = sig.get("signal")
+                        conf = int(sig.get("confidence", 50))
+                        weight = conf / 100.0
+
+                        if sig_val == "bullish":
+                            contrib = ret_pct * weight if ret_pct > 0 else -abs(ret_pct) * weight
+                        elif sig_val == "bearish":
+                            contrib = (-ret_pct) * weight if ret_pct < 0 else -abs(ret_pct) * weight
+                        else:
+                            contrib = 0.0
+
+                        self._performance[agent_key].trade_history.append(
+                            {
+                                "ticker": ticker,
+                                "action": "weekly_ledger",
+                                "quantity": 1,
+                                "entry_price": p0,
+                                "entry_date": left.get("run_date"),
+                                "exit_price": p1,
+                                "exit_date": right.get("run_date"),
+                                "return_pct": contrib,
+                                "timestamp": datetime.now().isoformat(),
+                            }
+                        )
+                        self._performance[agent_key].total_trades += 1
+                        self._performance[agent_key].total_return_pct += contrib
+                        if contrib > 0:
+                            self._performance[agent_key].winning_trades += 1
+                        elif contrib < 0:
+                            self._performance[agent_key].losing_trades += 1
+                        if self._performance[agent_key].total_trades > 0:
+                            self._performance[agent_key].average_return_pct = (
+                                self._performance[agent_key].total_return_pct
+                                / self._performance[agent_key].total_trades
+                            )
+                        self._performance[agent_key].last_updated = datetime.now()
+                        added += 1
+
+            if added > 0:
+                self._save_performance()
+                logger.info("Loaded performance from weekly ledger", observations=added)
+            return added
+        except Exception as e:
+            logger.warning("Could not load from weekly ledger", error=str(e))
+            return 0
+
     def _decay_weighted_avg_return(self, agent_key: str, half_life_weeks: float) -> Optional[float]:
         if half_life_weeks <= 0:
             return None
@@ -327,26 +423,35 @@ class PerformanceTracker:
         smoothing_factor: float = 0.3,
         scorecard_metrics: Optional[Dict[str, Dict[str, Any]]] = None,
         decay_half_life_weeks: float = 0.0,
-    ) -> Dict[str, float]:
+        current_weights: Optional[Dict[str, float]] = None,
+        min_observations_for_move: int = 15,
+        max_weight_delta_per_run: float = 0.15,
+        portfolio_metrics: Optional[Dict[str, float]] = None,
+        dollar_blend: float = 0.30,
+        attribution_weeks: int = 0,
+        min_attribution_weeks: int = 4,
+    ) -> Tuple[Dict[str, float], Dict[str, Any]]:
         """
-        Calculate new weights based on agent performance
-        
-        Args:
-            min_weight: Minimum weight (default: 0.1)
-            max_weight: Maximum weight (default: 3.0)
-            smoothing_factor: How much to adjust weights (0.0 = no change, 1.0 = full adjustment)
-            scorecard_metrics: Optional per-agent rows from agent scorecard (accuracy, cw return).
-            decay_half_life_weeks: If >0, weight recent trade_history returns with exponential decay.
-        
+        Calculate new weights based on agent performance.
+
+        When attribution_weeks >= min_attribution_weeks, blends signal score with
+        dollar attribution (default 70/30).
+
         Returns:
-            Dictionary mapping agent_key to new weight
+            (new_weights, meta) where meta has weight_changes and weight_skips lists.
         """
         scorecard_metrics = scorecard_metrics or {}
+        portfolio_metrics = portfolio_metrics or {}
+        current_weights = current_weights or {}
+        meta: Dict[str, Any] = {"weight_changes": [], "weight_skips": []}
+        use_dollar = attribution_weeks >= min_attribution_weeks and bool(portfolio_metrics)
+        signal_weight = 1.0 - dollar_blend if use_dollar else 1.0
+        meta["dollar_blend_active"] = use_dollar
 
-        agent_keys = set(self._performance.keys()) | set(scorecard_metrics.keys())
+        agent_keys = set(self._performance.keys()) | set(scorecard_metrics.keys()) | set(portfolio_metrics.keys())
         if not agent_keys:
             logger.warning("No performance data available, using equal weights")
-            return {}
+            return {}, meta
 
         agent_returns: Dict[str, float] = {}
         for agent_key in agent_keys:
@@ -356,7 +461,10 @@ class PerformanceTracker:
                 decayed = self._decay_weighted_avg_return(agent_key, decay_half_life_weeks)
                 base = decayed if decayed is not None else perf.average_return_pct
             row = scorecard_metrics.get(agent_key)
-            if isinstance(row, dict) and row.get("directional_observations", 0):
+            obs = 0
+            if isinstance(row, dict):
+                obs = int(row.get("directional_observations", 0) or 0)
+            if isinstance(row, dict) and obs:
                 acc = float(row.get("directional_accuracy") or 0)
                 cw = float(row.get("confidence_weighted_return_pct") or 0)
                 sc_score = acc * 50.0 + cw
@@ -364,42 +472,62 @@ class PerformanceTracker:
                     base = 0.5 * base + 0.5 * sc_score
                 else:
                     base = sc_score
+            signal_score = base
+            if use_dollar and agent_key in portfolio_metrics:
+                dollar_score = float(portfolio_metrics[agent_key])
+                base = signal_weight * signal_score + dollar_blend * dollar_score
             agent_returns[agent_key] = base
 
         if not agent_returns:
-            return {}
-        
-        # Find min and max returns for normalization
+            return {}, meta
+
         min_return = min(agent_returns.values())
         max_return = max(agent_returns.values())
         return_range = max_return - min_return if max_return != min_return else 1.0
-        
-        # Calculate new weights
-        new_weights = {}
+
+        new_weights: Dict[str, float] = {}
         for agent_key, avg_return in agent_returns.items():
-            # Normalize return to 0-1 scale
+            row = scorecard_metrics.get(agent_key) or {}
+            obs = int(row.get("directional_observations", 0) or 0)
+            if obs < min_observations_for_move:
+                cw = current_weights.get(agent_key, 1.0)
+                new_weights[agent_key] = cw
+                meta["weight_skips"].append(
+                    {
+                        "agent": agent_key,
+                        "reason": "insufficient_observations",
+                        "observations": obs,
+                        "required": min_observations_for_move,
+                    }
+                )
+                continue
+
             if return_range > 0:
                 normalized_return = (avg_return - min_return) / return_range
             else:
-                normalized_return = 0.5  # Equal if all same
-            
-            # Map to weight range (better returns = higher weights)
+                normalized_return = 0.5
+
             target_weight = min_weight + (normalized_return * (max_weight - min_weight))
-            
-            # Get current weight (assume 1.0 if not in performance)
-            current_weight = 1.0
-            if agent_key in self._performance:
-                # Could use previous weight if stored
-                pass
-            
-            # Smooth the adjustment
-            new_weight = current_weight + (target_weight - current_weight) * smoothing_factor
-            new_weight = max(min_weight, min(max_weight, new_weight))
-            
+            current_weight = float(current_weights.get(agent_key, 1.0))
+            raw_new = current_weight + (target_weight - current_weight) * smoothing_factor
+            delta = raw_new - current_weight
+            if abs(delta) > max_weight_delta_per_run:
+                raw_new = current_weight + max(-max_weight_delta_per_run, min(max_weight_delta_per_run, delta))
+            new_weight = max(min_weight, min(max_weight, raw_new))
             new_weights[agent_key] = new_weight
-        
+
+            if abs(new_weight - current_weight) > 0.01:
+                meta["weight_changes"].append(
+                    {
+                        "agent": agent_key,
+                        "old": round(current_weight, 3),
+                        "new": round(new_weight, 3),
+                        "observations": obs,
+                    }
+                )
+
         logger.info("Calculated new weights from performance", weight_count=len(new_weights))
-        return new_weights
+        return new_weights, meta
     
     def _load_performance(self):
         """Load performance data from disk"""

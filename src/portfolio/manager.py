@@ -158,6 +158,10 @@ class PortfolioManager:
         max_csp_collateral_pct: float = 0.10,
         wash_sale_days: int = 0,
         buy_disagreement_penalty: int = 5,
+        max_cash_rotation_sells: int = 3,
+        min_hold_weeks_before_rotation: int = 2,
+        min_csp_premium_usd: float = 75.0,
+        min_csp_annualized_yield_pct: float = 3.0,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -197,12 +201,17 @@ class PortfolioManager:
             "csp_skipped_cap": 0,
             "wash_sale_blocks": 0,
             "buy_disagreement_flags": 0,
+            "rotation_sell_tickers": [],
+            "csp_skipped_economics": 0,
         }
         self._cash_rotation_reasons: Dict[str, str] = {}
+        self._rotation_sell_details: List[Dict[str, Any]] = []
 
         from src.portfolio.wash_sale import blocked_tickers, record_sell
         from src.portfolio.sectors import get_sector
+        from src.performance.weekly_ledger import position_open_dates
 
+        position_open_dates_map = position_open_dates()
         wash_blocked = blocked_tickers(int(wash_sale_days))
         sector_value: Dict[str, float] = {}
 
@@ -331,8 +340,15 @@ class PortfolioManager:
             if not slotted and enable_cash_secured_puts:
                 diagnostics["csp_scored_count"] += 1
                 csp_score = self._score_cash_secured_put(ticker, agent_signals, agent_weights)
-                if csp_score >= min_csp_score:
+                if csp_score >= min_csp_score and self._csp_passes_economics(
+                    price,
+                    csp_score,
+                    min_csp_premium_usd,
+                    min_csp_annualized_yield_pct,
+                ):
                     csp_candidates.append((ticker, int(csp_score)))
+                elif csp_score >= min_csp_score:
+                    diagnostics["csp_skipped_economics"] += 1
 
         diagnostics["buy_candidates_pre_rank"] = len(buy_candidates)
         buy_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -352,6 +368,9 @@ class PortfolioManager:
             rotation_excluded: Set[str] = set()
             max_steps = max(len(tickers), 1) + 10
             for _ in range(max_steps):
+                if int(diagnostics["cash_rotation_sell_count"]) >= int(max_cash_rotation_sells):
+                    diagnostics["cash_rotation_skip_reason"] = "max_rotation_sells_reached"
+                    break
                 if self._any_buy_allocatable_for_budget(
                     buy_candidates,
                     budget,
@@ -384,6 +403,14 @@ class PortfolioManager:
                 if best_buy_score < weakest_metric + int(cash_rotation_min_edge):
                     diagnostics["cash_rotation_skipped_edge"] += 1
                     break
+                if not self._rotation_hold_elapsed(
+                    weakest, position_open_dates_map, int(min_hold_weeks_before_rotation)
+                ):
+                    rotation_excluded.add(weakest)
+                    diagnostics["cash_rotation_skipped_hold_period"] = int(
+                        diagnostics.get("cash_rotation_skipped_hold_period", 0)
+                    ) + 1
+                    continue
                 allowed = self._calculate_allowed_actions(
                     weakest,
                     portfolio,
@@ -408,12 +435,21 @@ class PortfolioManager:
                 proceeds += qty_w * px_w
                 budget = max(0.0, float(portfolio.cash) + float(proceeds) - buffer)
                 diagnostics["cash_rotation_sell_count"] += 1
-                self._cash_rotation_reasons[weakest] = (
+                reason = (
                     f"Cash rotation: sell long to fund buy candidates "
                     f"(held bullish metric {weakest_metric} vs best buy {best_buy_score})"
                 )
+                self._cash_rotation_reasons[weakest] = reason
+                self._rotation_sell_details.append(
+                    {
+                        "ticker": weakest,
+                        "reason": reason,
+                        "held_metric": weakest_metric,
+                        "best_buy_score": best_buy_score,
+                    }
+                )
 
-        # Build unified ranked list: (ticker, score, type)
+        diagnostics["rotation_sell_tickers"] = list(self._rotation_sell_details)
         unified: List[Tuple[str, int, str]] = []
         for t, s in buy_candidates:
             unified.append((t, s, "buy"))
@@ -677,6 +713,46 @@ class PortfolioManager:
         return int(min(100.0, float(aggregated.get("bullish_score") or 0.0)))
 
     @staticmethod
+    def _rotation_hold_elapsed(
+        ticker: str,
+        position_open_dates_map: Dict[str, str],
+        min_hold_weeks: int,
+    ) -> bool:
+        if min_hold_weeks <= 0:
+            return True
+        opened = position_open_dates_map.get(ticker)
+        if not opened:
+            return True
+        try:
+            open_dt = datetime.strptime(str(opened)[:10], "%Y-%m-%d")
+            today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            weeks = (today - open_dt).days / 7.0
+            return weeks >= float(min_hold_weeks)
+        except Exception:
+            return True
+
+    @staticmethod
+    def _csp_passes_economics(
+        price: float,
+        csp_score: int,
+        min_premium_usd: float,
+        min_annualized_yield_pct: float,
+        days_to_expiry: int = 30,
+    ) -> bool:
+        """Conservative pre-filter before ranking CSP candidates."""
+        if price <= 0:
+            return False
+        strike = price * (0.94 if csp_score >= 55 else 0.91)
+        collateral = strike * 100.0
+        if collateral <= 0:
+            return False
+        est_premium = max(price * 100.0 * 0.003, float(min_premium_usd) * 0.5)
+        if est_premium < float(min_premium_usd):
+            return False
+        annualized = (est_premium / collateral) * (365.0 / max(1, days_to_expiry)) * 100.0
+        return annualized >= float(min_annualized_yield_pct)
+
+    @staticmethod
     def _any_buy_allocatable_for_budget(
         buy_candidates: List[Tuple[str, int]],
         budget: float,
@@ -878,6 +954,14 @@ class PortfolioManager:
             sig_reasoning = (
                 signal.reasoning if hasattr(signal, "reasoning") else signal.get("reasoning", "")
             )
+            try:
+                from src.performance.confidence_calibration import calibrate_confidence
+                from src.performance.promotion_gates import calibration_hold_active
+
+                if not calibration_hold_active():
+                    sig_conf = calibrate_confidence(agent_key, int(sig_conf))
+            except Exception:
+                pass
             weighted_confidence = sig_conf * weight
 
             if sig_signal == "bullish":

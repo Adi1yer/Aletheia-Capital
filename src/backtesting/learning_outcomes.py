@@ -151,6 +151,90 @@ def rebuild_ticker_agent_calibration(
     return payload
 
 
+def rebuild_ticker_agent_calibration_from_ledger(
+    max_run_pairs: int = 40,
+    output_path: str = DEFAULT_TICKER_CALIBRATION_PATH,
+    ledger_path: str = "data/performance/weekly_ledger.jsonl",
+) -> Dict[str, Any]:
+    """Build ticker-agent calibration from compact weekly ledger rows."""
+    from pathlib import Path
+
+    from src.performance.weekly_ledger import _read_lines
+
+    rows = _read_lines(Path(ledger_path))
+    if len(rows) < 2:
+        logger.info("Ticker calibration from ledger skipped: fewer than 2 rows")
+        return {}
+
+    rows = sorted(rows, key=lambda r: r.get("run_date") or "")
+    pairs: List[Tuple[Dict, Dict]] = []
+    for i in range(len(rows) - 1):
+        pairs.append((rows[i], rows[i + 1]))
+    pairs = pairs[-max_run_pairs:]
+
+    events: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+    for left, right in pairs:
+        left_t = left.get("tickers") or {}
+        right_t = right.get("tickers") or {}
+        run_date = left.get("run_date") or ""
+        common = set(left_t) & set(right_t)
+        for ticker in common:
+            p0 = float((left_t[ticker] or {}).get("price") or 0)
+            p1 = float((right_t[ticker] or {}).get("price") or 0)
+            if p0 <= 0:
+                continue
+            ret_pct = (p1 - p0) / p0 * 100.0
+            for agent_key, sig in ((left_t[ticker] or {}).get("agent_signals") or {}).items():
+                if not isinstance(sig, dict):
+                    continue
+                sig_val = sig.get("signal")
+                conf = int(sig.get("confidence", 0) or 0)
+                hit: bool | None = None
+                if sig_val == "bullish":
+                    hit = ret_pct > 0
+                elif sig_val == "bearish":
+                    hit = ret_pct < 0
+                key = f"{agent_key}{PAIR_SEP}{ticker.upper()}"
+                events[key].append(
+                    {
+                        "signal_as_of": run_date,
+                        "signal": sig_val,
+                        "confidence": conf,
+                        "forward_return_pct": round(ret_pct, 4),
+                        "directionally_correct": hit,
+                        "sector": "unknown",
+                    }
+                )
+
+    pairs_out: Dict[str, List[Dict[str, Any]]] = {}
+    for k, ev in events.items():
+        pairs_out[k] = ev[-MAX_EVENTS_PER_PAIR:]
+
+    summary = _rollup_summary(pairs_out)
+    payload = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "run_pairs_used": len(pairs),
+        "source": "weekly_ledger",
+        "pairs": pairs_out,
+        "summary": summary,
+    }
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    try:
+        with open(output_path, "w") as f:
+            json.dump(payload, f, indent=2)
+        logger.info(
+            "Wrote ticker-agent calibration from ledger",
+            path=output_path,
+            pair_count=len(pairs_out),
+        )
+    except Exception as e:
+        logger.warning("Could not write ledger ticker calibration", error=str(e))
+
+    return payload
+
+
 def _rollup_summary(pairs: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
     """Aggregate hit rates per agent (across tickers) for quick inspection."""
     by_agent: DefaultDict[str, Dict[str, float]] = defaultdict(lambda: {"hits": 0.0, "n": 0.0})

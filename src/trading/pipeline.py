@@ -1,5 +1,6 @@
 """Weekly trading pipeline"""
 
+import os
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -211,41 +212,38 @@ class TradingPipeline:
             "feedback_refresh_error": "",
             "scorecard_present": False,
             "scan_cache_run_count": 0,
+            "scan_cache_run_count_before": 0,
+            "scan_cache_run_count_after": 0,
+            "ledger_run_count": 0,
+            "ledger_run_count_after": 0,
             "scorecard_agent_count": 0,
             "scorecard_pairs_used": 0,
             "scorecard_skip_reason": "",
             "wrote_scorecard_file": False,
             "wrote_agent_feedback": False,
+            "scorecard_present_after": False,
+            "scorecard_source": "",
+            "cache_restore_hit_performance": os.getenv("CACHE_HIT_PERFORMANCE") == "true",
+            "cache_restore_hit_scan": os.getenv("CACHE_HIT_SCAN") == "true",
+            "s3_runs_restored": 0,
+            "existing_feedback_on_disk": False,
         }
-        if scan_cache is not None and run_config.get("refresh_agent_feedback", True):
-            try:
-                from src.backtesting.feedback import refresh_feedback_from_cache
-
-                fb_meta = refresh_feedback_from_cache(
-                    scan_cache,
-                    max_run_pairs=int(run_config.get("scorecard_run_pairs", 20)),
-                )
-                learning_context["feedback_refresh_ok"] = True
-                for k in (
-                    "scan_cache_run_count",
-                    "scorecard_agent_count",
-                    "scorecard_pairs_used",
-                    "scorecard_skip_reason",
-                    "wrote_scorecard_file",
-                    "wrote_agent_feedback",
-                ):
-                    if isinstance(fb_meta, dict) and k in fb_meta:
-                        learning_context[k] = fb_meta[k]
-            except Exception as e:
-                logger.warning("Agent feedback refresh failed", error=str(e))
-                learning_context["feedback_refresh_error"] = str(e)
         try:
-            from src.backtesting.agent_evaluator import load_scorecard
+            from src.backtesting.feedback import existing_feedback_loaded
+            from src.scan_cache.remote_store import is_configured, restore_recent_runs
 
-            sc_agents = (load_scorecard() or {}).get("agents") or {}
-            learning_context["scorecard_present"] = len(sc_agents) > 0
-        except Exception:
-            learning_context["scorecard_present"] = False
+            learning_context["existing_feedback_on_disk"] = existing_feedback_loaded()
+            if is_configured():
+                learning_context["s3_runs_restored"] = restore_recent_runs(
+                    n=int(run_config.get("s3_restore_run_limit", 26))
+                )
+        except Exception as e:
+            logger.warning("Pre-run learning restore failed", error=str(e))
+
+        if scan_cache is not None and run_config.get("refresh_agent_feedback", True):
+            learning_context = self._merge_feedback_refresh(
+                learning_context, scan_cache, run_config, phase="before"
+            )
 
         # Intra-week main paper account context (daily snapshots → agent prompts via contextvar)
         intraweek_token = None
@@ -316,8 +314,59 @@ class TradingPipeline:
             tickers, portfolio, start_date, end_date
         )
 
+        current_prices = {
+            t: float(risk_analysis[t]["current_price"])
+            for t in risk_analysis
+            if isinstance(risk_analysis.get(t), dict)
+            and risk_analysis[t].get("current_price") is not None
+        }
+        try:
+            from src.performance.decision_ledger import resolve_pending_outcomes
+
+            resolved = resolve_pending_outcomes(current_prices, end_date)
+            learning_context["decision_outcomes_resolved"] = resolved
+        except Exception as e:
+            logger.warning("Decision outcome resolution failed", error=str(e))
+
+        try:
+            from src.performance.options_ledger import resolve_option_outcomes
+
+            closed_opts: List[str] = []
+            try:
+                from datetime import date as date_cls
+                from src.ops.daily_snapshots import load_snapshots_for_days
+
+                snaps = load_snapshots_for_days("stock", days=2)
+                if snaps:
+                    lc = snaps[0].get("position_lifecycle_vs_prior_day") or {}
+                    closed_opts = list(lc.get("closed_option_symbols") or [])
+            except Exception:
+                pass
+            opt_resolved = resolve_option_outcomes(
+                end_date, current_prices=current_prices, closed_option_symbols=closed_opts
+            )
+            learning_context["options_outcomes_resolved"] = opt_resolved
+        except Exception as e:
+            logger.warning("Options outcome resolution failed", error=str(e))
+
+        try:
+            from src.performance.counterfactual_ledger import resolve_pending_outcomes as resolve_cf
+
+            learning_context["counterfactual_resolved"] = resolve_cf(current_prices, end_date)
+        except Exception as e:
+            logger.warning("Counterfactual resolution failed", error=str(e))
+
+        try:
+            from src.performance.policy_calibration import apply_learned_policy
+
+            policy = apply_learned_policy(run_config, save=False)
+            learning_context["policy_calibration"] = policy
+        except Exception as e:
+            logger.warning("Learned policy apply failed", error=str(e))
+
         # 6. Get agent weights (active agents only for aggregation)
-        all_weights = self.registry.get_weights()
+        regime_mode = (run_config.get("regime") or {}).get("mode")
+        all_weights = self.registry.get_weights(regime_mode=regime_mode)
         agent_weights = {k: all_weights[k] for k in active_agent_keys if k in all_weights}
 
         # 7. Generate portfolio decisions
@@ -369,6 +418,14 @@ class TradingPipeline:
                 max_csp_collateral_pct=float(run_config.get("max_csp_collateral_pct", 0.10)),
                 wash_sale_days=int(run_config.get("wash_sale_days", 0)),
                 buy_disagreement_penalty=int(run_config.get("buy_disagreement_penalty", 5)),
+                max_cash_rotation_sells=int(run_config.get("max_cash_rotation_sells", 3)),
+                min_hold_weeks_before_rotation=int(
+                    run_config.get("min_hold_weeks_before_rotation", 2)
+                ),
+                min_csp_premium_usd=float(run_config.get("min_csp_premium_usd", 75.0)),
+                min_csp_annualized_yield_pct=float(
+                    run_config.get("min_csp_annualized_yield_pct", 3.0)
+                ),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(
@@ -422,6 +479,12 @@ class TradingPipeline:
                 )
         else:
             logger.info("Dry run mode - trades not executed")
+
+        if execute and self.broker:
+            try:
+                recent_orders = self.broker.get_recent_orders(limit=50)
+            except Exception as e:
+                logger.warning("Could not refresh recent orders after execute", error=str(e))
 
         # 8b. Covered call execution (after equity trades settle)
         cc_results: List[Dict] = []
@@ -484,7 +547,12 @@ class TradingPipeline:
                 from src.options.cash_secured_puts import CashSecuredPutManager
 
                 logger.info("Running cash-secured put step", csp_tickers=csp_lot_tickers)
-                csp_mgr = CashSecuredPutManager()
+                csp_mgr = CashSecuredPutManager(
+                    min_premium_usd=float(run_config.get("min_csp_premium_usd", 75.0)),
+                    min_annualized_yield_pct=float(
+                        run_config.get("min_csp_annualized_yield_pct", 3.0)
+                    ),
+                )
                 csp_results = csp_mgr.execute_cash_secured_puts(
                     broker=self.broker,
                     csp_tickers=csp_lot_tickers,
@@ -496,7 +564,6 @@ class TradingPipeline:
                 csp_results = [{"status": "error", "reason": str(e)}]
 
         # 9. Track performance from previous cycle
-        current_prices = {t: risk_analysis[t]["current_price"] for t in risk_analysis.keys()}
         self.cycle_tracker.record_cycle(
             agent_signals=agent_signals,
             decisions=decisions,
@@ -504,10 +571,7 @@ class TradingPipeline:
             date=end_date,
         )
 
-        # 10. Update agent weights based on performance (use scan cache when available)
-        self._update_agent_weights(scan_cache=scan_cache)
-
-        # 10b. Portfolio after execution (for cache)
+        # 10. Portfolio after execution (for cache / ledgers)
         portfolio_after = portfolio.model_dump()
         if execute and self.broker:
             try:
@@ -515,31 +579,118 @@ class TradingPipeline:
             except Exception as e:
                 logger.warning("Could not sync portfolio after execution for cache", error=str(e))
 
-        # 11. Persist full run to scan cache only for official weekly universe runs (never for test/debug/exploratory)
+        # 11. Persist run + learning artifacts (ledgers decoupled from cache save success)
         run_id = None
+        should_persist = bool(
+            run_config.get("save_to_cache")
+            or (execute and run_config.get("run_profile") == "ci-full")
+        )
+        if should_persist:
+            run_id = f"{end_date}_{uuid.uuid4().hex[:8]}"
+
         if scan_cache is not None and run_config.get("save_to_cache") is True:
             duration_seconds = time.time() - run_start
-            run_id = f"{end_date}_{uuid.uuid4().hex[:8]}"
-            data_snapshot = self._build_data_snapshot(tickers, start_date, end_date)
-            scan_cache.save_run(
+            if not run_id:
+                run_id = f"{end_date}_{uuid.uuid4().hex[:8]}"
+            try:
+                data_snapshot = self._build_data_snapshot(tickers, start_date, end_date)
+                scan_cache.save_run(
+                    run_id=run_id,
+                    run_date=end_date,
+                    config=run_config,
+                    tickers=tickers,
+                    start_date=start_date,
+                    end_date=end_date,
+                    data_snapshot=data_snapshot,
+                    agent_signals={
+                        agent_key: {t: s.model_dump() for t, s in ticker_signals.items()}
+                        for agent_key, ticker_signals in agent_signals.items()
+                    },
+                    risk_analysis=risk_analysis,
+                    decisions={t: d.model_dump() for t, d in decisions.items()},
+                    portfolio_before=portfolio.model_dump(),
+                    portfolio_after=portfolio_after,
+                    execution_results=execution_results,
+                    duration_seconds=duration_seconds,
+                )
+            except Exception as e:
+                logger.error("Scan cache save failed", error=str(e))
+                learning_context["scan_cache_save_error"] = str(e)
+
+        if should_persist and run_id:
+            learning_context = self._persist_learning_artifacts(
                 run_id=run_id,
                 run_date=end_date,
-                config=run_config,
-                tickers=tickers,
-                start_date=start_date,
-                end_date=end_date,
-                data_snapshot=data_snapshot,
-                agent_signals={
-                    agent_key: {t: s.model_dump() for t, s in ticker_signals.items()}
-                    for agent_key, ticker_signals in agent_signals.items()
-                },
-                risk_analysis=risk_analysis,
-                decisions={t: d.model_dump() for t, d in decisions.items()},
-                portfolio_before=portfolio.model_dump(),
+                run_config=run_config,
+                portfolio=portfolio,
                 portfolio_after=portfolio_after,
+                agent_signals=agent_signals,
+                risk_analysis=risk_analysis,
+                decisions=decisions,
                 execution_results=execution_results,
-                duration_seconds=duration_seconds,
+                cc_results=cc_results,
+                csp_results=csp_results,
+                scan_cache=scan_cache,
+                learning_context=learning_context,
+                recent_orders=recent_orders,
+                agent_weights=agent_weights,
             )
+
+            if scan_cache is not None and run_config.get("refresh_agent_feedback", True):
+                learning_context = self._merge_feedback_refresh(
+                    learning_context, scan_cache, run_config, phase="after"
+                )
+
+            weight_meta = self._update_agent_weights(
+                scan_cache=scan_cache,
+                run_config=run_config,
+                learning_context=learning_context,
+                run_id=run_id,
+            )
+            learning_context["weight_changes"] = (weight_meta or {}).get("weight_changes", [])
+            learning_context["weight_skips"] = (weight_meta or {}).get("weight_skips", [])
+            learning_context["promotion"] = (weight_meta or {}).get("promotion", {})
+
+            try:
+                from src.performance.policy_calibration import apply_learned_policy, save_policy, compute_policy, load_policy
+
+                proposed = compute_policy(run_config, saved_policy=load_policy())
+                promo = (weight_meta or {}).get("promotion") or {}
+                if promo.get("promote", True):
+                    save_policy(proposed)
+                    apply_learned_policy(run_config, recompute=False, save=False)
+                    learning_context["policy_calibration"] = proposed
+                else:
+                    learning_context["policy_promotion_skipped"] = promo.get("reason")
+            except Exception as e:
+                logger.warning("Policy promotion apply failed", error=str(e))
+
+            try:
+                from src.backtesting.agent_evaluator import load_scorecard
+                from src.performance.learning_changelog import append_changelog_entry
+
+                sc = learning_context.get("scorecard_source") or ""
+                regime_mode = (run_config.get("regime") or {}).get("mode") or ""
+                by_regime = (load_scorecard() or {}).get("by_regime") or {}
+                regime_counts = {
+                    k: len((v or {}).get("agents") or {}) for k, v in by_regime.items()
+                }
+                append_changelog_entry(
+                    run_id=run_id,
+                    run_date=end_date,
+                    weight_changes=learning_context.get("weight_changes"),
+                    weight_skips=learning_context.get("weight_skips"),
+                    policy_adjustments=(learning_context.get("policy_calibration") or {}).get(
+                        "adjustments"
+                    ),
+                    scorecard_source=sc,
+                    regime_mode=regime_mode,
+                    regime_bucket_counts=regime_counts,
+                    promoted=(weight_meta or {}).get("promotion", {}).get("promote"),
+                    promotion_reason=(weight_meta or {}).get("promotion", {}).get("reason"),
+                )
+            except Exception as e:
+                logger.warning("Learning changelog append failed", error=str(e))
 
         # 12. Return results (use post-execution portfolio when available)
         broker_used = self.broker is not None
@@ -874,36 +1025,252 @@ class TradingPipeline:
                 for ticker in tickers
             }
 
-    def _update_agent_weights(self, scan_cache: Optional[Any] = None):
-        """Update agent weights based on performance (scan cache + cycle tracker data)."""
-        try:
-            if scan_cache is not None:
-                self.performance_tracker.load_from_scan_cache(scan_cache, limit=5)
-            scorecard_agents = {}
-            try:
-                from src.backtesting.agent_evaluator import load_scorecard
+    def _persist_learning_artifacts(
+        self,
+        *,
+        run_id: str,
+        run_date: str,
+        run_config: Dict[str, Any],
+        portfolio: Any,
+        portfolio_after: Dict[str, Any],
+        agent_signals: Dict[str, Dict[str, AgentSignal]],
+        risk_analysis: Dict[str, Any],
+        decisions: Dict[str, Any],
+        execution_results: Dict[str, Any],
+        cc_results: List[Dict[str, Any]],
+        csp_results: List[Dict[str, Any]],
+        scan_cache: Optional[Any],
+        learning_context: Dict[str, Any],
+        recent_orders: Optional[List[Dict[str, Any]]] = None,
+        agent_weights: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Append ledgers and optional S3 upload; independent of scan_cache save success."""
+        regime_mode = (run_config.get("regime") or {}).get("mode")
 
-                sc = load_scorecard()
-                for ak, row in (sc.get("agents") or {}).items():
-                    if isinstance(row, dict) and row.get("directional_observations", 0):
-                        scorecard_agents[ak] = row
+        try:
+            from src.performance.fill_ledger import append_fills_from_run
+
+            append_fills_from_run(
+                run_id=run_id,
+                run_date=run_date,
+                decisions=decisions,
+                risk_analysis=risk_analysis,
+                execution_results=execution_results,
+                recent_orders=recent_orders,
+            )
+        except Exception as e:
+            logger.warning("Fill ledger append failed", error=str(e))
+
+        try:
+            from src.performance.weekly_ledger import (
+                append_ledger_entry,
+                build_tickers_from_run,
+                position_open_dates,
+            )
+
+            prev_opens = position_open_dates()
+            port_before = portfolio.model_dump()
+            ticker_map = build_tickers_from_run(
+                port_before,
+                {t: d.model_dump() for t, d in decisions.items()},
+                risk_analysis,
+                {
+                    ak: {t: s.model_dump() for t, s in ts.items()}
+                    for ak, ts in agent_signals.items()
+                },
+            )
+            position_opens = dict(prev_opens)
+            for t, d in decisions.items():
+                if d.action == "buy" and d.quantity > 0:
+                    position_opens[t] = run_date
+                    if t in ticker_map:
+                        ticker_map[t]["opened_this_run"] = True
+            append_ledger_entry(
+                run_id=run_id,
+                run_date=run_date,
+                active_agents=run_config.get("active_agents") or [],
+                tickers=ticker_map,
+                position_opens=position_opens,
+                regime=(run_config.get("regime") or {}).get("mode"),
+            )
+        except Exception as e:
+            logger.warning("Weekly ledger append failed", error=str(e))
+
+        try:
+            from src.performance.decision_ledger import append_decisions_from_run
+
+            append_decisions_from_run(
+                run_id=run_id,
+                run_date=run_date,
+                regime=run_config.get("regime"),
+                decisions={t: d.model_dump() for t, d in decisions.items()},
+                risk_analysis=risk_analysis,
+                agent_signals={
+                    ak: {t: s.model_dump() for t, s in ts.items()}
+                    for ak, ts in agent_signals.items()
+                },
+                execution_results=execution_results,
+            )
+        except Exception as e:
+            logger.warning("Decision ledger append failed", error=str(e))
+
+        try:
+            from src.performance.options_ledger import append_cc_results, append_csp_results
+
+            append_cc_results(
+                run_id=run_id, run_date=run_date, cc_results=cc_results, regime=regime_mode
+            )
+            append_csp_results(
+                run_id=run_id, run_date=run_date, csp_results=csp_results, regime=regime_mode
+            )
+        except Exception as e:
+            logger.warning("Options ledger append failed", error=str(e))
+
+        try:
+            from src.performance.counterfactual_ledger import append_counterfactuals_from_run
+
+            agg: Dict[str, Dict[str, Any]] = {}
+            weights = agent_weights or {}
+            for t in (decisions or {}):
+                agg[t] = self.portfolio_manager._aggregate_signals(t, agent_signals, weights)
+            append_counterfactuals_from_run(
+                run_id=run_id,
+                run_date=run_date,
+                decisions=decisions,
+                aggregated_signals=agg,
+                risk_analysis=risk_analysis,
+                min_buy_confidence=int(run_config.get("min_buy_confidence", 60)),
+                min_sell_confidence=int(run_config.get("min_sell_confidence", 60)),
+            )
+        except Exception as e:
+            logger.warning("Counterfactual ledger append failed", error=str(e))
+
+        try:
+            from src.performance.fill_ledger import recent_fills
+            from src.performance.portfolio_attribution import append_weekly_attribution
+
+            opt_premium = sum(
+                float(r.get("estimated_premium") or r.get("premium") or 0)
+                for r in (cc_results or []) + (csp_results or [])
+                if isinstance(r, dict) and r.get("status") == "executed"
+            )
+            attr = append_weekly_attribution(
+                run_id=run_id,
+                run_date=run_date,
+                portfolio_before=portfolio.model_dump(),
+                portfolio_after=portfolio_after,
+                risk_analysis=risk_analysis,
+                fills=recent_fills(run_id=run_id),
+                options_premium_usd=opt_premium,
+            )
+            learning_context["portfolio_attribution"] = attr
+        except Exception as e:
+            logger.warning("Portfolio attribution append failed", error=str(e))
+
+        if scan_cache is not None and not learning_context.get("scan_cache_save_error"):
+            try:
+                from src.scan_cache.remote_store import upload_run
+
+                if upload_run(run_id):
+                    learning_context["s3_run_uploaded"] = True
+            except Exception as e:
+                logger.warning("S3 scan upload failed", error=str(e))
+
+        return learning_context
+
+    def _update_agent_weights(
+        self,
+        scan_cache: Optional[Any] = None,
+        run_config: Optional[Dict[str, Any]] = None,
+        learning_context: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update agent weights based on performance (scan cache + cycle tracker data)."""
+        run_config = run_config or {}
+        learning_context = learning_context or {}
+        meta: Dict[str, Any] = {"weight_changes": [], "weight_skips": [], "promotion": {}}
+        try:
+            cache_added = 0
+            if scan_cache is not None:
+                cache_added = self.performance_tracker.load_from_scan_cache(scan_cache, limit=5)
+            ledger_count = int(
+                learning_context.get("ledger_run_count_after")
+                or learning_context.get("ledger_run_count")
+                or 0
+            )
+            if cache_added == 0 and ledger_count >= 2:
+                self.performance_tracker.load_from_weekly_ledger(limit_pairs=5)
+            scorecard_agents = {}
+            sc_full: Dict[str, Any] = {}
+            try:
+                from src.backtesting.agent_evaluator import blend_scorecard_metrics, load_scorecard
+
+                sc_full = load_scorecard()
+                regime_mode = (run_config.get("regime") or {}).get("mode") or "neutral"
+                scorecard_agents = blend_scorecard_metrics(sc_full, regime_mode)
             except Exception:
                 pass
-            new_weights = self.performance_tracker.calculate_weights_from_performance(
+
+            portfolio_metrics: Dict[str, float] = {}
+            attribution_weeks = 0
+            if run_id:
+                try:
+                    from src.performance.portfolio_attribution import (
+                        agent_dollar_metrics,
+                        attribution_week_count,
+                    )
+
+                    portfolio_metrics = agent_dollar_metrics(run_id)
+                    attribution_weeks = attribution_week_count()
+                except Exception:
+                    pass
+
+            current_weights = self.registry.get_weights(
+                regime_mode=(run_config.get("regime") or {}).get("mode")
+            )
+            dollar_blend = float(run_config.get("dollar_blend", 0.30))
+            new_weights, weight_meta = self.performance_tracker.calculate_weights_from_performance(
                 min_weight=0.1,
                 max_weight=3.0,
                 smoothing_factor=0.2,
                 scorecard_metrics=scorecard_agents,
                 decay_half_life_weeks=8.0,
+                current_weights=current_weights,
+                min_observations_for_move=15,
+                max_weight_delta_per_run=0.15,
+                portfolio_metrics=portfolio_metrics,
+                dollar_blend=dollar_blend,
+                attribution_weeks=attribution_weeks,
             )
+            meta["weight_changes"] = weight_meta.get("weight_changes", [])
+            meta["weight_skips"] = weight_meta.get("weight_skips", [])
+            meta["dollar_blend_active"] = weight_meta.get("dollar_blend_active", False)
 
-            if new_weights:
-                # Update weights in registry
+            from src.performance.promotion_gates import evaluate_proposal
+
+            promo = evaluate_proposal(
+                proposed_weights=new_weights,
+                proposed_policy=(run_config.get("policy_calibration") or {}),
+                scan_cache=scan_cache,
+                baseline_weights=current_weights,
+            )
+            meta["promotion"] = promo
+
+            if new_weights and promo.get("promote", True):
                 updated_count = 0
+                regime_mode = (run_config.get("regime") or {}).get("mode")
+                by_regime = (sc_full.get("by_regime") or {}).get(regime_mode or "") or {}
+                regime_agents = (by_regime.get("agents") or {}) if isinstance(by_regime, dict) else {}
+                use_regime = regime_mode and len(regime_agents) >= 6
+
                 for agent_key, new_weight in new_weights.items():
-                    old_weight = self.registry.get_weights().get(agent_key, 1.0)
-                    if abs(new_weight - old_weight) > 0.01:  # Only update if significant change
-                        self.registry.update_weight(agent_key, new_weight)
+                    old_weight = current_weights.get(agent_key, 1.0)
+                    if abs(new_weight - old_weight) > 0.01:
+                        self.registry.update_weight(
+                            agent_key,
+                            new_weight,
+                            regime_mode=regime_mode if use_regime else None,
+                        )
                         updated_count += 1
                         logger.info(
                             "Updated agent weight",
@@ -913,15 +1280,75 @@ class TradingPipeline:
                         )
 
                 if updated_count > 0:
-                    # Save updated weights
-                    self.registry.save_weights_to_config()
+                    self.registry.save_weights_to_config(regime_mode=regime_mode if use_regime else None)
                     logger.info(
                         "Agent weights updated based on performance",
                         updated_count=updated_count,
                         total_agents=len(new_weights),
                     )
+            elif new_weights and not promo.get("promote", True):
+                logger.warning("Weight update skipped by promotion gate", reason=promo.get("reason"))
+                meta["weight_skips"].append(
+                    {"agent": "*", "reason": f"promotion_gate:{promo.get('reason')}"}
+                )
             else:
                 logger.debug("No performance data available for weight adjustment")
 
         except Exception as e:
             logger.error("Error updating agent weights", error=str(e))
+        return meta
+
+    def _merge_feedback_refresh(
+        self,
+        learning_context: Dict[str, Any],
+        scan_cache: Any,
+        run_config: Dict[str, Any],
+        phase: str = "before",
+    ) -> Dict[str, Any]:
+        """Run refresh_feedback_from_cache and merge metadata into learning_context."""
+        try:
+            from src.backtesting.feedback import refresh_feedback_from_cache
+            from src.backtesting.agent_evaluator import load_scorecard
+
+            fb_meta = refresh_feedback_from_cache(
+                scan_cache,
+                max_run_pairs=int(run_config.get("scorecard_run_pairs", 20)),
+            )
+            learning_context["feedback_refresh_ok"] = True
+            for k in (
+                "scan_cache_run_count",
+                "ledger_run_count",
+                "scorecard_agent_count",
+                "scorecard_pairs_used",
+                "scorecard_skip_reason",
+                "wrote_scorecard_file",
+                "wrote_agent_feedback",
+                "scorecard_source",
+            ):
+                if isinstance(fb_meta, dict) and k in fb_meta:
+                    learning_context[k] = fb_meta[k]
+
+            sc_agents = (load_scorecard() or {}).get("agents") or {}
+            present = len(sc_agents) > 0
+            if phase == "before":
+                learning_context["scan_cache_run_count_before"] = learning_context.get(
+                    "scan_cache_run_count", 0
+                )
+                learning_context["ledger_run_count_before"] = learning_context.get(
+                    "ledger_run_count", 0
+                )
+                learning_context["scorecard_present"] = present
+            else:
+                learning_context["scan_cache_run_count_after"] = learning_context.get(
+                    "scan_cache_run_count", 0
+                )
+                learning_context["ledger_run_count_after"] = learning_context.get(
+                    "ledger_run_count", 0
+                )
+                learning_context["scorecard_present_after"] = present
+                if present:
+                    learning_context["scorecard_present"] = True
+        except Exception as e:
+            logger.warning("Agent feedback refresh failed", phase=phase, error=str(e))
+            learning_context["feedback_refresh_error"] = str(e)
+        return learning_context

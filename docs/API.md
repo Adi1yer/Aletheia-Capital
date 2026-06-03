@@ -620,6 +620,26 @@ if metrics:
 
 ---
 
+## Learning & Self-Improvement
+
+After each official weekly run, the pipeline persists learning artifacts under `data/performance/`:
+
+- **agent_scorecard.json** — directional accuracy and confidence-weighted returns (global + by regime)
+- **agent_feedback.json** — calibration text injected into agent prompts
+- **policy_calibration.json** — learned rebalance thresholds (`min_buy_confidence`, `min_sell_confidence`, rotation edge, CSP premium floor)
+- **decision_ledger.jsonl** — executed buy/sell decisions with one-week-forward returns
+- **options_ledger.jsonl** — covered call and CSP outcomes
+- **weekly_ledger.jsonl** — compact fallback when scan cache is empty
+- **learning_changelog.jsonl** — weight and policy deltas each run
+- **fill_ledger.jsonl** — execution fills with slippage attribution
+- **portfolio_attribution.jsonl** — weekly equity delta (trading vs carry)
+- **counterfactual_ledger.jsonl** — missed high-conviction opportunities
+- **confidence_calibration.json** — empirical confidence bins per agent
+
+Agent weights in `config/agent_weights.json` adjust automatically (0.1–3.0) from scorecard + performance data, with optional **by_regime** buckets and promotion gates. Monthly calibration A/B runs via `.github/workflows/calibration-eval.yml`.
+
+---
+
 ## Support
 
 For more information:

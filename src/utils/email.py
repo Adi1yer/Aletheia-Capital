@@ -18,7 +18,7 @@ from src.llm.models import get_llm_for_agent
 logger = structlog.get_logger()
 
 
-def _load_scorecard_leaderboard(limit: int = 12) -> list:
+def _load_scorecard_leaderboard(limit: int = 12, regime_mode: Optional[str] = None) -> list:
     path = "data/performance/agent_scorecard.json"
     if not os.path.exists(path):
         return []
@@ -27,8 +27,16 @@ def _load_scorecard_leaderboard(limit: int = 12) -> list:
             data = json.load(f)
     except Exception:
         return []
+    agents_src = (data.get("agents") or {})
+    header_mode = "global"
+    if regime_mode:
+        by_regime = (data.get("by_regime") or {}).get(regime_mode) or {}
+        regime_agents = by_regime.get("agents") or {}
+        if regime_agents:
+            agents_src = regime_agents
+            header_mode = regime_mode
     rows = []
-    for ak, row in (data.get("agents") or {}).items():
+    for ak, row in agents_src.items():
         if not isinstance(row, dict):
             continue
         obs = int(row.get("directional_observations") or 0)
@@ -40,6 +48,7 @@ def _load_scorecard_leaderboard(limit: int = 12) -> list:
                 float(row.get("directional_accuracy") or 0),
                 float(row.get("confidence_weighted_return_pct") or 0),
                 obs,
+                header_mode,
             )
         )
     rows.sort(key=lambda x: x[1] * 50 + x[3], reverse=True)
@@ -282,11 +291,12 @@ class EmailNotifier:
                     text.append(f"  {line}")
                 text.append("")
 
-        lb = _load_scorecard_leaderboard()
+        lb = _load_scorecard_leaderboard(regime_mode=(results.get("regime") or {}).get("mode"))
         if lb:
-            text.append("AGENT LEADERBOARD (scan-cache scorecard)")
+            mode_label = lb[0][4] if lb else "global"
+            text.append(f"AGENT LEADERBOARD ({mode_label})")
             text.append("-" * 40)
-            for ak, acc, cw, obs in lb:
+            for ak, acc, cw, obs, _mode in lb:
                 text.append(f"  {ak}: acc {acc:.0%}, cw-ret {cw:.2f}, n={obs}")
             text.append("")
         learning = results.get("learning_context") or {}
@@ -299,17 +309,130 @@ class EmailNotifier:
             text.append(
                 f"  Scorecard present: {'yes' if learning.get('scorecard_present') else 'no'}"
             )
-            if learning.get("scan_cache_run_count") is not None:
+            if learning.get("scorecard_present_after") is not None:
+                text.append(
+                    f"  Scorecard after save: {'yes' if learning.get('scorecard_present_after') else 'no'}"
+                )
+            before = learning.get("scan_cache_run_count_before")
+            after = learning.get("scan_cache_run_count_after")
+            if before is not None:
+                text.append(f"  Scan cache runs (before run): {int(before or 0)}")
+            if after is not None:
+                text.append(f"  Scan cache runs (after save): {int(after or 0)}")
+            elif learning.get("scan_cache_run_count") is not None:
                 text.append(
                     f"  Scan cache runs (loaded): {int(learning.get('scan_cache_run_count', 0))}"
                 )
+            if learning.get("ledger_run_count") is not None:
+                text.append(f"  Ledger runs: {int(learning.get('ledger_run_count', 0))}")
+            if learning.get("ledger_run_count_after") is not None:
+                text.append(
+                    f"  Ledger runs (after save): {int(learning.get('ledger_run_count_after', 0))}"
+                )
+            text.append(
+                f"  Cache restore (perf/scan): "
+                f"{'hit' if learning.get('cache_restore_hit_performance') else 'miss'}/"
+                f"{'hit' if learning.get('cache_restore_hit_scan') else 'miss'}"
+            )
+            if learning.get("s3_runs_restored"):
+                text.append(f"  S3 runs restored: {int(learning.get('s3_runs_restored', 0))}")
+            if learning.get("scorecard_source"):
+                text.append(f"  Scorecard source: {learning.get('scorecard_source')}")
             if learning.get("scorecard_agent_count") is not None:
                 text.append(f"  Scorecard agents: {int(learning.get('scorecard_agent_count', 0))}")
             if learning.get("scorecard_skip_reason"):
                 text.append(f"  Scorecard note: {str(learning.get('scorecard_skip_reason'))[:200]}")
+                need = max(0, 2 - int(learning.get("scan_cache_run_count_before") or learning.get("scan_cache_run_count") or 0))
+                if need > 0 and "need_at_least" in str(learning.get("scorecard_skip_reason")):
+                    text.append(
+                        f"  Learning activates after {need} more saved weekly run(s)."
+                    )
             if learning.get("feedback_refresh_error"):
                 text.append(f"  Refresh error: {str(learning.get('feedback_refresh_error'))[:200]}")
+            policy = learning.get("policy_calibration") or {}
+            if policy:
+                text.append(
+                    f"  Learned policy: buy_conf={policy.get('min_buy_confidence')}, "
+                    f"rotation_edge={policy.get('cash_rotation_min_edge')}, "
+                    f"csp_floor=${policy.get('min_csp_premium_usd')}"
+                )
+                for adj in (policy.get("adjustments") or [])[:3]:
+                    text.append(
+                        f"    {adj.get('knob')}: {adj.get('delta'):+} ({adj.get('reason', '')[:80]})"
+                    )
+            weight_changes = learning.get("weight_changes") or []
+            weight_skips = learning.get("weight_skips") or []
+            if weight_changes or weight_skips:
+                text.append("LEARNING CHANGELOG")
+                text.append("-" * 40)
+                for wc in weight_changes[:5]:
+                    text.append(
+                        f"  Weight {wc.get('agent')}: {wc.get('old')} -> {wc.get('new')} "
+                        f"(n={wc.get('observations')})"
+                    )
+                for ws in weight_skips[:3]:
+                    text.append(
+                        f"  Skip {ws.get('agent')}: {ws.get('reason')} "
+                        f"(n={ws.get('observations')}/{ws.get('required')})"
+                    )
+                text.append("")
+
+        attr = (results.get("learning_context") or {}).get("portfolio_attribution")
+        if attr:
+            text.append("PORTFOLIO ATTRIBUTION (LEARNING)")
+            text.append("-" * 40)
+            text.append(
+                f"  Equity delta: ${attr.get('equity_delta_usd', 0):+.2f} "
+                f"({attr.get('equity_delta_pct', 0):+.2f}%)"
+            )
+            text.append(
+                f"  Trading PnL: ${attr.get('trading_pnl_usd', 0):+.2f}, "
+                f"Carry PnL: ${attr.get('carry_pnl_usd', 0):+.2f}, "
+                f"Options premium: ${attr.get('options_premium_usd', 0):+.2f}"
+            )
+            for c in (attr.get("top_contributors") or [])[:3]:
+                text.append(
+                    f"  {c.get('ticker')}: ${c.get('contrib_usd', 0):+.2f} "
+                    f"({c.get('price_change_pct', 0):+.1f}%)"
+                )
             text.append("")
+
+        try:
+            from src.performance.counterfactual_ledger import recent_for_email
+
+            missed = recent_for_email(limit=3)
+            if missed:
+                text.append("MISSED OPPORTUNITIES (LEARNING)")
+                text.append("-" * 40)
+                for m in missed:
+                    text.append(
+                        f"  {m.get('ticker')}: would {m.get('would_be_action')} -> "
+                        f"ret {m.get('forward_return_pct')}%"
+                    )
+                text.append("")
+        except Exception:
+            pass
+
+        try:
+            from src.performance.options_ledger import recent_summary
+
+            opt_sum = recent_summary(weeks=8)
+            if opt_sum.get("csp_executed") or opt_sum.get("cc_executed") or opt_sum.get("resolved_count"):
+                text.append("OPTIONS OUTCOMES (LEARNING)")
+                text.append("-" * 40)
+                text.append(
+                    f"  Rolling {opt_sum.get('weeks', 8)}w: "
+                    f"CSP {opt_sum.get('csp_executed', 0)} fills "
+                    f"(avg ${opt_sum.get('csp_avg_premium_usd', 0):.0f}, "
+                    f"{opt_sum.get('csp_sub_floor_count', 0)} below ${opt_sum.get('min_csp_premium_floor', 75):.0f}), "
+                    f"CC {opt_sum.get('cc_executed', 0)} fills "
+                    f"(avg ${opt_sum.get('cc_avg_premium_usd', 0):.0f})"
+                )
+                if opt_sum.get("outcome_counts"):
+                    text.append(f"  Resolved outcomes: {opt_sum.get('outcome_counts')}")
+                text.append("")
+        except Exception:
+            pass
 
         regime = results.get("regime") or {}
         if regime.get("mode"):
@@ -462,6 +585,30 @@ class EmailNotifier:
                     if reasoning:
                         text.append(f"    Reason: {reasoning[:200]}")
                 text.append("")
+
+            if sells:
+                text.append("SELL ORDERS")
+                text.append("-" * 40)
+                for ticker, d in sells:
+                    text.append(
+                        f"  {ticker}: sell {d.get('quantity', 0)} shares (Confidence: {d.get('confidence', 0)}%)"
+                    )
+                    reasoning = (d.get("reasoning") or "").strip()
+                    if reasoning:
+                        text.append(f"    Reason: {reasoning[:200]}")
+                text.append("")
+
+            if holds:
+                text.append(f"TOP HOLDS (showing 10 of {len(holds)})")
+                text.append("-" * 40)
+                for ticker, d in holds[:10]:
+                    reasoning = (d.get("reasoning") or "").strip()
+                    snippet = reasoning[:120] if reasoning else ""
+                    text.append(
+                        f"  {ticker}: hold (Confidence: {d.get('confidence', 0)}%) – {snippet}"
+                    )
+                text.append("")
+
         dd = results.get("decision_diagnostics") or {}
         if dd:
             text.append("DECISION DIAGNOSTICS")
@@ -496,6 +643,12 @@ class EmailNotifier:
                     f"(skipped edge={int(dd.get('cash_rotation_skipped_edge', 0))}, "
                     f"skipped risk={int(dd.get('cash_rotation_skipped_risk', 0))})"
                 )
+                rot_list = dd.get("rotation_sell_tickers") or []
+                for row in rot_list[:8]:
+                    if isinstance(row, dict):
+                        text.append(
+                            f"  Rotation sell {row.get('ticker')}: {str(row.get('reason', ''))[:120]}"
+                        )
                 rot_skip = str(dd.get("cash_rotation_skip_reason") or "").strip()
                 if rot_skip and int(dd.get("cash_rotation_sell_count", 0) or 0) == 0:
                     text.append(f"Cash rotation note: {rot_skip}")
@@ -505,29 +658,6 @@ class EmailNotifier:
                     f"lot_build={int(dd.get('cc_lot_build_count', 0))}"
                 )
             text.append("")
-
-            if sells:
-                text.append("SELL ORDERS")
-                text.append("-" * 40)
-                for ticker, d in sells:
-                    text.append(
-                        f"  {ticker}: sell {d.get('quantity', 0)} shares (Confidence: {d.get('confidence', 0)}%)"
-                    )
-                    reasoning = (d.get("reasoning") or "").strip()
-                    if reasoning:
-                        text.append(f"    Reason: {reasoning[:200]}")
-                text.append("")
-
-            if holds:
-                text.append(f"TOP HOLDS (showing 10 of {len(holds)})")
-                text.append("-" * 40)
-                for ticker, d in holds[:10]:
-                    reasoning = (d.get("reasoning") or "").strip()
-                    snippet = reasoning[:120] if reasoning else ""
-                    text.append(
-                        f"  {ticker}: hold (Confidence: {d.get('confidence', 0)}%) – {snippet}"
-                    )
-                text.append("")
 
         # Execution Results
         exec_results = results.get("execution_results") or {}
@@ -543,6 +673,25 @@ class EmailNotifier:
                 if (not r) or (isinstance(r, dict) and r.get("status") == "failed")
             ]
             text.append(f"EXECUTION RESULTS: {executed} orders executed")
+            decisions_map = results.get("decisions") or {}
+            executed_rows = []
+            for ticker, res in exec_results.items():
+                if ticker == "error" or not res:
+                    continue
+                if isinstance(res, dict) and res.get("status") == "failed":
+                    continue
+                dec = decisions_map.get(ticker) or {}
+                action = dec.get("action") or res.get("side") or "?"
+                qty = dec.get("quantity") or res.get("qty") or res.get("filled_qty") or "?"
+                reason = (dec.get("reasoning") or res.get("reason") or "").strip()
+                executed_rows.append((ticker, action, qty, reason))
+            if executed_rows:
+                text.append("EXECUTED TRADES")
+                text.append("-" * 40)
+                for ticker, action, qty, reason in executed_rows:
+                    text.append(f"  {ticker}: {action} {qty}")
+                    if reason:
+                        text.append(f"    Reason: {reason[:200]}")
             if failed_tickers:
                 text.append(f"FAILED ORDERS ({len(failed_tickers)}): {', '.join(failed_tickers)}")
                 for t in failed_tickers[:10]:
@@ -754,34 +903,148 @@ class EmailNotifier:
                     html += f"<li>{html_escape(line)}</li>"
                 html += "</ul></div>"
 
-        lb = _load_scorecard_leaderboard()
+        lb = _load_scorecard_leaderboard(regime_mode=(results.get("regime") or {}).get("mode"))
         if lb:
-            html += """
+            mode_label = lb[0][4] if lb else "global"
+            html += f"""
             <div class="section">
-                <h2>Agent leaderboard (scan cache)</h2>
+                <h2>Agent leaderboard ({html_escape(mode_label)})</h2>
                 <table>
                     <tr><th>Agent</th><th>Accuracy</th><th>CW return</th><th>N</th></tr>
             """
-            for ak, acc, cw, obs in lb:
+            for ak, acc, cw, obs, _mode in lb:
                 html += f"""
                 <tr><td>{html_escape(ak)}</td><td>{acc:.0%}</td><td>{cw:.2f}</td><td>{obs}</td></tr>
                 """
             html += "</table></div>"
         learning = results.get("learning_context") or {}
         if learning:
+            skip_note = ""
+            if learning.get("scorecard_skip_reason"):
+                need = max(
+                    0,
+                    2
+                    - int(
+                        learning.get("scan_cache_run_count_before")
+                        or learning.get("scan_cache_run_count")
+                        or 0
+                    ),
+                )
+                if need > 0 and "need_at_least" in str(learning.get("scorecard_skip_reason")):
+                    skip_note = f"<br/><strong>Next:</strong> {need} more saved run(s) until scorecard activates."
+                skip_note += f"<br/><strong>Scorecard note:</strong> {html_escape(str(learning.get('scorecard_skip_reason'))[:200])}"
+            policy = learning.get("policy_calibration") or {}
+            policy_html = ""
+            if policy:
+                policy_html = f"""
+                    <strong>Learned policy:</strong>
+                    buy_conf={policy.get('min_buy_confidence')},
+                    sell_conf={policy.get('min_sell_confidence')},
+                    rotation_edge={policy.get('cash_rotation_min_edge')},
+                    csp_floor=${policy.get('min_csp_premium_usd')}<br/>
+                """
+                for adj in (policy.get("adjustments") or [])[:3]:
+                    policy_html += (
+                        f"&nbsp;&nbsp;{html_escape(str(adj.get('knob')))}: "
+                        f"{adj.get('delta'):+} ({html_escape(str(adj.get('reason', ''))[:80])})<br/>"
+                    )
+            changelog_html = ""
+            weight_changes = learning.get("weight_changes") or []
+            weight_skips = learning.get("weight_skips") or []
+            if weight_changes or weight_skips:
+                changelog_html = "<strong>Learning changelog</strong><br/><ul>"
+                for wc in weight_changes[:5]:
+                    changelog_html += (
+                        f"<li>Weight {html_escape(str(wc.get('agent')))}: "
+                        f"{wc.get('old')} → {wc.get('new')} (n={wc.get('observations')})</li>"
+                    )
+                for ws in weight_skips[:3]:
+                    changelog_html += (
+                        f"<li>Skip {html_escape(str(ws.get('agent')))}: "
+                        f"{html_escape(str(ws.get('reason')))} "
+                        f"(n={ws.get('observations')}/{ws.get('required')})</li>"
+                    )
+                changelog_html += "</ul>"
             html += f"""
             <div class="section">
                 <h2>Learning context</h2>
                 <p>
                     <strong>Feedback refresh:</strong> {"ok" if learning.get("feedback_refresh_ok") else "failed"}<br/>
                     <strong>Scorecard present:</strong> {"yes" if learning.get("scorecard_present") else "no"}<br/>
-                    <strong>Scan cache runs:</strong> {int(learning.get("scan_cache_run_count", 0) or 0)}<br/>
+                    <strong>Scorecard after save:</strong> {"yes" if learning.get("scorecard_present_after") else "no"}<br/>
+                    <strong>Scan cache (before / after):</strong> {int(learning.get("scan_cache_run_count_before") or learning.get("scan_cache_run_count") or 0)} / {int(learning.get("scan_cache_run_count_after") or 0)}<br/>
+                    <strong>Ledger runs:</strong> {int(learning.get("ledger_run_count") or 0)} / {int(learning.get("ledger_run_count_after") or 0)} after save<br/>
+                    <strong>Cache restore (perf/scan):</strong> {"hit" if learning.get("cache_restore_hit_performance") else "miss"} / {"hit" if learning.get("cache_restore_hit_scan") else "miss"}<br/>
                     <strong>Scorecard agents:</strong> {int(learning.get("scorecard_agent_count", 0) or 0)}<br/>
-                    {f'<strong>Scorecard note:</strong> {html_escape(str(learning.get("scorecard_skip_reason"))[:200])}<br/>' if learning.get("scorecard_skip_reason") else ""}
+                    {f'<strong>Scorecard source:</strong> {html_escape(str(learning.get("scorecard_source")))}<br/>' if learning.get("scorecard_source") else ""}
+                    {policy_html}
+                    {skip_note}
                     {f'<strong>Refresh error:</strong> {html_escape(str(learning.get("feedback_refresh_error"))[:200])}' if learning.get("feedback_refresh_error") else ""}
                 </p>
+                {changelog_html}
             </div>
             """
+
+        try:
+            from src.performance.options_ledger import recent_summary
+
+            opt_sum = recent_summary(weeks=8)
+            if opt_sum.get("csp_executed") or opt_sum.get("cc_executed"):
+                html += f"""
+                <div class="section">
+                    <h2>Options outcomes (learning)</h2>
+                    <p>Rolling {opt_sum.get('weeks', 8)} weeks: CSP {opt_sum.get('csp_executed', 0)} fills
+                    (avg ${opt_sum.get('csp_avg_premium_usd', 0):.0f},
+                    {opt_sum.get('csp_sub_floor_count', 0)} below ${opt_sum.get('min_csp_premium_floor', 75):.0f}),
+                    CC {opt_sum.get('cc_executed', 0)} fills
+                    (avg ${opt_sum.get('cc_avg_premium_usd', 0):.0f})</p>
+                </div>
+                """
+        except Exception:
+            pass
+
+        outcomes = self._build_decision_outcomes(results)
+        if outcomes:
+            html += """
+            <div class="section">
+                <h2>Last run decisions vs outcome</h2>
+                <table>
+                    <tr><th>Ticker</th><th>Action</th><th>Return %</th></tr>
+            """
+            for row in outcomes[:8]:
+                html += f"""
+                <tr>
+                    <td>{html_escape(str(row.get('ticker')))}</td>
+                    <td>{html_escape(str(row.get('action')))}</td>
+                    <td>{row.get('return_pct', 'n/a')}</td>
+                </tr>
+                """
+            html += "</table></div>"
+
+        attr = (results.get("learning_context") or {}).get("portfolio_attribution")
+        if attr:
+            html += f"""
+            <div class="section">
+                <h2>Portfolio attribution (learning)</h2>
+                <p>Equity delta: ${attr.get('equity_delta_usd', 0):+.2f} ({attr.get('equity_delta_pct', 0):+.2f}%)<br/>
+                Trading PnL: ${attr.get('trading_pnl_usd', 0):+.2f}, Carry: ${attr.get('carry_pnl_usd', 0):+.2f},
+                Options premium: ${attr.get('options_premium_usd', 0):+.2f}</p>
+            </div>
+            """
+
+        try:
+            from src.performance.counterfactual_ledger import recent_for_email
+
+            missed = recent_for_email(limit=3)
+            if missed:
+                html += """
+                <div class="section"><h2>Missed opportunities (learning)</h2><ul>
+                """
+                for m in missed:
+                    html += f"<li>{html_escape(str(m.get('ticker')))}: would {html_escape(str(m.get('would_be_action')))} → {m.get('forward_return_pct')}%</li>"
+                html += "</ul></div>"
+        except Exception:
+            pass
 
         # Decisions -- buys and sells first, then top holds
         decisions = results.get("decisions", {})
@@ -885,6 +1148,7 @@ class EmailNotifier:
                         <tr><td>Cash rotation sells</td><td>{int(dd.get("cash_rotation_sell_count", 0))}</td></tr>
                         <tr><td>Cash rotation skipped (edge / risk)</td><td>{int(dd.get("cash_rotation_skipped_edge", 0))} / {int(dd.get("cash_rotation_skipped_risk", 0))}</td></tr>
                         <tr><td>Cash rotation note</td><td>{html_escape(str(dd.get("cash_rotation_skip_reason") or "-"))}</td></tr>
+                        <tr><td>Rotation sell tickers</td><td>{html_escape(", ".join(str(r.get("ticker", "?")) for r in (dd.get("rotation_sell_tickers") or [])[:8]) or "-")}</td></tr>
                         <tr><td>CC lots (held / build)</td><td>{int(dd.get("cc_held_lot_count", 0))} / {int(dd.get("cc_lot_build_count", 0))}</td></tr>
                     </table>
                 </div>
@@ -900,9 +1164,43 @@ class EmailNotifier:
                 ]
                 executed_count = sum(
                     1
-                    for r in exec_results.values()
-                    if r and (not isinstance(r, dict) or r.get("status") != "failed")
+                    for t, r in exec_results.items()
+                    if t != "error"
+                    and r
+                    and (not isinstance(r, dict) or r.get("status") != "failed")
                 )
+                decisions_map = results.get("decisions") or {}
+                executed_rows = []
+                for ticker, res in exec_results.items():
+                    if ticker == "error" or not res:
+                        continue
+                    if isinstance(res, dict) and res.get("status") == "failed":
+                        continue
+                    dec = decisions_map.get(ticker) or {}
+                    action = dec.get("action") or res.get("side") or "?"
+                    qty = dec.get("quantity") or res.get("qty") or res.get("filled_qty") or "?"
+                    reason = html_escape((dec.get("reasoning") or res.get("reason") or "")[:200])
+                    executed_rows.append((ticker, action, qty, reason))
+                if executed_rows:
+                    html += """
+                    <div class="section">
+                        <h2>Executed trades</h2>
+                        <table>
+                            <tr><th>Ticker</th><th>Action</th><th>Qty</th><th>Reasoning</th></tr>
+                    """
+                    for ticker, action, qty, reason in executed_rows:
+                        html += f"""
+                            <tr>
+                                <td>{html_escape(str(ticker))}</td>
+                                <td>{html_escape(str(action))}</td>
+                                <td>{html_escape(str(qty))}</td>
+                                <td>{reason}</td>
+                            </tr>
+                        """
+                    html += """
+                        </table>
+                    </div>
+                    """
                 if failed_tickers:
                     html += f"""
                     <div class="section">
@@ -1092,7 +1390,15 @@ class EmailNotifier:
     # ---------- Helpers for past performance & AI outlook ----------
 
     def _build_decision_outcomes(self, results: dict) -> list:
-        """Compare prior run buy/sell decisions to forward price change."""
+        """Resolved decision attribution rows (ledger first, scan_cache fallback)."""
+        try:
+            from src.performance.decision_ledger import outcome_rows_for_email
+
+            rows = outcome_rows_for_email(limit=8)
+            if rows:
+                return rows
+        except Exception:
+            pass
         run_id = results.get("run_id")
         if not run_id:
             return []

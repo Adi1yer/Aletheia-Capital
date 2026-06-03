@@ -52,7 +52,7 @@ def _collect_payload(
     cash = float(acct.get("cash", 0))
 
     alerts: List[str] = []
-    top_rows: List[Dict[str, Any]] = []
+    all_rows: List[Dict[str, Any]] = []
     option_rows: List[Dict[str, Any]] = []
 
     for sym, pos in sorted(positions.items(), key=lambda x: -abs(x[1].get("market_value", 0))):
@@ -67,16 +67,15 @@ def _collect_payload(
         if qty and avg:
             last = mv / qty if qty else 0
             pnl_pct = ((last - avg) / avg * 100) if avg > 0 else 0.0
-        top_rows.append(
-            {
-                "symbol": sym,
-                "side": side,
-                "qty": qty,
-                "market_value": round(mv, 2),
-                "pct_equity": round(pct_eq, 2),
-                "unrealized_pnl_pct": round(pnl_pct, 2),
-            }
-        )
+        row = {
+            "symbol": sym,
+            "side": side,
+            "qty": qty,
+            "market_value": round(mv, 2),
+            "pct_equity": round(pct_eq, 2),
+            "unrealized_pnl_pct": round(pnl_pct, 2),
+        }
+        all_rows.append(row)
         occ = _parse_occ_symbol(sym)
         if occ:
             option_rows.append(
@@ -90,7 +89,7 @@ def _collect_payload(
                 }
             )
 
-    top_rows = sorted(top_rows, key=lambda x: -abs(x.get("market_value", 0)))[:15]
+    top_rows = all_rows[:15]
 
     payload: Dict[str, Any] = {
         "date": date.today().isoformat(),
@@ -101,6 +100,7 @@ def _collect_payload(
         "position_count": len(positions),
         "alerts": alerts,
         "top_positions": top_rows,
+        "all_positions": all_rows,
         "option_positions": option_rows,
     }
     exit_code = 2 if alerts else 0

@@ -84,10 +84,11 @@ def _build_biotech_email(
         if isinstance(r.get("execution"), dict) and r["execution"].get("status") == "submitted"
     ]
     skipped = [r for r in results if r.get("skipped")]
+    gates_passed = sum(1 for r in analyzed if r.get("gates_ok"))
 
     subject = (
         f"Biotech Weekly Catalyst Scan - {len(analyzed)} analyzed, "
-        f"{len(executed)} executed, {len(skipped)} skipped"
+        f"{gates_passed} gates passed, {len(executed)} straddles executed, {len(skipped)} skipped"
     )
 
     lines: List[str] = []
@@ -95,7 +96,8 @@ def _build_biotech_email(
     lines.append("=" * 70)
     lines.append(f"Readout window: today-{grace}d to today+{fwd}d")
     lines.append(
-        f"Summary: analyzed={len(analyzed)}, executed={len(executed)}, skipped_no_window={len(skipped)}"
+        f"Summary: analyzed={len(analyzed)}, gates_passed={gates_passed}, "
+        f"straddles_executed={len(executed)}, skipped_no_window={len(skipped)}"
     )
     d_info = discovery_info or {}
     if d_info:

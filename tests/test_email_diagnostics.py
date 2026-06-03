@@ -10,9 +10,17 @@ def _base_results():
         "decisions": {
             "A": {"action": "hold", "confidence": 60, "reasoning": "x"},
             "B": {"action": "hold", "confidence": 55, "reasoning": "y"},
+            "SMCI": {
+                "action": "buy",
+                "quantity": 10,
+                "confidence": 85,
+                "reasoning": "Cash rotation: fund SMCI buy",
+            },
         },
         "portfolio": {"cash": 1000.0, "equity": 1000.0, "positions": {}},
-        "execution_results": {},
+        "execution_results": {
+            "SMCI": {"status": "filled", "qty": 10},
+        },
         "covered_call_results": [],
         "covered_call_diagnostics": {"enabled": True, "execute_mode": True},
         "decision_diagnostics": {
@@ -32,9 +40,14 @@ def _base_results():
         "learning_context": {
             "feedback_refresh_ok": True,
             "scorecard_present": False,
-            "scan_cache_run_count": 1,
-            "scorecard_agent_count": 0,
-            "scorecard_skip_reason": "need_at_least_2_cached_runs",
+            "scan_cache_run_count_before": 1,
+            "policy_calibration": {
+                "min_buy_confidence": 62,
+                "cash_rotation_min_edge": 12,
+                "adjustments": [{"knob": "min_buy_confidence", "delta": 2, "reason": "test"}],
+            },
+            "weight_changes": [{"agent": "growth", "old": 1.0, "new": 1.1, "observations": 20}],
+            "weight_skips": [],
         },
     }
 
@@ -45,10 +58,10 @@ def test_text_email_contains_diagnostics_blocks():
     assert "DECISION DIAGNOSTICS" in text
     assert "Signals: bullish>=buy=3" in text
     assert "LEARNING CONTEXT" in text
-    assert "Scan cache runs" in text
-    assert "Scorecard note" in text
-    assert "Cash rotation note" in text
-    assert "CC lots: held=" in text
+    assert "Learned policy" in text
+    assert "LEARNING CHANGELOG" in text
+    assert "DECISION DIAGNOSTICS" in text
+    assert "EXECUTED TRADES" in text
 
 
 def test_html_email_contains_diagnostics_blocks():
@@ -56,7 +69,9 @@ def test_html_email_contains_diagnostics_blocks():
     html = notifier._format_trading_results_html(_base_results(), past_perf=None, outlook=None)
     assert "Decision Diagnostics" in html
     assert "Learning context" in html
-    assert "Scan cache runs" in html
-    assert "Scorecard note" in html
-    assert "Cash rotation note" in html
-    assert "CC lots (held / build)" in html
+    assert "Scan cache (before / after)" in html
+    assert "Decision Diagnostics" in html
+    assert "Executed trades" in html
+    assert "Learned policy" in html
+    assert "Learning changelog" in html
+    assert "buy_conf=62" in html

@@ -1,0 +1,71 @@
+name: Monthly Calibration A/B Eval
+
+on:
+  schedule:
+    - cron: "0 12 1 * *"
+  workflow_dispatch:
+
+jobs:
+  calibration-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
+
+      - name: Restore performance data
+        uses: actions/cache/restore@v4
+        id: perf_cache_restore
+        with:
+          path: data/performance
+          key: perf-${{ github.repository }}-main
+          restore-keys: |
+            perf-${{ github.repository }}-
+
+      - name: Restore scan run cache
+        uses: actions/cache/restore@v4
+        id: scan_cache_restore
+        with:
+          path: data/scan_cache
+          key: scan-${{ github.repository }}-main
+          restore-keys: |
+            scan-${{ github.repository }}-
+
+      - name: Run calibration A/B eval
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: poetry run python scripts/calibration_eval.py --max-pairs 8
+
+      - name: Upload calibration eval artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-eval-${{ github.run_id }}
+          retention-days: 90
+          path: |
+            data/performance/calibration_eval_latest.json
+            data/performance/calibration_eval_latest.md
+          if-no-files-found: ignore
+
+      - name: Save performance data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/performance
+          key: perf-${{ github.repository }}-main

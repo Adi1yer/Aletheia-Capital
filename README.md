@@ -134,7 +134,10 @@ ai-hedge-fund-production/
 │   │   └── pipeline.py         # Weekly pipeline orchestrator
 │   ├── performance/
 │   │   ├── tracker.py          # Agent weight adjustment
-│   │   └── cycle_tracker.py    # Cycle-over-cycle tracking
+│   │   ├── cycle_tracker.py    # Cycle-over-cycle tracking
+│   │   ├── policy_calibration.py  # Learned rebalance knobs
+│   │   ├── decision_ledger.py     # Buy/sell attribution
+│   │   └── weekly_ledger.py       # Compact run fallback
 │   ├── scan_cache/             # Run persistence (full history; prune optional)
 │   └── utils/
 │       └── email.py            # HTML email reports
