@@ -32,7 +32,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 import structlog
 
 from src.biotech.analyzer import analyze_snapshot
-from src.biotech.candidate_discovery import discover_catalyst_candidates
+from src.biotech.discovery_ladder import run_discovery_ladder
 from src.biotech.calibration import apply_gates
 from src.biotech.dataset import append_run
 from src.biotech.ingest import build_snapshot
@@ -140,7 +140,7 @@ def _build_biotech_email(
     position_lifecycle_by_ticker: Dict[str, str] | None = None,
     week_lifecycle_markdown: str = "",
     discovery_info: Dict[str, Any] | None = None,
-    fallback_info: Dict[str, Any] | None = None,
+    ladder_meta: Dict[str, Any] | None = None,
     learning_markdown: str = "",
 ) -> tuple[str, str, str]:
     analyzed = [r for r in results if not r.get("skipped")]
@@ -156,10 +156,14 @@ def _build_biotech_email(
     mech_n = sum(1 for r in analyzed if _arm_executed(r.get("execution"), "mechanical"))
     llm_n = sum(1 for r in analyzed if _arm_executed(r.get("execution"), "llm_gated"))
 
+    stage = (ladder_meta or {}).get("discovery_stage") or (discovery_info or {}).get("discovery_stage")
+    dry_prefix = "DRY RUN - " if len(analyzed) == 0 else ""
     subject = (
-        f"Biotech Weekly Catalyst Scan - {len(analyzed)} analyzed, "
+        f"{dry_prefix}Biotech Weekly Catalyst Scan - {len(analyzed)} analyzed, "
         f"{gates_passed} gates passed, mech={mech_n} llm={llm_n}, {len(skipped)} skipped"
     )
+    if stage:
+        subject += f" [stage={stage}]"
 
     lines: List[str] = []
     try:
@@ -218,13 +222,21 @@ def _build_biotech_email(
             f"min_phase={int(d_info.get('discovery_min_phase', 0))}, "
             f"readout_max_forward_days={rd_cap_disp if rd_cap_disp is not None else 'off'}"
         )
-    f_info = fallback_info or {}
-    if f_info:
-        lines.append(
-            f"Fallback: invoked={bool(f_info.get('invoked'))}, "
-            f"selected={int(f_info.get('selected_count', 0))}, "
-            f"window=today-{int(f_info.get('past_grace_days', 0))}d to today+{int(f_info.get('forward_days', 0))}d"
-        )
+    lm = ladder_meta or {}
+    if lm.get("discovery_stage"):
+        lines.append(f"Discovery stage: {lm.get('discovery_stage')}")
+        for st in lm.get("stages") or []:
+            lines.append(
+                f"  Ladder {st.get('stage')}: selected={int(st.get('selected_count', 0))}"
+            )
+    near_miss = lm.get("near_miss_summaries") or d_info.get("near_miss_summaries") or []
+    if near_miss and len(analyzed) == 0:
+        lines.append("Near-miss tickers (screened biotech, no readout in window):")
+        for nm in near_miss[:20]:
+            lines.append(
+                f"  {nm.get('ticker')}: {nm.get('reason', 'n/a')} "
+                f"phase={nm.get('phase', 'n/a')} readout={nm.get('readout_date', 'n/a')}"
+            )
     lines.append("")
     try:
         from src.biotech.pnl_ledger import weekly_summary
@@ -581,37 +593,24 @@ def main() -> int:
         readout_loop_max_forward_days = None
 
     discovery_info: Dict[str, Any] = {}
-    fallback_info: Dict[str, Any] = {}
+    ladder_meta: Dict[str, Any] = {}
     if args.discover_candidates:
-        tickers, discovery_info = discover_catalyst_candidates(
+        tickers, discovery_info, ladder_meta = run_discovery_ladder(
             forward_days=fwd,
             past_grace_days=grace,
+            fallback_forward_days=int(args.fallback_forward_days),
+            fallback_past_grace_days=int(args.fallback_past_grace_days),
             max_universe=int(args.max_discovery_universe),
             max_candidates=int(args.max_discovery_candidates),
             broker=broker,
             policy=active_policy,
-            **discovery_kw,
+            discovery_kw=discovery_kw,
         )
-        if not tickers:
-            fallback_info = {
-                "invoked": True,
-                "forward_days": int(args.fallback_forward_days),
-                "past_grace_days": int(args.fallback_past_grace_days),
-            }
-            tickers, fb_diag = discover_catalyst_candidates(
-                forward_days=int(args.fallback_forward_days),
-                past_grace_days=int(args.fallback_past_grace_days),
-                max_universe=int(args.max_discovery_universe),
-                max_candidates=int(args.max_discovery_candidates),
-                broker=broker,
-                policy=active_policy,
-                **discovery_kw,
-            )
-            fallback_info["selected_count"] = len(tickers)
-            fallback_info["discovery"] = fb_diag
     if not tickers:
         logger.warning(
-            "No biotech candidates selected", discovery=discovery_info, fallback=fallback_info
+            "No biotech candidates selected",
+            discovery=discovery_info,
+            ladder=ladder_meta,
         )
 
     biotech_intraweek = ""
@@ -780,7 +779,7 @@ def main() -> int:
                 position_lifecycle_by_ticker=lc_by_ticker,
                 week_lifecycle_markdown=week_lc_md,
                 discovery_info=discovery_info,
-                fallback_info=fallback_info,
+                ladder_meta=ladder_meta,
                 learning_markdown=learning_markdown,
             )
             sent = get_email_notifier().send_email(

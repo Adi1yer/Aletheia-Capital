@@ -340,9 +340,22 @@ class EmailNotifier:
                 text.append(f"  Scorecard source: {learning.get('scorecard_source')}")
             if learning.get("scorecard_agent_count") is not None:
                 text.append(f"  Scorecard agents: {int(learning.get('scorecard_agent_count', 0))}")
+            if learning.get("scorecard_progress") is not None:
+                req = int(learning.get("scorecard_progress_required") or 2)
+                prog = int(learning.get("scorecard_progress") or 0)
+                text.append(f"  Scorecard progress: {prog}/{req} runs (scan cache or weekly ledger)")
             if learning.get("scorecard_skip_reason"):
                 text.append(f"  Scorecard note: {str(learning.get('scorecard_skip_reason'))[:200]}")
-                need = max(0, 2 - int(learning.get("scan_cache_run_count_before") or learning.get("scan_cache_run_count") or 0))
+                need = max(
+                    0,
+                    int(learning.get("scorecard_progress_required") or 2)
+                    - int(
+                        learning.get("scorecard_progress")
+                        or learning.get("scan_cache_run_count_before")
+                        or learning.get("scan_cache_run_count")
+                        or 0
+                    ),
+                )
                 if need > 0 and "need_at_least" in str(learning.get("scorecard_skip_reason")):
                     text.append(
                         f"  Learning activates after {need} more saved weekly run(s)."
@@ -386,10 +399,16 @@ class EmailNotifier:
                 f"({attr.get('equity_delta_pct', 0):+.2f}%)"
             )
             text.append(
-                f"  Trading PnL: ${attr.get('trading_pnl_usd', 0):+.2f}, "
-                f"Carry PnL: ${attr.get('carry_pnl_usd', 0):+.2f}, "
+                f"  Cash flow from fills (buys negative): ${attr.get('trading_pnl_usd', 0):+.2f}, "
+                f"Market move + residual: ${attr.get('carry_pnl_usd', 0):+.2f}, "
                 f"Options premium: ${attr.get('options_premium_usd', 0):+.2f}"
             )
+            eq_before = float(attr.get("equity_before") or 0)
+            trading_pnl = abs(float(attr.get("trading_pnl_usd") or 0))
+            if eq_before > 0 and trading_pnl > 0.5 * eq_before:
+                text.append(
+                    "  Note: Large fill cash flow; net change is Equity delta above."
+                )
             for c in (attr.get("top_contributors") or [])[:3]:
                 text.append(
                     f"  {c.get('ticker')}: ${c.get('contrib_usd', 0):+.2f} "
@@ -1027,7 +1046,8 @@ class EmailNotifier:
             <div class="section">
                 <h2>Portfolio attribution (learning)</h2>
                 <p>Equity delta: ${attr.get('equity_delta_usd', 0):+.2f} ({attr.get('equity_delta_pct', 0):+.2f}%)<br/>
-                Trading PnL: ${attr.get('trading_pnl_usd', 0):+.2f}, Carry: ${attr.get('carry_pnl_usd', 0):+.2f},
+                Cash flow from fills (buys negative): ${attr.get('trading_pnl_usd', 0):+.2f},
+                Market move + residual: ${attr.get('carry_pnl_usd', 0):+.2f},
                 Options premium: ${attr.get('options_premium_usd', 0):+.2f}</p>
             </div>
             """

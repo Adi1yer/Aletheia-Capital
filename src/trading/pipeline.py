@@ -1101,7 +1101,7 @@ class TradingPipeline:
                 regime=(run_config.get("regime") or {}).get("mode"),
             )
         except Exception as e:
-            logger.warning("Weekly ledger append failed", error=str(e))
+            logger.error("Weekly ledger append failed — scorecard fallback may be delayed", error=str(e))
 
         try:
             from src.performance.decision_ledger import append_decisions_from_run
@@ -1328,6 +1328,8 @@ class TradingPipeline:
                 "scorecard_agent_count",
                 "scorecard_pairs_used",
                 "scorecard_skip_reason",
+                "scorecard_progress",
+                "scorecard_progress_required",
                 "wrote_scorecard_file",
                 "wrote_agent_feedback",
                 "scorecard_source",

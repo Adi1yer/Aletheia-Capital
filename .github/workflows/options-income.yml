@@ -16,6 +16,30 @@ jobs:
           python-version: "3.11"
       - run: pip install poetry && poetry config virtualenvs.in-project true
       - run: poetry install --no-interaction --no-ansi
+
+      - name: Restore satellite sleeve data
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/hedge
+            data/options_income
+            data/congressional
+            data/macro_etf
+            data/crypto
+            data/fund
+            data/daily_snapshots/multi_sleeve
+          key: satellite-data-${{ github.repository }}-main
+          restore-keys: |
+            satellite-data-${{ github.repository }}-
+
+      - name: Preflight checks
+        env:
+          MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
+          MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
+          HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+        run: poetry run python preflight.py --skip-main --skip-biotech --skip-deepseek --skip-smtp --skip-finnhub --all-workflows
+
       - name: Run options income scan
         env:
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
@@ -23,3 +47,17 @@ jobs:
           HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
           HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
         run: poetry run python options_income_scan.py --execute
+
+      - name: Save satellite sleeve data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/hedge
+            data/options_income
+            data/congressional
+            data/macro_etf
+            data/crypto
+            data/fund
+            data/daily_snapshots/multi_sleeve
+          key: satellite-data-${{ github.repository }}-main

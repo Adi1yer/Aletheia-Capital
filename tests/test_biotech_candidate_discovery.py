@@ -72,6 +72,7 @@ def test_discovery_filters_and_counts(monkeypatch):
         max_candidates=5,
         min_avg_dollar_volume=5_000_000.0,
         broker=None,
+        biotech_first=False,
     )
 
     assert tickers == ["AAA"]

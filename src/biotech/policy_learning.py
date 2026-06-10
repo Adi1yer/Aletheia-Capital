@@ -22,6 +22,29 @@ LEARNING_BLOCKLIST_PATH = Path(
     getattr(settings, "biotech_learning_blocklist_path", "config/biotech_learning_blocklist.txt")
 )
 
+DISCOVERY_POLICY_KEYS = frozenset(
+    {
+        "discovery_min_phase",
+        "readout_max_forward_days",
+        "min_days_to_readout",
+    }
+)
+
+EXECUTION_POLICY_KEYS = frozenset(
+    {
+        "min_llm_prob_mid",
+        "min_prob_range_width",
+        "max_premium_pct_equity",
+        "max_premium_to_expected_move_ratio",
+        "mechanical_arm_enabled",
+        "llm_gated_arm_enabled",
+    }
+)
+
+DISCOVERY_MIN_CLOSED_TRADES = 6
+DISCOVERY_MIN_PHASE_FLOOR = 1
+DISCOVERY_READOUT_MAX_FORWARD_FLOOR = 90
+
 DEFAULT_POLICY: Dict[str, Any] = {
     "min_llm_prob_mid": 0.45,
     "min_prob_range_width": 0.10,
@@ -257,61 +280,90 @@ def compute_biotech_policy(
             }
         )
 
-    # discovery_min_phase from phase stats
-    for ph, st in ph_stats.items():
-        if st["count"] >= 3 and st["avg_pnl_pct"] < -15.0 and st["phase_num"] >= int(base["discovery_min_phase"]):
-            new_ph = min(4, st["phase_num"] + 1)
-            if new_ph > int(base["discovery_min_phase"]):
-                base["discovery_min_phase"] = int(_clamp("discovery_min_phase", new_ph))
-                adjustments.append(
-                    {
-                        "knob": "discovery_min_phase",
-                        "delta": 1,
-                        "reason": f"{ph} avg pnl {st['avg_pnl_pct']}%",
-                        "sample_n": st["count"],
-                    }
-                )
-                break
+    discovery_skips: List[Dict[str, Any]] = []
+    allow_discovery_tune = len(closed) >= DISCOVERY_MIN_CLOSED_TRADES
+
+    def _apply_discovery_floor() -> None:
+        base["discovery_min_phase"] = max(
+            DISCOVERY_MIN_PHASE_FLOOR,
+            int(_clamp("discovery_min_phase", float(base["discovery_min_phase"]))),
+        )
+        base["readout_max_forward_days"] = max(
+            DISCOVERY_READOUT_MAX_FORWARD_FLOOR,
+            int(_clamp("readout_max_forward_days", float(base["readout_max_forward_days"]))),
+        )
+
+    # discovery_min_phase from phase stats (requires minimum closed-trade sample)
+    if allow_discovery_tune:
+        for ph, st in ph_stats.items():
+            if (
+                st["count"] >= 3
+                and st["avg_pnl_pct"] < -15.0
+                and st["phase_num"] >= int(base["discovery_min_phase"])
+            ):
+                new_ph = min(4, st["phase_num"] + 1)
+                if new_ph > int(base["discovery_min_phase"]):
+                    base["discovery_min_phase"] = int(_clamp("discovery_min_phase", new_ph))
+                    adjustments.append(
+                        {
+                            "knob": "discovery_min_phase",
+                            "delta": 1,
+                            "reason": f"{ph} avg pnl {st['avg_pnl_pct']}%",
+                            "sample_n": st["count"],
+                        }
+                    )
+                    break
+    else:
+        discovery_skips.append(
+            {
+                "knob": "discovery_min_phase",
+                "reason": f"insufficient_closed_trades (n={len(closed)}/{DISCOVERY_MIN_CLOSED_TRADES})",
+            }
+        )
 
     # readout_max_forward_days: late readouts lose
-    late_losses = []
-    for r in closed:
-        dtr = _days_to_readout(r)
-        if dtr is not None and dtr > 60 and float(r.get("pnl_pct_of_premium") or 0) < 0:
-            late_losses.append(dtr)
-    if len(late_losses) >= 3:
-        delta = -10
-        base["readout_max_forward_days"] = int(
-            _clamp("readout_max_forward_days", float(base["readout_max_forward_days"]) + delta)
-        )
-        adjustments.append(
-            {
-                "knob": "readout_max_forward_days",
-                "delta": delta,
-                "reason": f"{len(late_losses)} losses with readout >60d out",
-                "sample_n": len(late_losses),
-            }
-        )
+    if allow_discovery_tune:
+        late_losses = []
+        for r in closed:
+            dtr = _days_to_readout(r)
+            if dtr is not None and dtr > 60 and float(r.get("pnl_pct_of_premium") or 0) < 0:
+                late_losses.append(dtr)
+        if len(late_losses) >= 3:
+            delta = -10
+            base["readout_max_forward_days"] = int(
+                _clamp("readout_max_forward_days", float(base["readout_max_forward_days"]) + delta)
+            )
+            adjustments.append(
+                {
+                    "knob": "readout_max_forward_days",
+                    "delta": delta,
+                    "reason": f"{len(late_losses)} losses with readout >60d out",
+                    "sample_n": len(late_losses),
+                }
+            )
 
     # min_days_to_readout
-    short_losses = [
-        r
-        for r in closed
-        if (_days_to_readout(r) or 999) < 7 and float(r.get("pnl_pct_of_premium") or 0) < 0
-    ]
-    if len(short_losses) >= 3:
-        delta = 3
-        base["min_days_to_readout"] = int(
-            _clamp("min_days_to_readout", float(base["min_days_to_readout"]) + delta)
-        )
-        adjustments.append(
-            {
-                "knob": "min_days_to_readout",
-                "delta": delta,
-                "reason": f"{len(short_losses)} losses with readout <7d away",
-                "sample_n": len(short_losses),
-            }
-        )
+    if allow_discovery_tune:
+        short_losses = [
+            r
+            for r in closed
+            if (_days_to_readout(r) or 999) < 7 and float(r.get("pnl_pct_of_premium") or 0) < 0
+        ]
+        if len(short_losses) >= 3:
+            delta = 3
+            base["min_days_to_readout"] = int(
+                _clamp("min_days_to_readout", float(base["min_days_to_readout"]) + delta)
+            )
+            adjustments.append(
+                {
+                    "knob": "min_days_to_readout",
+                    "delta": delta,
+                    "reason": f"{len(short_losses)} losses with readout <7d away",
+                    "sample_n": len(short_losses),
+                }
+            )
+
+    _apply_discovery_floor()
 
     # premium efficiency ratio
     if avg_move > 0:
@@ -370,6 +422,7 @@ def compute_biotech_policy(
     return {
         "policy": {k: base[k] for k in DEFAULT_POLICY},
         "adjustments": adjustments,
+        "discovery_skips": discovery_skips,
         "baseline_source": baseline_source,
         "closed_count": len(closed),
         "phase_stats": ph_stats,

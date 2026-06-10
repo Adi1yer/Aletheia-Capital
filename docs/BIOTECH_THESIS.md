@@ -31,6 +31,9 @@ Resolution runs at the start of each weekly scan and on daily biotech health che
 
 1. **Secrets:** `BIOTECH_ALPACA_API_KEY`, `BIOTECH_ALPACA_SECRET_KEY`, `DEEPSEEK_API_KEY`, SMTP vars.
 2. **Weekly:** GitHub workflow `biotech-catalyst.yml` or `poetry run python biotech_catalyst_scan.py --discover-candidates`.
+   - **Discovery ladder:** strict (policy gates) → relaxed (`min_phase=1`, 180d forward) → watchlist (`config/biotech_watchlist.txt`, cap filter off).
+   - Biotech-first universe profiles ~900 liquid names, keeps biotech by industry, then top 320 by dollar volume.
+   - Email subject is prefixed `DRY RUN` when zero tickers are analyzed; near-miss tickers are listed.
 3. **Daily:** `daily-health-check.yml` with `--account both` (biotech snapshots + thesis resolve).
 4. **Analysis only:** `--no-paper-execute`
 5. **Disable an arm:** `--no-mechanical-arm` / `--no-llm-gated-arm`
@@ -49,7 +52,10 @@ Resolved trades in `thesis_ledger.jsonl` feed a bounded policy learner—not onl
 
 **Weekly scan order:** resolve open thesis → exit policy (daily) → resolve counterfactuals → `compute_biotech_policy` → holdout `evaluate_biotech_proposal` → save policy if promoted → changelog → discovery (policy knobs + history rank) → analyze (past-trade LLM context) → `apply_gates` (learned prob mid/range) → dual-arm execute → counterfactual on `no_trade`/gate fail → email (scorecard + learning + missed catalysts).
 
-**Learnable knobs** (smooth ~20% steps, holdout-gated): `min_llm_prob_mid`, `min_prob_range_width`, `max_premium_pct_equity`, `discovery_min_phase`, `readout_max_forward_days`, `min_days_to_readout`, `max_premium_to_expected_move_ratio`, `mechanical_arm_enabled`, `llm_gated_arm_enabled`.
+**Learnable knobs** (smooth ~20% steps, holdout-gated):
+
+- **Execution:** `min_llm_prob_mid`, `min_prob_range_width`, `max_premium_pct_equity`, `max_premium_to_expected_move_ratio`, `mechanical_arm_enabled`, `llm_gated_arm_enabled`
+- **Discovery** (only when ≥6 closed trades; floors: `discovery_min_phase` ≥1, `readout_max_forward_days` ≥90): `discovery_min_phase`, `readout_max_forward_days`, `min_days_to_readout`
 
 **Promotion:** last 2 `run_date` buckets = holdout; promote only if holdout `llm_gated` avg `pnl_pct_of_premium` is not worse than train by more than 2 pts.
 

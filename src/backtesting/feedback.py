@@ -108,6 +108,9 @@ def refresh_feedback_from_cache(scan_cache: Any, max_run_pairs: int = 20) -> Dic
         except Exception as e:
             logger.warning("Ledger ticker calibration rebuild failed", error=str(e))
     else:
+        progress = max(len(runs), int(meta["ledger_run_count"]))
+        meta["scorecard_progress"] = progress
+        meta["scorecard_progress_required"] = 2
         meta["scorecard_skip_reason"] = "need_at_least_2_cached_runs"
         return meta
 

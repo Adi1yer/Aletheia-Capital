@@ -45,7 +45,11 @@ def main() -> int:
     pick = ranked[0] if ranked else "SHY"
 
     row = {"run_date": date.today().isoformat(), "regime": regime, "pick": pick, "executed": False}
-    broker = init_workflow_broker(WORKFLOW_ID)
+    try:
+        broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
+    except RuntimeError as e:
+        logger.error(str(e))
+        return 1
 
     if args.execute and broker:
         from src.portfolio.manager import PortfolioDecision

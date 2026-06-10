@@ -22,6 +22,16 @@ def _closed_row(ticker: str, arm: str, pnl: float, prob_lo: float, prob_hi: floa
     }
 
 
+def test_discovery_knobs_skipped_when_few_closed_trades(monkeypatch):
+    import src.biotech.policy_learning as pl
+
+    monkeypatch.setattr(pl, "closed_rows", lambda weeks=24: [_closed_row("X", "llm_gated", -5.0, 0.4, 0.5)])
+    result = compute_biotech_policy(weeks=52)
+    skips = result.get("discovery_skips") or []
+    assert any(s.get("knob") == "discovery_min_phase" for s in skips)
+    assert result["policy"]["discovery_min_phase"] >= pl.DISCOVERY_MIN_PHASE_FLOOR
+
+
 def test_compute_raises_min_llm_prob_mid(monkeypatch):
     rows = [
         _closed_row(f"X{i}", "llm_gated", -20.0, 0.35, 0.42)

@@ -59,6 +59,8 @@ def format_learning_markdown(
             )
     else:
         lines.append("  No policy knob changes this run.")
+    for sk in policy_result.get("discovery_skips") or []:
+        lines.append(f"  Skip {sk.get('knob')}: {sk.get('reason')}")
     lines.append(
         f"Promotion: {'APPLIED' if promotion.get('promote') else 'REJECTED'} — {promotion.get('reason', '')}"
     )

@@ -122,19 +122,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--skip-smtp", action="store_true")
     p.add_argument("--skip-finnhub", action="store_true")
     p.add_argument("--skip-biotech", action="store_true")
+    p.add_argument("--skip-main", action="store_true", help="Skip main equity Alpaca check")
     p.add_argument("--all-workflows", action="store_true", help="Ping every configured Alpaca workflow")
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    checks: list[tuple[str, Callable[[], None]]] = [
-        ("main_alpaca", _check_main_alpaca),
-    ]
+    checks: list[tuple[str, Callable[[], None]]] = []
     if args.all_workflows:
         checks = [("all_alpaca_workflows", _check_all_configured_alpaca)]
-    elif not args.skip_biotech:
-        checks.append(("biotech_alpaca", _check_biotech_alpaca))
+    else:
+        if not args.skip_main:
+            checks.append(("main_alpaca", _check_main_alpaca))
+        if not args.skip_biotech:
+            checks.append(("biotech_alpaca", _check_biotech_alpaca))
     if not args.skip_deepseek:
         checks.append(("deepseek", _check_deepseek))
     if not args.skip_smtp:

@@ -148,7 +148,7 @@ def _resolve_accounts_arg(arg: str) -> List[WorkflowAccount]:
     return [wf] if wf else []
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Daily snapshot per workflow paper account")
     p.add_argument(
         "--account",
@@ -156,7 +156,7 @@ def main() -> int:
         help="all | stock | biotech | both | workflow_id (e.g. weekly-scan)",
     )
     p.add_argument("--max-position-pct", type=float, default=25.0)
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     workflows = _resolve_accounts_arg(args.account)
     if not workflows:
@@ -165,6 +165,8 @@ def main() -> int:
 
     worst = 0
     skipped = 0
+    saved = 0
+    errors: List[str] = []
     for wf in workflows:
         if not workflow_credentials_configured(wf):
             logger.warning("Skipping workflow — credentials not set", workflow=wf.workflow_id)
@@ -172,6 +174,9 @@ def main() -> int:
             continue
         broker = try_get_broker(wf.workflow_id)
         if broker is None:
+            msg = f"{wf.workflow_id}: broker init failed"
+            logger.warning(msg)
+            errors.append(msg)
             skipped += 1
             continue
         try:
@@ -186,13 +191,31 @@ def main() -> int:
             )
             if wf.workflow_id == "biotech-catalyst":
                 _run_biotech_hooks(broker)
+            saved += 1
             worst = max(worst, xc)
+        except Exception as e:
+            msg = f"{wf.workflow_id}: {e}"
+            logger.error("Daily snapshot failed", workflow=wf.workflow_id, error=str(e))
+            errors.append(msg)
+            skipped += 1
         finally:
             if hasattr(broker, "disconnect"):
                 broker.disconnect()
 
-    if skipped and worst == 0 and skipped == len(workflows):
+    if errors:
+        logger.warning("Daily health check account errors", count=len(errors), errors=errors)
+    if saved == 0:
+        logger.error(
+            "No snapshots saved",
+            workflows=len(workflows),
+            skipped=skipped,
+            errors=errors,
+        )
         return 1
+    if errors:
+        # At least one book snapshot succeeded; do not fail CI for a single bad account.
+        logger.warning("Partial daily health check", saved=saved, failed=len(errors))
+        return worst
     return worst
 
 

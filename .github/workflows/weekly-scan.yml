@@ -58,8 +58,14 @@ jobs:
           mkdir -p data/performance data/scan_cache
           echo "performance cache hit: ${{ steps.perf_cache_restore.outputs.cache-hit }}"
           echo "scan cache hit: ${{ steps.scan_cache_restore.outputs.cache-hit }}"
+          echo "S3 scan cache bucket: ${SCAN_CACHE_S3_BUCKET:-not set}"
+          echo "S3 scan cache prefix: ${SCAN_CACHE_S3_PREFIX:-not set}"
           echo "performance files:" && ls -la data/performance/ 2>/dev/null || true
+          echo "weekly_ledger lines:" && wc -l data/performance/weekly_ledger.jsonl 2>/dev/null || echo 0
           echo "scan_cache run dirs:" && ls data/scan_cache/ 2>/dev/null | wc -l
+        env:
+          SCAN_CACHE_S3_BUCKET: ${{ secrets.SCAN_CACHE_S3_BUCKET }}
+          SCAN_CACHE_S3_PREFIX: ${{ secrets.SCAN_CACHE_S3_PREFIX }}
 
       - name: Preflight checks
         env:

@@ -37,6 +37,12 @@ Registry: [`config/workflow_accounts.yaml`](../config/workflow_accounts.yaml)
 
 Only **one** secret pair needed for all five satellite workflows in CI.
 
+GitHub secret name for the satellite secret is `MULTI_SLEEVE_ALPACA_API_SECRET_KEY` (not `..._SECRET_KEY` alone). Legacy `HEDGE_ALPACA_*` is still accepted.
+
+## Satellite weekly digest
+
+`fund-weekly-digest.yml` runs **Monday 18:00 UTC** and emails a consolidated summary (`fund_weekly_digest.py`) after the satellite scans. Each sleeve workflow also runs preflight and shares a GitHub Actions cache for `data/hedge`, `data/options_income`, etc.
+
 ## Daily health
 
 ```bash

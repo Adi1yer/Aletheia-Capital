@@ -106,6 +106,10 @@ def discover_catalyst_candidates(
     min_phase: Optional[int] = None,
     readout_max_forward_days: Optional[int] = None,
     policy: Optional[Dict[str, Any]] = None,
+    biotech_first: bool = True,
+    profile_seed_size: int = 900,
+    seed_tickers: Optional[List[str]] = None,
+    skip_cap_filter: bool = False,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """
     Discovery-first biotech universe construction.
@@ -165,17 +169,23 @@ def discover_catalyst_candidates(
         )
     )
 
-    from src.data.universe import StockUniverse
+    if seed_tickers:
+        seeds = list(dict.fromkeys(t.strip().upper() for t in seed_tickers if t and t.strip()))
+    else:
+        from src.data.universe import StockUniverse
 
-    universe = StockUniverse()
-    seeds = universe.get_trading_universe(
-        full_market=True,
-        max_stocks=int(max_universe),
-        apply_filters=True,
-        rank_by_market_cap=False,
-    )
+        universe = StockUniverse()
+        seed_limit = int(profile_seed_size) if biotech_first else int(max_universe)
+        seeds = universe.get_trading_universe(
+            full_market=True,
+            max_stocks=seed_limit,
+            apply_filters=True,
+            rank_by_market_cap=False,
+        )
     diagnostics: Dict[str, Any] = {
         "seed_count": len(seeds),
+        "biotech_first": bool(biotech_first and not seed_tickers),
+        "profile_seed_size": int(profile_seed_size) if biotech_first and not seed_tickers else len(seeds),
         "profiled_count": 0,
         "excluded_non_biotech": 0,
         "excluded_illiquid": 0,
@@ -201,6 +211,15 @@ def discover_catalyst_candidates(
             profiled.append(fut.result())
     diagnostics["profiled_count"] = len(profiled)
 
+    if biotech_first and not seed_tickers:
+        biotech_only = [p for p in profiled if p.get("is_biotech")]
+        biotech_only.sort(
+            key=lambda p: float(p.get("avg_dollar_volume_30d") or 0.0),
+            reverse=True,
+        )
+        profiled = biotech_only[: max(int(max_universe), 1)]
+        diagnostics["biotech_profiled_count"] = len(profiled)
+
     screened: List[Dict[str, Any]] = []
     for p in profiled:
         if not p.get("is_biotech"):
@@ -220,14 +239,16 @@ def discover_catalyst_candidates(
                 continue
         else:
             mcv = float(mc)
-            if min_cap_eff is not None and mcv < min_cap_eff:
-                diagnostics["excluded_market_cap_too_small"] += 1
-                continue
-            if max_cap is not None and mcv > max_cap:
-                diagnostics["excluded_market_cap_too_large"] += 1
-                continue
+            if not skip_cap_filter:
+                if min_cap_eff is not None and mcv < min_cap_eff:
+                    diagnostics["excluded_market_cap_too_small"] += 1
+                    continue
+                if max_cap is not None and mcv > max_cap:
+                    diagnostics["excluded_market_cap_too_large"] += 1
+                    continue
         screened.append(p)
 
+    near_misses: List[Dict[str, Any]] = []
     survivors: List[Tuple[str, str, str, float]] = []
     for p in screened:
         t = str(p["ticker"])
@@ -259,6 +280,15 @@ def discover_catalyst_candidates(
             readout_max_forward_days=rd_cap_i,
         ):
             diagnostics["excluded_no_readout_window"] += 1
+            if len(near_misses) < 25:
+                near_misses.append(
+                    {
+                        "ticker": t,
+                        "reason": "no_readout_window",
+                        "phase": "",
+                        "readout_date": "n/a",
+                    }
+                )
             continue
         primary = primary_catalyst_trial(
             snap,
@@ -295,6 +325,7 @@ def discover_catalyst_candidates(
         {"ticker": t, "readout_date": rd or "n/a", "phase": ph or "n/a"}
         for t, rd, ph, _ in survivors[:50]
     ]
+    diagnostics["near_miss_summaries"] = near_misses
 
     logger.info("Biotech candidate discovery", **diagnostics)
     return selected, diagnostics

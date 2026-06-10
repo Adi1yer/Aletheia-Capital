@@ -113,6 +113,7 @@ def append_weekly_attribution(
         "run_date": run_date,
         "equity_before": eq_before,
         "equity_after": eq_after,
+        "large_rebalance_week": bool(eq_before > 0 and abs(trading_pnl) > 0.5 * eq_before),
         "equity_delta_usd": delta_usd,
         "equity_delta_pct": delta_pct,
         "trading_pnl_usd": trading_pnl,

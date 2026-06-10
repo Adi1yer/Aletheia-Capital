@@ -29,10 +29,14 @@ def main() -> int:
     args = p.parse_args()
 
     run_orchestrator()
+    try:
+        broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
+    except RuntimeError as e:
+        logger.error(str(e))
+        return 1
+
     pipeline = CryptoTradingPipeline()
     results = pipeline.run(tickers=DEFAULT_CRYPTO_TICKERS, execute=args.execute)
-
-    broker = init_workflow_broker(WORKFLOW_ID)
     row = {
         "run_date": date.today().isoformat(),
         "tickers": DEFAULT_CRYPTO_TICKERS,

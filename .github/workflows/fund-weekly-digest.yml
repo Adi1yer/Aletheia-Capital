@@ -1,14 +1,14 @@
-name: Congressional Trades Weekly
+name: Fund Weekly Digest
 
 on:
   schedule:
-    - cron: "0 17 * * 5"
+    - cron: "0 18 * * 1"
   workflow_dispatch:
 
 jobs:
-  congressional:
+  digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -19,6 +19,7 @@ jobs:
 
       - name: Restore satellite sleeve data
         uses: actions/cache/restore@v4
+        id: satellite_data_restore
         with:
           path: |
             data/hedge
@@ -32,22 +33,18 @@ jobs:
           restore-keys: |
             satellite-data-${{ github.repository }}-
 
-      - name: Preflight checks
+      - name: Send fund weekly digest
         env:
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
           MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
           HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
           HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
-        run: poetry run python preflight.py --skip-main --skip-biotech --skip-deepseek --skip-smtp --skip-finnhub --all-workflows
-
-      - name: Run congressional scan
-        env:
-          MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
-          MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
-          HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
-          HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-        run: poetry run python congressional_scan.py --execute
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: poetry run python fund_weekly_digest.py
 
       - name: Save satellite sleeve data
         if: always()

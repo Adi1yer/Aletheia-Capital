@@ -36,9 +36,13 @@ def main() -> int:
         append_ledger(WORKFLOW_ID, {"action": "skip", "reason": "regime_not_harvest", "run_date": date.today().isoformat()})
         return 0
 
-    broker = init_workflow_broker(WORKFLOW_ID)
+    try:
+        broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
+    except RuntimeError as e:
+        logger.error(str(e))
+        return 1
     if broker is None:
-        return 0 if not args.execute else 1
+        return 0
 
     acct = broker.get_account()
     equity = float(acct.get("equity") or 0)

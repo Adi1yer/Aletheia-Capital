@@ -67,9 +67,9 @@ jobs:
           IBKR_GATEWAY_HOST: ${{ secrets.IBKR_GATEWAY_HOST }}
           IBKR_GATEWAY_PORT: ${{ secrets.IBKR_GATEWAY_PORT }}
         run: |
+          set -e
           poetry run python daily_health_check.py --account all
           poetry run python -c "from src.fund.orchestrator import run_orchestrator; run_orchestrator()"
-        continue-on-error: false
 
       - name: Save daily snapshots
         if: always()

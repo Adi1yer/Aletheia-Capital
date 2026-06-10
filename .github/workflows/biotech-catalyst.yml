@@ -62,10 +62,19 @@ jobs:
           ls -la data/biotech/ 2>/dev/null || true
           ls -la data/biotech_runs/ 2>/dev/null || true
 
+      - name: Preflight checks
+        env:
+          BIOTECH_ALPACA_API_KEY: ${{ secrets.BIOTECH_ALPACA_API_KEY }}
+          BIOTECH_ALPACA_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        run: poetry run python preflight.py --skip-main --skip-finnhub
+
       - name: Run biotech catalyst scan
         env:
-          BIOTECH_DISCOVERY_MIN_PHASE: "2"
-          BIOTECH_DISCOVERY_READOUT_MAX_FORWARD_DAYS: "90"
           CACHE_HIT_BIOTECH_DATA: ${{ steps.biotech_data_restore.outputs.cache-hit }}
           SCAN_CACHE_S3_BUCKET: ${{ secrets.SCAN_CACHE_S3_BUCKET }}
           SCAN_CACHE_S3_PREFIX: ${{ secrets.BIOTECH_S3_PREFIX }}

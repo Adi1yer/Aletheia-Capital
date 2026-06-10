@@ -45,7 +45,11 @@ def main() -> int:
     args = p.parse_args()
 
     run_orchestrator()
-    broker = init_workflow_broker(WORKFLOW_ID)
+    try:
+        broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
+    except RuntimeError as e:
+        logger.error(str(e))
+        return 1
     candidates: List[Dict[str, Any]] = []
     for t in WATCHLIST:
         iv = _iv_rank(t)

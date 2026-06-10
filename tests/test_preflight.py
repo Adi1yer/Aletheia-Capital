@@ -49,6 +49,21 @@ def test_skip_flags_omit_optional_checks(monkeypatch):
     assert calls == ["main", "biotech"]
 
 
+def test_skip_main_omits_main_check(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(preflight, "_check_main_alpaca", lambda: calls.append("main"))
+    monkeypatch.setattr(preflight, "_check_biotech_alpaca", lambda: calls.append("biotech"))
+    monkeypatch.setattr(preflight, "_check_deepseek", lambda: calls.append("deepseek"))
+    monkeypatch.setattr(preflight, "_check_smtp", lambda: calls.append("smtp"))
+    monkeypatch.setattr(preflight, "_check_finnhub", lambda: calls.append("finnhub"))
+
+    rc = preflight.main(["--skip-main", "--skip-deepseek", "--skip-smtp", "--skip-finnhub"])
+
+    assert rc == 0
+    assert calls == ["biotech"]
+
+
 def test_skip_biotech_omits_biotech_check(monkeypatch):
     calls: list[str] = []
 
