@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     biotech_alpaca_api_key: Optional[str] = None
     biotech_alpaca_secret_key: Optional[str] = None
 
+    # Shared satellite book: hedge + options + congressional + macro ETF + crypto
+    hedge_alpaca_api_key: Optional[str] = None
+    hedge_alpaca_api_secret_key: Optional[str] = None
+    hedge_alpaca_secret_key: Optional[str] = None
+    multi_sleeve_alpaca_api_key: Optional[str] = None
+    multi_sleeve_alpaca_api_secret_key: Optional[str] = None
+    multi_sleeve_alpaca_secret_key: Optional[str] = None  # legacy alias
+
     # LLM API Keys (optional - use free tiers)
     deepseek_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
@@ -57,6 +65,11 @@ class Settings(BaseSettings):
     biotech_discovery_min_phase: int = 2  # 0 = no phase filter; 2 = Phase 2+ trials only
     # 0 = use full forward_days upper bound; >0 caps to today+min(forward, this)
     biotech_discovery_readout_max_forward_days: int = 90
+    biotech_mechanical_arm_enabled: bool = True
+    biotech_llm_gated_arm_enabled: bool = True
+    biotech_thesis_ledger_path: str = "data/biotech/thesis_ledger.jsonl"
+    biotech_policy_path: str = "config/biotech_policy.json"
+    biotech_learning_blocklist_path: str = "config/biotech_learning_blocklist.txt"
 
     # Email Configuration (for notifications)
     smtp_server: Optional[str] = None  # e.g., 'smtp.gmail.com'
@@ -73,6 +86,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     environment: str = "production"
     alert_webhook_url: Optional[str] = None
+    workflow_accounts_path: str = "config/workflow_accounts.yaml"
+    fund_allocation_path: str = "config/fund_allocation.json"
+    fund_metrics_path: str = "data/fund/weekly_metrics.json"
+    enable_short_selling: bool = False
+    max_short_position_pct: float = 0.05
+    ibkr_gateway_host: Optional[str] = None
+    ibkr_gateway_port: int = 4002
 
 
 # Global settings instance

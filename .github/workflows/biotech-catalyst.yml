@@ -43,38 +43,30 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
-      - name: Restore biotech P&L ledger (performance)
+      - name: Restore biotech data
         uses: actions/cache/restore@v4
-        id: biotech_perf_restore
+        id: biotech_data_restore
         with:
-          path: data/performance/biotech_pnl.json
-          key: biotech-perf-${{ github.repository }}-main
+          path: |
+            data/biotech
+            data/biotech_runs
+            data/daily_snapshots/biotech
+          key: biotech-data-${{ github.repository }}-main
           restore-keys: |
-            biotech-perf-${{ github.repository }}-
-
-      - name: Restore biotech run history
-        uses: actions/cache/restore@v4
-        id: biotech_runs_restore
-        with:
-          path: data/biotech_runs
-          key: biotech-runs-${{ github.repository }}-main
-          restore-keys: |
-            biotech-runs-${{ github.repository }}-
+            biotech-data-${{ github.repository }}-
 
       - name: Cache restore diagnostics
         run: |
-          mkdir -p data/biotech_runs data/performance
-          echo "biotech perf cache hit: ${{ steps.biotech_perf_restore.outputs.cache-hit }}"
-          echo "biotech runs cache hit: ${{ steps.biotech_runs_restore.outputs.cache-hit }}"
-          echo "biotech_runs files:" && ls -la data/biotech_runs/ 2>/dev/null || true
-          echo "biotech pnl:" && ls -la data/performance/biotech_pnl.json 2>/dev/null || true
+          mkdir -p data/biotech data/biotech_runs data/daily_snapshots/biotech
+          echo "biotech data cache hit: ${{ steps.biotech_data_restore.outputs.cache-hit }}"
+          ls -la data/biotech/ 2>/dev/null || true
+          ls -la data/biotech_runs/ 2>/dev/null || true
 
       - name: Run biotech catalyst scan
         env:
           BIOTECH_DISCOVERY_MIN_PHASE: "2"
           BIOTECH_DISCOVERY_READOUT_MAX_FORWARD_DAYS: "90"
-          CACHE_HIT_BIOTECH_PERF: ${{ steps.biotech_perf_restore.outputs.cache-hit }}
-          CACHE_HIT_BIOTECH_RUNS: ${{ steps.biotech_runs_restore.outputs.cache-hit }}
+          CACHE_HIT_BIOTECH_DATA: ${{ steps.biotech_data_restore.outputs.cache-hit }}
           SCAN_CACHE_S3_BUCKET: ${{ secrets.SCAN_CACHE_S3_BUCKET }}
           SCAN_CACHE_S3_PREFIX: ${{ secrets.BIOTECH_S3_PREFIX }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -122,20 +114,17 @@ jobs:
           name: biotech-run-summary-${{ github.run_id }}
           retention-days: 7
           path: |
-            data/performance/biotech_pnl.json
+            data/biotech/thesis_ledger.jsonl
+            data/biotech/
             data/biotech_runs/
           if-no-files-found: ignore
 
-      - name: Save biotech P&L ledger
+      - name: Save biotech data
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: data/performance/biotech_pnl.json
-          key: biotech-perf-${{ github.repository }}-main
-
-      - name: Save biotech run history
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: data/biotech_runs
-          key: biotech-runs-${{ github.repository }}-main
+          path: |
+            data/biotech
+            data/biotech_runs
+            data/daily_snapshots/biotech
+          key: biotech-data-${{ github.repository }}-main

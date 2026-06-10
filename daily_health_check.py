@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily Alpaca snapshot: one JSON per account per day for intraweek → weekly context."""
+"""Daily snapshot for every configured workflow paper account."""
 
 from __future__ import annotations
 
@@ -16,8 +16,13 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import structlog
 
-from src.broker.alpaca import AlpacaBroker
-from src.config.settings import settings
+from src.broker.registry import (
+    WorkflowAccount,
+    list_physical_accounts,
+    list_workflows,
+    try_get_broker,
+    workflow_credentials_configured,
+)
 from src.ops.daily_snapshots import enrich_payload_with_prior_day_lifecycle, save_snapshot
 
 logger = structlog.get_logger()
@@ -42,8 +47,8 @@ def _parse_occ_symbol(symbol: str) -> Dict[str, Any]:
 
 
 def _collect_payload(
-    broker: AlpacaBroker,
-    account: str,
+    broker: Any,
+    workflow: WorkflowAccount,
     max_position_pct: float,
 ) -> Tuple[Dict[str, Any], List[str], int]:
     acct = broker.get_account()
@@ -89,17 +94,19 @@ def _collect_payload(
                 }
             )
 
-    top_rows = all_rows[:15]
-
     payload: Dict[str, Any] = {
         "date": date.today().isoformat(),
-        "account": account,
+        "workflow_id": workflow.workflow_id,
+        "account": workflow.snapshot_subdir,
+        "label": workflow.label,
+        "broker": workflow.broker,
         "equity": round(equity, 2),
         "cash": round(cash, 2),
         "buying_power": round(float(acct.get("buying_power", 0) or 0), 2),
         "position_count": len(positions),
+        "dry_run": bool(acct.get("dry_run")),
         "alerts": alerts,
-        "top_positions": top_rows,
+        "top_positions": all_rows[:15],
         "all_positions": all_rows,
         "option_positions": option_rows,
     }
@@ -107,53 +114,85 @@ def _collect_payload(
     return payload, alerts, exit_code
 
 
+def _run_biotech_hooks(broker: Any) -> None:
+    try:
+        from src.biotech.outcome_resolver import resolve_open_thesis_entries
+        from src.biotech.counterfactual_ledger import resolve_counterfactuals
+
+        n = resolve_open_thesis_entries(broker)
+        if n:
+            logger.info("Biotech thesis entries updated", count=n)
+        resolve_counterfactuals()
+    except Exception as e:
+        logger.warning("Biotech thesis resolve skipped", error=str(e))
+    try:
+        from src.biotech.exit_policy import evaluate_open_straddles_for_exit
+
+        exits = evaluate_open_straddles_for_exit(broker)
+        if exits:
+            logger.info("Biotech exit policy", actions=len(exits))
+    except Exception as e:
+        logger.warning("Biotech exit policy skipped", error=str(e))
+
+
+def _resolve_accounts_arg(arg: str) -> List[WorkflowAccount]:
+    if arg in ("both", "legacy-both"):
+        return [w for w in list_workflows(enabled_only=True) if w.snapshot_subdir in ("stock", "biotech")]
+    if arg == "all":
+        return list_physical_accounts(enabled_only=True)
+    if arg in ("stock", "biotech"):
+        mapping = {"stock": "weekly-scan", "biotech": "biotech-catalyst"}
+        wf = next((w for w in list_workflows() if w.workflow_id == mapping[arg]), None)
+        return [wf] if wf else []
+    wf = next((w for w in list_workflows() if w.workflow_id == arg or w.snapshot_subdir == arg), None)
+    return [wf] if wf else []
+
+
 def main() -> int:
-    p = argparse.ArgumentParser(description="Daily Alpaca snapshot (main and/or biotech paper)")
+    p = argparse.ArgumentParser(description="Daily snapshot per workflow paper account")
     p.add_argument(
         "--account",
-        choices=("stock", "biotech", "both"),
-        default="stock",
-        help="stock=main ALPACA_* paper; biotech=BIOTECH_ALPACA_*; both=run twice",
+        default="all",
+        help="all | stock | biotech | both | workflow_id (e.g. weekly-scan)",
     )
-    p.add_argument(
-        "--max-position-pct",
-        type=float,
-        default=25.0,
-        help="Recorded in alerts if a single long exceeds this %% of equity",
-    )
+    p.add_argument("--max-position-pct", type=float, default=25.0)
     args = p.parse_args()
 
-    accounts: List[str]
-    if args.account == "both":
-        accounts = ["stock", "biotech"]
-    else:
-        accounts = [args.account]
+    workflows = _resolve_accounts_arg(args.account)
+    if not workflows:
+        logger.error("No matching workflows", account=args.account)
+        return 1
 
     worst = 0
-    for acct in accounts:
-        if acct == "stock":
-            if not settings.alpaca_api_key or not settings.alpaca_secret_key:
-                logger.error("Main Alpaca keys not configured (ALPACA_API_KEY / ALPACA_SECRET_KEY)")
-                return 1
-            broker = AlpacaBroker()
-            payload, alerts, xc = _collect_payload(broker, "stock", args.max_position_pct)
-            enrich_payload_with_prior_day_lifecycle("stock", payload)
-            path = save_snapshot("stock", payload)
-            logger.info("Saved stock daily snapshot", path=str(path), alerts=len(alerts))
+    skipped = 0
+    for wf in workflows:
+        if not workflow_credentials_configured(wf):
+            logger.warning("Skipping workflow — credentials not set", workflow=wf.workflow_id)
+            skipped += 1
+            continue
+        broker = try_get_broker(wf.workflow_id)
+        if broker is None:
+            skipped += 1
+            continue
+        try:
+            payload, alerts, xc = _collect_payload(broker, wf, args.max_position_pct)
+            enrich_payload_with_prior_day_lifecycle(wf.snapshot_subdir, payload)
+            path = save_snapshot(wf.snapshot_subdir, payload)
+            logger.info(
+                "Saved daily snapshot",
+                workflow=wf.workflow_id,
+                path=str(path),
+                alerts=len(alerts),
+            )
+            if wf.workflow_id == "biotech-catalyst":
+                _run_biotech_hooks(broker)
             worst = max(worst, xc)
-        else:
-            bk = (settings.biotech_alpaca_api_key or "").strip()
-            bs = (settings.biotech_alpaca_secret_key or "").strip()
-            if not bk or not bs:
-                logger.warning("Biotech Alpaca keys not set; skipping biotech daily snapshot")
-                continue
-            broker = AlpacaBroker(api_key=bk, secret_key=bs)
-            payload, alerts, xc = _collect_payload(broker, "biotech", args.max_position_pct)
-            enrich_payload_with_prior_day_lifecycle("biotech", payload)
-            path = save_snapshot("biotech", payload)
-            logger.info("Saved biotech daily snapshot", path=str(path), alerts=len(alerts))
-            worst = max(worst, xc)
+        finally:
+            if hasattr(broker, "disconnect"):
+                broker.disconnect()
 
+    if skipped and worst == 0 and skipped == len(workflows):
+        return 1
     return worst
 
 

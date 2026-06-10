@@ -21,8 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -34,11 +35,19 @@ from src.biotech.analyzer import analyze_snapshot
 from src.biotech.candidate_discovery import discover_catalyst_candidates
 from src.biotech.calibration import apply_gates
 from src.biotech.dataset import append_run
-from src.biotech.execution import execute_straddle_paper
 from src.biotech.ingest import build_snapshot
 from src.biotech.models import BiotechRunRecord
-from src.biotech.readout_window import best_readout_date, snapshot_has_readout_catalyst
+from src.biotech.outcome_resolver import resolve_open_thesis_entries
+from src.biotech.readout_window import snapshot_has_readout_catalyst
 from src.biotech.risk_biotech import BiotechRiskBudget
+from src.biotech.thesis_ledger import (
+    append_thesis_entry,
+    build_entry_from_execution,
+    catalyst_fields_from_snapshot,
+    format_past_trades_context,
+    format_scorecard_markdown,
+    scorecard,
+)
 from src.biotech.watchlist import load_biotech_tickers
 from src.config.settings import settings
 from src.ops.daily_snapshots import (
@@ -48,6 +57,62 @@ from src.ops.daily_snapshots import (
 from src.utils.email import get_email_notifier
 
 logger = structlog.get_logger()
+
+
+def _run_id() -> str:
+    return f"biotech-{date.today().isoformat()}"
+
+
+def _execute_arm(
+    arm: str,
+    broker: Any,
+    snap: Any,
+    analysis: Any,
+    budget: BiotechRiskBudget,
+    *,
+    gates_ok: bool,
+    gate_reasons: List[str],
+    run_id: str,
+    run_date: str,
+    catalyst: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Run one arm; return (exec_result, trade_id)."""
+    from src.biotech.execution import execute_straddle_paper
+
+    if arm == "llm_gated" and not gates_ok:
+        return {"status": "skipped", "reasons": gate_reasons, "arm": arm}, None
+
+    from src.biotech.policy_learning import get_active_policy
+
+    policy = get_active_policy()
+    exec_result = execute_straddle_paper(broker, snap, budget, arm=arm, policy=policy)
+    trade_id = None
+    if isinstance(exec_result, dict) and exec_result.get("status") in ("filled", "submitted", "partial"):
+        entry = build_entry_from_execution(
+            ticker=snap.ticker,
+            arm=arm,
+            run_id=run_id,
+            run_date=run_date,
+            snap=snap,
+            analysis=analysis,
+            gates_ok=gates_ok,
+            gate_reasons=gate_reasons,
+            exec_result=exec_result,
+            catalyst=catalyst,
+        )
+        trade_id = append_thesis_entry(entry)
+        if exec_result.get("status") == "filled":
+            try:
+                from src.utils.alerts import send_alert
+
+                send_alert(
+                    f"Biotech straddle ({arm})",
+                    f"{snap.ticker}: paper straddle opened",
+                    exec_result,
+                )
+            except Exception:
+                pass
+    return exec_result, trade_id
 
 
 def _resolve_tickers(args: argparse.Namespace) -> list[str]:
@@ -76,28 +141,56 @@ def _build_biotech_email(
     week_lifecycle_markdown: str = "",
     discovery_info: Dict[str, Any] | None = None,
     fallback_info: Dict[str, Any] | None = None,
+    learning_markdown: str = "",
 ) -> tuple[str, str, str]:
     analyzed = [r for r in results if not r.get("skipped")]
-    executed = [
-        r
-        for r in analyzed
-        if isinstance(r.get("execution"), dict) and r["execution"].get("status") == "submitted"
-    ]
     skipped = [r for r in results if r.get("skipped")]
     gates_passed = sum(1 for r in analyzed if r.get("gates_ok"))
 
+    def _arm_executed(ex: Any, arm: str) -> bool:
+        if not isinstance(ex, dict):
+            return False
+        arm_ex = ex.get(arm) if "mechanical" in ex or "llm_gated" in ex else ex
+        return isinstance(arm_ex, dict) and arm_ex.get("status") in ("filled", "submitted", "partial")
+
+    mech_n = sum(1 for r in analyzed if _arm_executed(r.get("execution"), "mechanical"))
+    llm_n = sum(1 for r in analyzed if _arm_executed(r.get("execution"), "llm_gated"))
+
     subject = (
         f"Biotech Weekly Catalyst Scan - {len(analyzed)} analyzed, "
-        f"{gates_passed} gates passed, {len(executed)} straddles executed, {len(skipped)} skipped"
+        f"{gates_passed} gates passed, mech={mech_n} llm={llm_n}, {len(skipped)} skipped"
     )
 
     lines: List[str] = []
+    try:
+        lines.append(format_scorecard_markdown(scorecard(weeks=12)))
+        lines.append("")
+    except Exception:
+        pass
+    if learning_markdown.strip():
+        lines.append(learning_markdown.strip())
+        lines.append("")
+    try:
+        from src.biotech.counterfactual_ledger import recent_for_email
+
+        cf = recent_for_email()
+        if cf:
+            lines.append("MISSED CATALYST OPPORTUNITIES (no_trade / gates blocked)")
+            lines.append("-" * 70)
+            for r in cf:
+                lines.append(
+                    f"  {r.get('ticker')}: move_5d={r.get('move_5d_pct', 'n/a')}% "
+                    f"reasons={'; '.join(r.get('gate_reasons') or [])[:80]}"
+                )
+            lines.append("")
+    except Exception:
+        pass
     lines.append("BIOTECH WEEKLY CATALYST RESULTS")
     lines.append("=" * 70)
     lines.append(f"Readout window: today-{grace}d to today+{fwd}d")
     lines.append(
         f"Summary: analyzed={len(analyzed)}, gates_passed={gates_passed}, "
-        f"straddles_executed={len(executed)}, skipped_no_window={len(skipped)}"
+        f"mechanical_executed={mech_n}, llm_gated_executed={llm_n}, skipped_no_window={len(skipped)}"
     )
     d_info = discovery_info or {}
     if d_info:
@@ -175,7 +268,13 @@ def _build_biotech_email(
         analysis = row.get("analysis") or {}
         gate_reasons = row.get("gate_reasons") or []
         execution = row.get("execution") or {}
+        catalyst = row.get("catalyst") or {}
         lines.append(f"{t}:")
+        if catalyst.get("nct_id"):
+            lines.append(
+                f"  - Catalyst: {catalyst.get('nct_id')} readout~{catalyst.get('readout_date_expected', 'n/a')} "
+                f"phase={catalyst.get('phase', 'n/a')}"
+            )
         lines.append(f"  - Gates passed: {bool(row.get('gates_ok'))}")
         lu = str(t).strip().upper()
         if lu in lc_map:
@@ -186,31 +285,26 @@ def _build_biotech_email(
                 "(isolated biotech paper book shows no carried straddle on this symbol, or snapshot gap)."
             )
 
-        if execution and execution.get("status") == "submitted":
-            orders = execution.get("orders") or []
-            legs = [o.get("contract", "?") for o in orders if isinstance(o, dict)]
-            strat = execution.get("strategy") or {}
-            lines.append("  - Action: Executed defined-risk long straddle (1 call + 1 put).")
-            lines.append(
-                "  - Why this structure: expected catalyst-driven move while capping max loss to paid premium."
-            )
-            lines.append(
-                f"  - Order legs: {', '.join(legs) if legs else 'submitted (legs unavailable)'}"
-            )
-            if execution.get("max_premium") is not None:
-                lines.append(f"  - Premium cap used: ${float(execution.get('max_premium')):,.2f}")
-            be_lo = strat.get("break_even_low_est")
-            be_hi = strat.get("break_even_high_est")
-            exp = strat.get("expiry")
-            if be_lo is not None and be_hi is not None:
+        for arm_label in ("mechanical", "llm_gated"):
+            arm_ex = execution.get(arm_label) if isinstance(execution, dict) else None
+            if not arm_ex:
+                continue
+            st = arm_ex.get("status", "skipped")
+            if st in ("filled", "submitted", "partial"):
+                orders = arm_ex.get("orders") or []
+                legs = [o.get("contract", "?") for o in orders if isinstance(o, dict)]
+                strat = arm_ex.get("strategy") or {}
+                lines.append(f"  - [{arm_label}] Executed {strat.get('type', 'straddle')} ({st}).")
+                lines.append(f"    Legs: {', '.join(legs) if legs else 'n/a'}")
+                prem = arm_ex.get("premium_filled_usd") or strat.get("estimated_premium_total")
+                if prem:
+                    lines.append(f"    Premium: ${float(prem):,.2f}")
+            else:
                 lines.append(
-                    f"  - Break-even estimate at expiry{f' {exp}' if exp else ''}: below ${float(be_lo):.2f} or above ${float(be_hi):.2f}"
+                    f"  - [{arm_label}] No order ({st}: {arm_ex.get('reason') or arm_ex.get('reasons')})"
                 )
-        elif execution:
-            lines.append(
-                f"  - Action: No order ({execution.get('status', 'skipped')} - {execution.get('reason') or execution.get('reasons')})"
-            )
-        else:
+
+        if not execution:
             lines.append("  - Action: No order (paper execution disabled)")
 
         if analysis.get("executive_summary"):
@@ -335,6 +429,16 @@ def main() -> int:
         default=None,
         help="Cap forward readout horizon (0=use full forward window; default BIOTECH_DISCOVERY_READOUT_MAX_FORWARD_DAYS)",
     )
+    p.add_argument(
+        "--no-mechanical-arm",
+        action="store_true",
+        help="Disable mechanical straddle arm (A/B control)",
+    )
+    p.add_argument(
+        "--no-llm-gated-arm",
+        action="store_true",
+        help="Disable LLM-gated straddle arm",
+    )
     args = p.parse_args()
     if not args.tickers and not args.from_watchlist and not args.discover_candidates:
         args.discover_candidates = True
@@ -360,7 +464,87 @@ def main() -> int:
         acct = broker.get_account()
         logger.info("Biotech paper account", equity=acct.get("equity"), cash=acct.get("cash"))
 
-    budget = BiotechRiskBudget(max_premium_pct_equity=float(args.max_premium_pct_equity))
+    run_id = _run_id()
+    run_date = date.today().isoformat()
+
+    from src.biotech.policy_learning import (
+        compute_biotech_policy,
+        get_active_policy,
+        policy_summary_for_prompt,
+        save_biotech_policy,
+    )
+    from src.biotech.promotion_gates import evaluate_biotech_proposal
+    from src.biotech.learning_changelog import append_biotech_changelog, format_learning_markdown
+    from src.biotech.counterfactual_ledger import resolve_counterfactuals
+
+    active_policy = get_active_policy()
+    learning_markdown = ""
+
+    if broker:
+        try:
+            n = resolve_open_thesis_entries(broker)
+            logger.info("Pre-run thesis resolve", updated=n)
+        except Exception as e:
+            logger.warning("Pre-run thesis resolve failed", error=str(e))
+        try:
+            from src.biotech.exit_policy import evaluate_open_straddles_for_exit
+
+            exits = evaluate_open_straddles_for_exit(broker)
+            if exits:
+                logger.info("Exit policy actions", count=len(exits))
+        except Exception as e:
+            logger.warning("Exit policy skipped", error=str(e))
+
+    try:
+        resolve_counterfactuals()
+    except Exception:
+        pass
+
+    policy_result = compute_biotech_policy(weeks=24)
+    proposed = policy_result.get("policy") or active_policy
+    promotion = evaluate_biotech_proposal(proposed)
+    if promotion.get("promote"):
+        save_biotech_policy(proposed)
+        active_policy = proposed
+    learning_markdown = format_learning_markdown(
+        policy_result=policy_result,
+        promotion=promotion,
+    )
+    sc = scorecard(weeks=12)
+    append_biotech_changelog(
+        run_id=run_id,
+        run_date=run_date,
+        policy_adjustments=policy_result.get("adjustments"),
+        scorecard=sc,
+        promoted=promotion.get("promote"),
+        promotion_reason=str(promotion.get("reason") or ""),
+    )
+    try:
+        from src.biotech.cross_feed import save_cross_feed
+
+        save_cross_feed(weeks=4)
+    except Exception:
+        pass
+
+    mech_enabled = (
+        bool(active_policy.get("mechanical_arm_enabled", True))
+        and not args.no_mechanical_arm
+    )
+    llm_arm_enabled = (
+        bool(active_policy.get("llm_gated_arm_enabled", True))
+        and not args.no_llm_gated_arm
+    )
+
+    past_trades_ctx = format_past_trades_context(weeks=12)
+    policy_prompt = policy_summary_for_prompt(policy_result)
+
+    prem_pct = float(active_policy.get("max_premium_pct_equity", args.max_premium_pct_equity))
+    budget = BiotechRiskBudget(max_premium_pct_equity=prem_pct)
+    arm_budget = budget
+    if broker:
+        from src.biotech.risk_biotech import equity_from_alpaca_account
+
+        arm_budget = budget.per_arm_budget(equity_from_alpaca_account(broker.get_account()))
 
     fwd = int(settings.biotech_readout_forward_days)
     grace = int(settings.biotech_readout_past_grace_days)
@@ -405,6 +589,7 @@ def main() -> int:
             max_universe=int(args.max_discovery_universe),
             max_candidates=int(args.max_discovery_candidates),
             broker=broker,
+            policy=active_policy,
             **discovery_kw,
         )
         if not tickers:
@@ -419,6 +604,7 @@ def main() -> int:
                 max_universe=int(args.max_discovery_universe),
                 max_candidates=int(args.max_discovery_candidates),
                 broker=broker,
+                policy=active_policy,
                 **discovery_kw,
             )
             fallback_info["selected_count"] = len(tickers)
@@ -476,34 +662,84 @@ def main() -> int:
             continue
 
         logger.info("Analyzing", ticker=t)
-        analysis = analyze_snapshot(snap, intraweek_context=biotech_intraweek)
-        gates_ok, gate_reasons = apply_gates(snap, analysis)
-        exec_result = None
-        if paper_execute and broker and gates_ok:
-            exec_result = execute_straddle_paper(broker, snap, budget)
-            if isinstance(exec_result, dict) and exec_result.get("status") == "executed":
-                try:
-                    from src.biotech.pnl_ledger import append_entry
+        phase_hint = ""
+        catalyst_pre = catalyst_fields_from_snapshot(
+            snap,
+            forward_days=fwd,
+            past_grace_days=grace,
+            min_phase=readout_loop_min_phase,
+            readout_max_forward_days=readout_loop_max_forward_days,
+        )
+        phase_hint = catalyst_pre.get("phase", "")
+        past_for_ticker = format_past_trades_context(
+            weeks=12, ticker=t, phase=phase_hint
+        )
+        analysis = analyze_snapshot(
+            snap,
+            intraweek_context=biotech_intraweek,
+            past_trades_context=past_for_ticker or past_trades_ctx,
+            policy_summary=policy_prompt,
+        )
+        gates_ok, gate_reasons = apply_gates(snap, analysis, policy=active_policy)
+        catalyst = catalyst_pre
+        if analysis.no_trade or not gates_ok:
+            try:
+                from src.biotech.counterfactual_ledger import append_counterfactual
+                from src.biotech.execution import propose_straddle_legs
 
-                    append_entry(
-                        {
-                            "ticker": t,
-                            "status": "executed",
-                            "premium": exec_result.get("total_premium"),
-                            "execution": exec_result,
-                        }
-                    )
-                    from src.utils.alerts import send_alert
+                legs = propose_straddle_legs(broker, t, float(snap.last_price or 0)) if broker else None
+                est = 0.0
+                if legs and broker:
+                    c, p = legs["call"], legs["put"]
+                    est = float(c.get("close_price", 0) or 0) * 100 + float(
+                        p.get("close_price", 0) or 0
+                    ) * 100
+                append_counterfactual(
+                    run_id=run_id,
+                    run_date=run_date,
+                    ticker=t,
+                    catalyst=catalyst,
+                    analysis=analysis,
+                    gate_reasons=gate_reasons,
+                    premium_est_usd=est,
+                )
+            except Exception:
+                pass
 
-                    send_alert(
-                        "Biotech straddle executed",
-                        f"{t}: paper straddle opened",
-                        exec_result,
-                    )
-                except Exception:
-                    pass
-        elif paper_execute and broker and not gates_ok:
-            exec_result = {"status": "skipped", "reasons": gate_reasons}
+        exec_arms: Dict[str, Any] = {}
+        if paper_execute and broker:
+            if mech_enabled:
+                mech_res, _ = _execute_arm(
+                    "mechanical",
+                    broker,
+                    snap,
+                    analysis,
+                    arm_budget,
+                    gates_ok=True,
+                    gate_reasons=[],
+                    run_id=run_id,
+                    run_date=run_date,
+                    catalyst=catalyst,
+                )
+                if mech_res:
+                    exec_arms["mechanical"] = mech_res
+            if llm_arm_enabled:
+                llm_res, _ = _execute_arm(
+                    "llm_gated",
+                    broker,
+                    snap,
+                    analysis,
+                    arm_budget,
+                    gates_ok=gates_ok,
+                    gate_reasons=gate_reasons,
+                    run_id=run_id,
+                    run_date=run_date,
+                    catalyst=catalyst,
+                )
+                if llm_res:
+                    exec_arms["llm_gated"] = llm_res
+
+        exec_result = exec_arms if exec_arms else None
 
         rec = BiotechRunRecord(
             snapshot=snap,
@@ -518,6 +754,7 @@ def main() -> int:
                 "skipped": False,
                 "gates_ok": gates_ok,
                 "gate_reasons": gate_reasons,
+                "catalyst": catalyst,
                 "analysis": analysis.model_dump(),
                 "execution": exec_result,
             }
@@ -544,6 +781,7 @@ def main() -> int:
                 week_lifecycle_markdown=week_lc_md,
                 discovery_info=discovery_info,
                 fallback_info=fallback_info,
+                learning_markdown=learning_markdown,
             )
             sent = get_email_notifier().send_email(
                 recipient=recipient,

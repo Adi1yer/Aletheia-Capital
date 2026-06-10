@@ -1,0 +1,25 @@
+name: Macro ETF Weekly
+
+on:
+  schedule:
+    - cron: "15 17 * * 1"
+  workflow_dispatch:
+
+jobs:
+  macro-etf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install poetry && poetry config virtualenvs.in-project true
+      - run: poetry install --no-interaction --no-ansi
+      - name: Run macro ETF scan
+        env:
+          MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
+          MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
+          HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+        run: poetry run python macro_etf_scan.py --execute

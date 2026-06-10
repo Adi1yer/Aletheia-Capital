@@ -10,7 +10,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import structlog
 
 from src.biotech.ingest import build_snapshot
-from src.biotech.readout_window import best_readout_date, snapshot_has_readout_catalyst
+from src.biotech.readout_window import (
+    best_readout_date,
+    primary_catalyst_trial,
+    snapshot_has_readout_catalyst,
+)
 from src.config.settings import settings
 
 logger = structlog.get_logger()
@@ -41,6 +45,9 @@ def _load_discovery_blocklist(path: str, env_csv: str) -> Set[str]:
         s = part.strip().upper()
         if s:
             out.add(s)
+    from src.biotech.policy_learning import load_learning_blocklist
+
+    out |= load_learning_blocklist()
     return out
 
 
@@ -98,6 +105,7 @@ def discover_catalyst_candidates(
     blocklist: Optional[Set[str]] = None,
     min_phase: Optional[int] = None,
     readout_max_forward_days: Optional[int] = None,
+    policy: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[str], Dict[str, Any]]:
     """
     Discovery-first biotech universe construction.
@@ -127,13 +135,26 @@ def discover_catalyst_candidates(
     max_cap: Optional[float] = None if max_cap_raw <= 0 else max_cap_raw
     min_cap_eff: Optional[float] = None if min_cap <= 0 else min_cap
 
-    min_ph = int(settings.biotech_discovery_min_phase) if min_phase is None else int(min_phase)
+    if policy is None:
+        from src.biotech.policy_learning import get_active_policy
+
+        active_policy = get_active_policy()
+    else:
+        active_policy = policy
+    min_ph = int(
+        active_policy.get("discovery_min_phase", settings.biotech_discovery_min_phase)
+        if min_phase is None
+        else min_phase
+    )
     rd_cap = (
-        settings.biotech_discovery_readout_max_forward_days
+        active_policy.get(
+            "readout_max_forward_days", settings.biotech_discovery_readout_max_forward_days
+        )
         if readout_max_forward_days is None
         else readout_max_forward_days
     )
     rd_cap_i: Optional[int] = int(rd_cap) if rd_cap is not None and int(rd_cap) > 0 else None
+    min_days_readout = int(active_policy.get("min_days_to_readout", 0))
 
     bl = (
         blocklist
@@ -207,7 +228,7 @@ def discover_catalyst_candidates(
                 continue
         screened.append(p)
 
-    survivors: List[Tuple[str, str]] = []
+    survivors: List[Tuple[str, str, str, float]] = []
     for p in screened:
         t = str(p["ticker"])
         if broker is not None:
@@ -239,21 +260,40 @@ def discover_catalyst_candidates(
         ):
             diagnostics["excluded_no_readout_window"] += 1
             continue
+        primary = primary_catalyst_trial(
+            snap,
+            forward_days=forward_days,
+            past_grace_days=past_grace_days,
+            min_phase=min_ph,
+            readout_max_forward_days=rd_cap_i,
+        )
         rd = ""
-        for tr in snap.trials:
-            d = best_readout_date(tr)
+        phase = ""
+        if primary is not None:
+            d = best_readout_date(primary)
             if d is not None:
                 rd = d.isoformat()
-                break
-        survivors.append((t, rd))
+                if min_days_readout > 0:
+                    from datetime import date
+
+                    days_out = (d - date.today()).days
+                    if days_out < min_days_readout:
+                        diagnostics["excluded_no_readout_window"] += 1
+                        continue
+            phase = primary.phase or ""
+        from src.biotech.thesis_ledger import candidate_history_score
+
+        hist = candidate_history_score(t, phase)
+        survivors.append((t, rd, phase, hist))
 
     diagnostics["candidate_count"] = len(survivors)
-    survivors.sort(key=lambda x: x[1] or "9999-99-99")
-    selected = [t for t, _ in survivors[: max(0, int(max_candidates))]]
+    survivors.sort(key=lambda x: (x[1] or "9999-99-99", -x[3]))
+    selected = [t for t, _, _, _ in survivors[: max(0, int(max_candidates))]]
     diagnostics["selected_count"] = len(selected)
     diagnostics["selected_tickers"] = selected
     diagnostics["candidate_summaries"] = [
-        {"ticker": t, "readout_date": rd or "n/a"} for t, rd in survivors[:50]
+        {"ticker": t, "readout_date": rd or "n/a", "phase": ph or "n/a"}
+        for t, rd, ph, _ in survivors[:50]
     ]
 
     logger.info("Biotech candidate discovery", **diagnostics)

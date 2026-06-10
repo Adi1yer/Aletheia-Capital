@@ -1,28 +1,30 @@
-"""Persist and load daily Alpaca snapshots for main vs biotech paper accounts."""
+"""Persist and load daily snapshots per workflow paper account."""
 
 from __future__ import annotations
 
 import json
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
+from src.broker.registry import resolve_snapshot_subdir
 from src.config.settings import settings
 
-Account = Literal["stock", "biotech"]
+# Legacy alias type: "stock" | "biotech" | workflow snapshot_subdir
+SnapshotKey = str
 
 
 def _root() -> Path:
     return Path(getattr(settings, "daily_snapshots_dir", "data/daily_snapshots"))
 
 
-def snapshot_path(account: Account, day: date | None = None) -> Path:
+def snapshot_path(account: SnapshotKey, day: date | None = None) -> Path:
     day = day or date.today()
-    sub = "stock" if account == "stock" else "biotech"
+    sub = resolve_snapshot_subdir(account)
     return _root() / sub / f"{day.isoformat()}.json"
 
 
-def save_snapshot(account: Account, payload: Dict[str, Any]) -> Path:
+def save_snapshot(account: SnapshotKey, payload: Dict[str, Any]) -> Path:
     """Write one JSON file per day (overwrites same day)."""
     path = snapshot_path(account)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +128,7 @@ def _lifecycle_delta_dict(prior: Dict[str, Any], current: Dict[str, Any]) -> Dic
     }
 
 
-def enrich_payload_with_prior_day_lifecycle(account: Account, payload: Dict[str, Any]) -> None:
+def enrich_payload_with_prior_day_lifecycle(account: SnapshotKey, payload: Dict[str, Any]) -> None:
     """Mutate payload with option-book delta vs prior calendar day (if JSON exists)."""
     day_raw = payload.get("date")
     try:
@@ -225,7 +227,7 @@ def _underlying_lifecycle_states(oldest: Dict[str, Any], newest: Dict[str, Any])
 
 
 def load_snapshots_for_days(
-    account: Account, days: int = 7, end: date | None = None
+    account: SnapshotKey, days: int = 7, end: date | None = None
 ) -> List[Dict[str, Any]]:
     """Load up to `days` daily files ending at `end`, newest first."""
     end = end or date.today()
@@ -244,7 +246,7 @@ def load_snapshots_for_days(
 
 
 def format_week_position_lifecycle_markdown(
-    account: Account, days: int = 7
+    account: SnapshotKey, days: int = 7
 ) -> Tuple[str, Dict[str, str]]:
     """
     Week-over-week option lifecycle for prompts/email: daily deltas + span summary.
@@ -254,7 +256,8 @@ def format_week_position_lifecycle_markdown(
     if not rows:
         return "", {}
     newest, oldest = rows[0], rows[-1]
-    label = "Main paper" if account == "stock" else "Biotech paper"
+    label_map = {"stock": "Main paper", "biotech": "Biotech paper"}
+    label = label_map.get(account, f"{account} paper")
     lines: List[str] = [
         f"### {label} — position lifecycle (option book)",
         "",
@@ -308,12 +311,13 @@ def format_week_position_lifecycle_markdown(
     return body, per_u
 
 
-def format_snapshots_markdown(account: Account, days: int = 7) -> str:
+def format_snapshots_markdown(account: SnapshotKey, days: int = 7) -> str:
     """Human-readable block for prompts and email from the last N snapshots."""
     rows = load_snapshots_for_days(account, days=days)
     if not rows:
         return ""
-    label = "Main paper account" if account == "stock" else "Biotech paper account"
+    label_map = {"stock": "Main paper account", "biotech": "Biotech paper account"}
+    label = label_map.get(account, f"{account} account")
     lines = [f"### {label} — last {len(rows)} daily snapshot(s) (newest first)", ""]
     for r in rows:
         day = r.get("date", "?")

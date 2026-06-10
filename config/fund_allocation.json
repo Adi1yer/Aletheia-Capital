@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-05-26",
+  "targets": {
+    "weekly-scan": 0.25,
+    "biotech-catalyst": 0.15,
+    "hedge-weekly": 0.05,
+    "options-income": 0.1,
+    "congressional": 0.05,
+    "macro-etf": 0.1,
+    "crypto-weekly": 0.05,
+    "forex-weekly": 0.1,
+    "futures-trend": 0.1,
+    "commodities": 0.05
+  },
+  "kill_switches": {},
+  "notes": "Target notional mix across workflow paper accounts; does not move cash between brokers."
+}

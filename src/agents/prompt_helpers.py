@@ -153,6 +153,9 @@ def format_dossier_for_prompt(inputs, max_chars: int = 4000) -> str:
     ]
     if inputs.news_titles:
         parts.append("News: " + "; ".join(inputs.news_titles[:5]))
+    macro = (inputs.extras or {}).get("macro_context")
+    if macro:
+        parts.append(str(macro))
     text = "\n".join(parts)
     return text[:max_chars]
 

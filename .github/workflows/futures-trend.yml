@@ -1,0 +1,35 @@
+name: Futures Trend Weekly
+
+on:
+  schedule:
+    - cron: "15 18 * * 1"
+  workflow_dispatch:
+
+jobs:
+  futures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install poetry && poetry config virtualenvs.in-project true
+      - run: poetry install --no-interaction --no-ansi
+      - name: Restore futures data
+        uses: actions/cache/restore@v4
+        with:
+          path: data/futures
+          key: futures-data-${{ github.repository }}-main
+          restore-keys: futures-data-${{ github.repository }}-
+      - name: Run futures scan
+        env:
+          FUTURES_IBKR_ACCOUNT_ID: ${{ secrets.FUTURES_IBKR_ACCOUNT_ID }}
+          IBKR_GATEWAY_HOST: ${{ secrets.IBKR_GATEWAY_HOST }}
+          IBKR_GATEWAY_PORT: ${{ secrets.IBKR_GATEWAY_PORT }}
+        run: poetry run python futures_scan.py
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/futures
+          key: futures-data-${{ github.repository }}-main

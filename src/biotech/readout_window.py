@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from src.biotech.models import BiotechSnapshot, TrialSummary
 
@@ -69,6 +69,39 @@ def trial_in_readout_window(
         eff_fwd = min(eff_fwd, int(forward_days_cap))
     hi = today + timedelta(days=max(0, eff_fwd))
     return lo <= d <= hi
+
+
+def primary_catalyst_trial(
+    snapshot: BiotechSnapshot,
+    today: Optional[date] = None,
+    forward_days: int = 120,
+    past_grace_days: int = 45,
+    min_phase: int = 0,
+    readout_max_forward_days: Optional[int] = None,
+) -> Optional[TrialSummary]:
+    """Trial with nearest in-window readout date (primary catalyst for ledger linkage)."""
+    today = today or date.today()
+    candidates: List[Tuple[int, TrialSummary]] = []
+    for t in snapshot.trials:
+        if min_phase > 0 and trial_phase_number(t) < int(min_phase):
+            continue
+        if not trial_in_readout_window(
+            t,
+            today,
+            forward_days,
+            past_grace_days,
+            forward_days_cap=readout_max_forward_days,
+        ):
+            continue
+        d = best_readout_date(t)
+        if d is None:
+            continue
+        days = abs((d - today).days)
+        candidates.append((days, t))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
 
 
 def snapshot_has_readout_catalyst(

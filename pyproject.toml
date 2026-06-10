@@ -24,6 +24,7 @@ requests = "^2.31.0"
 structlog = "^24.1.0"
 python-dateutil = "^2.8.2"
 lxml = "^6.0.2"
+pyyaml = "^6.0.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

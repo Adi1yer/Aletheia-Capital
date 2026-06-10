@@ -1,0 +1,35 @@
+name: Commodities Weekly
+
+on:
+  schedule:
+    - cron: "30 18 * * 1"
+  workflow_dispatch:
+
+jobs:
+  commodities:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install poetry && poetry config virtualenvs.in-project true
+      - run: poetry install --no-interaction --no-ansi
+      - name: Restore commodities data
+        uses: actions/cache/restore@v4
+        with:
+          path: data/commodities
+          key: commodities-data-${{ github.repository }}-main
+          restore-keys: commodities-data-${{ github.repository }}-
+      - name: Run commodities scan
+        env:
+          COMMODITIES_IBKR_ACCOUNT_ID: ${{ secrets.COMMODITIES_IBKR_ACCOUNT_ID }}
+          IBKR_GATEWAY_HOST: ${{ secrets.IBKR_GATEWAY_HOST }}
+          IBKR_GATEWAY_PORT: ${{ secrets.IBKR_GATEWAY_PORT }}
+        run: poetry run python commodities_scan.py
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/commodities
+          key: commodities-data-${{ github.repository }}-main

@@ -1,0 +1,2 @@
+# Tickers auto-added by biotech policy_learning from poor closed-trade history.
+# Merged with biotech_discovery_blocklist.txt at discovery time.

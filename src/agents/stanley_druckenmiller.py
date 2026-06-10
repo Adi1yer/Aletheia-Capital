@@ -18,5 +18,14 @@ class StanleyDruckenmillerAgent(BaseAgent, HybridAgentMixin):
             llm_provider="ollama",
         )
 
+    def enrich_inputs(self, inputs):
+        from src.data.macro_signals import macro_context_snippet
+
+        inputs = super().enrich_inputs(inputs)
+        snippet = macro_context_snippet()
+        if snippet:
+            inputs.extras = {**(inputs.extras or {}), "macro_context": snippet}
+        return inputs
+
     def analyze(self, ticker: str, start_date: str, end_date: str, **kwargs):
         return self.run_hybrid_analysis(ticker, start_date, end_date, **kwargs)

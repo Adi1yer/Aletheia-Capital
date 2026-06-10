@@ -9,12 +9,18 @@ Rules:
 - Highlight failure modes: wrong endpoint, underpowered study, placebo crossover, subgroup issues, regulatory path.
 - IP: discuss composition-of-matter vs method claims, obviousness risk, generic/off-label workarounds if mentioned.
 - If evidence is insufficient, set no_trade=true and list reasons.
+- When PAST_RESOLVED_TRADES or LEARNED_POLICY_SUMMARY are provided, use them to calibrate humility (not certainty).
 
 Output MUST be a single JSON object matching the schema requested in the user message. No markdown, no code fences.
 """
 
 
-def user_prompt_from_snapshot(snapshot_json: str, intraweek_context: str = "") -> str:
+def user_prompt_from_snapshot(
+    snapshot_json: str,
+    intraweek_context: str = "",
+    past_trades_context: str = "",
+    policy_summary: str = "",
+) -> str:
     iw = ""
     if intraweek_context.strip():
         iw = (
@@ -24,11 +30,21 @@ def user_prompt_from_snapshot(snapshot_json: str, intraweek_context: str = "") -
             + intraweek_context.strip()
             + "\n"
         )
+    pt = ""
+    if past_trades_context.strip():
+        pt = "\n\n" + past_trades_context.strip() + "\n"
+    pol = ""
+    if policy_summary.strip():
+        pol = (
+            "\n\nLEARNED_POLICY_SUMMARY (from closed paper trades; adjust no_trade threshold accordingly):\n"
+            + policy_summary.strip()
+            + "\n"
+        )
     return f"""Analyze this public snapshot for ticker research.
 
 DATA (JSON):
 {snapshot_json}
-{iw}
+{iw}{pt}{pol}
 Return JSON with these keys exactly:
 - executive_summary (string)
 - clinical_assessment (string)

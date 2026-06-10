@@ -26,10 +26,68 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
-      - name: Daily snapshots (main + biotech paper)
+      - name: Restore daily snapshots
+        uses: actions/cache/restore@v4
+        id: snapshots_restore
+        with:
+          path: data/daily_snapshots
+          key: daily-snapshots-${{ github.repository }}-main
+          restore-keys: |
+            daily-snapshots-${{ github.repository }}-
+
+      - name: Restore biotech thesis ledger
+        uses: actions/cache/restore@v4
+        id: biotech_ledger_restore
+        with:
+          path: data/biotech
+          key: biotech-data-${{ github.repository }}-main
+          restore-keys: |
+            biotech-data-${{ github.repository }}-
+
+      - name: Restore fund metrics data
+        uses: actions/cache/restore@v4
+        with:
+          path: data/fund
+          key: fund-data-${{ github.repository }}-main
+          restore-keys: fund-data-${{ github.repository }}-
+
+      - name: Daily snapshots (all configured workflows)
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           BIOTECH_ALPACA_API_KEY: ${{ secrets.BIOTECH_ALPACA_API_KEY }}
           BIOTECH_ALPACA_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
-        run: poetry run python daily_health_check.py --account both
+          MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
+          MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
+          HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+          FOREX_IBKR_ACCOUNT_ID: ${{ secrets.FOREX_IBKR_ACCOUNT_ID }}
+          FUTURES_IBKR_ACCOUNT_ID: ${{ secrets.FUTURES_IBKR_ACCOUNT_ID }}
+          COMMODITIES_IBKR_ACCOUNT_ID: ${{ secrets.COMMODITIES_IBKR_ACCOUNT_ID }}
+          IBKR_GATEWAY_HOST: ${{ secrets.IBKR_GATEWAY_HOST }}
+          IBKR_GATEWAY_PORT: ${{ secrets.IBKR_GATEWAY_PORT }}
+        run: |
+          poetry run python daily_health_check.py --account all
+          poetry run python -c "from src.fund.orchestrator import run_orchestrator; run_orchestrator()"
+        continue-on-error: false
+
+      - name: Save daily snapshots
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/daily_snapshots
+          key: daily-snapshots-${{ github.repository }}-main
+
+      - name: Save fund metrics
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/fund
+          key: fund-data-${{ github.repository }}-main
+
+      - name: Save biotech data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/biotech
+          key: biotech-data-${{ github.repository }}-main

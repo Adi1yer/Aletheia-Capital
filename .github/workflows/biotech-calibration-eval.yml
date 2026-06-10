@@ -1,0 +1,48 @@
+name: Biotech Policy Calibration Eval
+
+on:
+  schedule:
+    - cron: "0 14 15 * *"
+  workflow_dispatch:
+
+jobs:
+  biotech-policy-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
+
+      - name: Restore biotech data
+        uses: actions/cache/restore@v4
+        with:
+          path: data/biotech
+          key: biotech-data-${{ github.repository }}-main
+          restore-keys: |
+            biotech-data-${{ github.repository }}-
+
+      - name: Run biotech policy eval
+        run: poetry run python scripts/biotech_policy_eval.py
+
+      - name: Upload eval artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: biotech-policy-eval-${{ github.run_id }}
+          retention-days: 90
+          path: |
+            data/biotech/biotech_policy_eval_latest.json
+            config/biotech_policy.json
+          if-no-files-found: ignore

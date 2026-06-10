@@ -13,6 +13,7 @@ import structlog
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
+from src.broker.registry import list_workflows, workflow_credentials_configured
 from src.config.settings import settings
 from src.llm.models import get_llm_for_agent
 
@@ -22,9 +23,6 @@ logger = structlog.get_logger()
 
 
 def _alpaca_account_request(api_key: str, secret_key: str) -> dict:
-    # Intentionally uses direct REST instead of importing src.broker.alpaca / alpaca.trading.*
-    # because those SDK import paths segfault (exit 139) in some local environments.
-    # Keep preflight read-only and runtime-stable by checking account connectivity via HTTPS.
     resp = requests.get(
         "https://paper-api.alpaca.markets/v2/account",
         headers={
@@ -40,24 +38,40 @@ def _alpaca_account_request(api_key: str, secret_key: str) -> dict:
     return payload
 
 
+def _check_workflow_alpaca(workflow_id: str, api_key: str, secret_key: str) -> None:
+    logger.info("ALPACA CHECK", workflow=workflow_id)
+    if not api_key or not secret_key:
+        raise RuntimeError(f"Missing keys for {workflow_id}")
+    account = _alpaca_account_request(api_key, secret_key)
+    logger.info("ALPACA OK", workflow=workflow_id, equity=account.get("equity"))
+
+
+def _check_all_configured_alpaca() -> None:
+    import os
+
+    for wf in list_workflows(enabled_only=True):
+        if wf.broker != "alpaca":
+            continue
+        if not workflow_credentials_configured(wf):
+            logger.warning("SKIP alpaca workflow — keys not set", workflow=wf.workflow_id)
+            continue
+        _check_workflow_alpaca(
+            wf.workflow_id,
+            os.environ.get(wf.api_key_env, ""),
+            os.environ.get(wf.secret_key_env, ""),
+        )
+
+
 def _check_main_alpaca() -> None:
-    logger.info("MAIN CHECK: Alpaca account lookup")
     key = (settings.alpaca_api_key or "").strip()
     sec = (settings.alpaca_secret_key or "").strip()
-    if not key or not sec:
-        raise RuntimeError("Missing ALPACA_API_KEY and/or ALPACA_SECRET_KEY")
-    account = _alpaca_account_request(key, sec)
-    logger.info("MAIN OK", equity=account.get("equity"), cash=account.get("cash"))
+    _check_workflow_alpaca("weekly-scan", key, sec)
 
 
 def _check_biotech_alpaca() -> None:
-    logger.info("BIOTECH CHECK: Alpaca account lookup")
     key = (settings.biotech_alpaca_api_key or "").strip()
     sec = (settings.biotech_alpaca_secret_key or "").strip()
-    if not key or not sec:
-        raise RuntimeError("Missing BIOTECH_ALPACA_API_KEY and/or BIOTECH_ALPACA_SECRET_KEY")
-    account = _alpaca_account_request(key, sec)
-    logger.info("BIOTECH OK", equity=account.get("equity"), cash=account.get("cash"))
+    _check_workflow_alpaca("biotech-catalyst", key, sec)
 
 
 def _check_deepseek() -> None:
@@ -66,7 +80,6 @@ def _check_deepseek() -> None:
     if not api_key:
         raise RuntimeError("Missing DEEPSEEK_API_KEY")
     llm = get_llm_for_agent("deepseek-v3", "deepseek")
-    # Tiny prompt verifies auth/connectivity without incurring meaningful usage.
     _ = llm.bind(max_tokens=1).invoke([HumanMessage(content="respond with OK")])
     logger.info("DEEPSEEK OK")
 
@@ -105,14 +118,11 @@ def _check_finnhub() -> None:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Preflight connectivity checks (read-only)")
-    p.add_argument("--skip-deepseek", action="store_true", help="Skip DeepSeek check")
-    p.add_argument("--skip-smtp", action="store_true", help="Skip SMTP login check")
-    p.add_argument("--skip-finnhub", action="store_true", help="Skip Finnhub check")
-    p.add_argument(
-        "--skip-biotech",
-        action="store_true",
-        help="Skip biotech Alpaca check (weekly stock scan does not use biotech account)",
-    )
+    p.add_argument("--skip-deepseek", action="store_true")
+    p.add_argument("--skip-smtp", action="store_true")
+    p.add_argument("--skip-finnhub", action="store_true")
+    p.add_argument("--skip-biotech", action="store_true")
+    p.add_argument("--all-workflows", action="store_true", help="Ping every configured Alpaca workflow")
     return p.parse_args(argv)
 
 
@@ -121,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     checks: list[tuple[str, Callable[[], None]]] = [
         ("main_alpaca", _check_main_alpaca),
     ]
-    if not args.skip_biotech:
+    if args.all_workflows:
+        checks = [("all_alpaca_workflows", _check_all_configured_alpaca)]
+    elif not args.skip_biotech:
         checks.append(("biotech_alpaca", _check_biotech_alpaca))
     if not args.skip_deepseek:
         checks.append(("deepseek", _check_deepseek))
@@ -134,17 +146,15 @@ def main(argv: list[str] | None = None) -> int:
     for name, check in checks:
         try:
             check()
-        except Exception as exc:  # pragma: no cover - exercised in tests via mocks
+        except Exception as exc:
             failures.append((name, str(exc)))
             logger.error("CHECK FAILED", check=name, error=str(exc))
 
     if failures:
-        logger.error("PREFLIGHT FAILED", failed=[n for n, _ in failures])
         for name, error in failures:
             print(f"[FAIL] {name}: {error}")
         return 1
 
-    logger.info("PREFLIGHT OK")
     print("Preflight checks passed.")
     return 0
 

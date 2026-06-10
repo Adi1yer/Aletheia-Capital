@@ -36,6 +36,10 @@ logger = structlog.get_logger()
 
 
 def main() -> None:
+    from src.fund.orchestrator import run_orchestrator
+
+    run_orchestrator()
+
     p = argparse.ArgumentParser(description="Weekly scan + portfolio rebalancing")
     p.add_argument(
         "--max-stocks",

@@ -426,6 +426,13 @@ class TradingPipeline:
                 min_csp_annualized_yield_pct=float(
                     run_config.get("min_csp_annualized_yield_pct", 3.0)
                 ),
+                enable_short_selling=bool(
+                    run_config.get("enable_short_selling", settings.enable_short_selling)
+                ),
+                max_short_position_pct=float(
+                    run_config.get("max_short_position_pct", settings.max_short_position_pct)
+                ),
+                max_short_tickers=int(run_config.get("max_short_tickers", 5)),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(

@@ -15,12 +15,18 @@ logger = structlog.get_logger()
 
 
 def analyze_snapshot(
-    snapshot: BiotechSnapshot, intraweek_context: str = ""
+    snapshot: BiotechSnapshot,
+    intraweek_context: str = "",
+    *,
+    past_trades_context: str = "",
+    policy_summary: str = "",
 ) -> BiotechAnalysisOutput:
     user = user_prompt_from_snapshot(
-        snapshot_json_for_llm(snapshot), intraweek_context=intraweek_context
+        snapshot_json_for_llm(snapshot),
+        intraweek_context=intraweek_context,
+        past_trades_context=past_trades_context,
+        policy_summary=policy_summary,
     )
-    # Prefer DeepSeek when DEEPSEEK_API_KEY is set (same routing as trading agents).
     llm = get_llm_for_agent("deepseek-v3", "deepseek")
     messages = [
         SystemMessage(content=SYSTEM_BIOTECH_IP),

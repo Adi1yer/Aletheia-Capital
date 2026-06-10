@@ -162,6 +162,9 @@ class PortfolioManager:
         min_hold_weeks_before_rotation: int = 2,
         min_csp_premium_usd: float = 75.0,
         min_csp_annualized_yield_pct: float = 3.0,
+        enable_short_selling: bool = False,
+        max_short_position_pct: float = 0.05,
+        max_short_tickers: int = 5,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -657,6 +660,42 @@ class PortfolioManager:
         diagnostics["cc_held_lot_count"] = max(0, len(cc_lot_tickers) - cc_lot_build_count)
         diagnostics["csp_collateral_reserved"] = round(csp_collateral_used, 2)
 
+        if enable_short_selling:
+            short_candidates: List[tuple] = []
+            for ticker in tickers:
+                pos = portfolio.get_position(ticker)
+                if pos and pos.long > 0:
+                    continue
+                agg = aggregated_by_ticker[ticker]
+                if agg["signal"] == "bearish" and agg["confidence"] >= min_sell_confidence:
+                    short_candidates.append((ticker, int(agg["confidence"])))
+            short_candidates.sort(key=lambda x: -x[1])
+            for ticker, score in short_candidates[: int(max_short_tickers)]:
+                existing = decisions.get(ticker)
+                if existing and existing.action not in ("hold",):
+                    continue
+                risk = risk_analysis.get(ticker) or {}
+                price = float(current_prices.get(ticker) or 0.0)
+                if price <= 0:
+                    continue
+                allowed = self._calculate_allowed_actions(
+                    ticker,
+                    portfolio,
+                    {t: float(p) for t, p in current_prices.items() if p},
+                    risk,
+                    pending_orders=pending_orders_by_symbol.get(ticker),
+                    enable_short_selling=enable_short_selling,
+                    max_short_position_pct=max_short_position_pct,
+                )
+                if "short" not in allowed or int(allowed.get("short", 0) or 0) <= 0:
+                    continue
+                decisions[ticker] = PortfolioDecision(
+                    action="short",
+                    quantity=int(allowed["short"]),
+                    confidence=score,
+                    reasoning=f"Rebalance: bearish short {score}",
+                )
+
         if wash_sale_days > 0:
             for t, d in decisions.items():
                 if d.action == "sell" and d.quantity > 0:
@@ -897,6 +936,8 @@ class PortfolioManager:
         current_prices: Dict[str, float],
         risk_data: Dict,
         pending_orders: Optional[Dict[str, int]] = None,
+        enable_short_selling: bool = False,
+        max_short_position_pct: float = 0.05,
     ) -> Dict[str, int]:
         """Calculate allowed actions and max quantities. Caps by open orders so we don't over-order."""
         position = portfolio.get_position(ticker)
@@ -920,10 +961,19 @@ class PortfolioManager:
             if max_buy > 0:
                 allowed["buy"] = max_buy
 
-        # Short side: currently we support **closing** existing shorts (cover),
-        # but we do not open new short positions in this portfolio manager.
+        # Short side: cover existing; optionally open new shorts on bearish signals.
         if position and position.short > 0:
             allowed["cover"] = position.short
+
+        if enable_short_selling and portfolio.cash > 0 and price > 0:
+            eq_prices = {k: float(v) for k, v in current_prices.items() if v}
+            equity_val = portfolio.get_equity(eq_prices) if eq_prices else float(portfolio.cash)
+            max_short_dollars = float(equity_val) * float(max_short_position_pct)
+            current_short_val = (position.short if position else 0) * price
+            room = max(0.0, max_short_dollars - current_short_val)
+            max_short_shares = int(room // price) if room > 0 else 0
+            if max_short_shares > 0 and (not position or position.long == 0):
+                allowed["short"] = max_short_shares
 
         return allowed
 

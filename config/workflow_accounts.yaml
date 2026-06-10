@@ -1,0 +1,93 @@
+# One GitHub workflow → one logical sleeve. Multiple sleeves may share one physical paper account
+# (Alpaca limit: 3 paper accounts per email). See account_group + env_prefix.
+workflows:
+  weekly-scan:
+    broker: alpaca
+    env_prefix: ALPACA
+    snapshot_subdir: stock
+    data_dir: data/performance
+    account_group: equity
+    enabled: true
+    label: Equity multi-agent
+
+  biotech-catalyst:
+    broker: alpaca
+    env_prefix: BIOTECH_ALPACA
+    snapshot_subdir: biotech
+    data_dir: data/biotech
+    account_group: biotech
+    enabled: true
+    label: Biotech catalyst
+
+  # --- Shared multi-sleeve paper account (hedge + options + congressional + macro + crypto) ---
+  hedge-weekly:
+    broker: alpaca
+    env_prefix: MULTI_SLEEVE_ALPACA
+    snapshot_subdir: multi_sleeve
+    data_dir: data/hedge
+    account_group: multi_sleeve
+    enabled: true
+    label: Beta hedge overlay
+
+  options-income:
+    broker: alpaca
+    env_prefix: MULTI_SLEEVE_ALPACA
+    snapshot_subdir: multi_sleeve
+    data_dir: data/options_income
+    account_group: multi_sleeve
+    enabled: true
+    label: Options vol income
+
+  congressional:
+    broker: alpaca
+    env_prefix: MULTI_SLEEVE_ALPACA
+    snapshot_subdir: multi_sleeve
+    data_dir: data/congressional
+    account_group: multi_sleeve
+    enabled: true
+    label: Congressional trades
+
+  macro-etf:
+    broker: alpaca
+    env_prefix: MULTI_SLEEVE_ALPACA
+    snapshot_subdir: multi_sleeve
+    data_dir: data/macro_etf
+    account_group: multi_sleeve
+    enabled: true
+    label: Macro ETF rotation
+
+  crypto-weekly:
+    broker: alpaca
+    env_prefix: MULTI_SLEEVE_ALPACA
+    snapshot_subdir: multi_sleeve
+    data_dir: data/crypto
+    account_group: multi_sleeve
+    enabled: true
+    label: Crypto momentum
+
+  forex-weekly:
+    broker: ibkr
+    env_prefix: FOREX_IBKR
+    snapshot_subdir: forex
+    data_dir: data/forex
+    account_group: forex
+    enabled: false
+    label: Forex G10 momentum
+
+  futures-trend:
+    broker: ibkr
+    env_prefix: FUTURES_IBKR
+    snapshot_subdir: futures
+    data_dir: data/futures
+    account_group: futures
+    enabled: false
+    label: Futures trend CTA
+
+  commodities:
+    broker: ibkr
+    env_prefix: COMMODITIES_IBKR
+    snapshot_subdir: commodities
+    data_dir: data/commodities
+    account_group: commodities
+    enabled: false
+    label: Commodities momentum

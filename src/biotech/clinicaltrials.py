@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 from urllib.parse import quote
 
 import structlog
@@ -11,6 +11,63 @@ from src.biotech.http_cache import cached_get_json
 from src.biotech.models import TrialSummary
 
 logger = structlog.get_logger()
+
+
+def _study_to_trial(s: dict) -> Optional[TrialSummary]:
+    try:
+        proto = s.get("protocolSection", {}) or {}
+        id_block = proto.get("identificationModule", {}) or {}
+        status_mod = proto.get("statusModule", {}) or {}
+        cond_mod = proto.get("conditionsModule", {}) or {}
+        sponsor = proto.get("sponsorCollaboratorsModule", {}) or {}
+        nct = id_block.get("nctId", "")
+        title = id_block.get("briefTitle", "") or id_block.get("officialTitle", "")
+        status = status_mod.get("overallStatus", "")
+        pcd = status_mod.get("primaryCompletionDateStruct") or {}
+        ccd = status_mod.get("completionDateStruct") or {}
+        primary_completion_date = ""
+        completion_date = ""
+        if isinstance(pcd, dict) and pcd.get("date"):
+            primary_completion_date = str(pcd.get("date", "")).replace("Z", "")[:10]
+        if isinstance(ccd, dict) and ccd.get("date"):
+            completion_date = str(ccd.get("date", "")).replace("Z", "")[:10]
+        phases = id_block.get("phases") or []
+        phase = ",".join(phases) if isinstance(phases, list) else str(phases)
+        conds = cond_mod.get("conditions", []) or []
+        lead = sponsor.get("leadSponsor", {}) or {}
+        sp_name = lead.get("name", "")
+        return TrialSummary(
+            nct_id=nct,
+            title=title[:500],
+            status=status,
+            phase=phase,
+            conditions=[str(c) for c in conds][:12],
+            sponsor=sp_name,
+            primary_completion_date=primary_completion_date,
+            completion_date=completion_date,
+            raw={},
+        )
+    except Exception:
+        return None
+
+
+def fetch_trial_by_nct_id(nct_id: str) -> Optional[TrialSummary]:
+    """Fetch a single study by NCT ID."""
+    nct = (nct_id or "").strip().upper()
+    if not nct.startswith("NCT"):
+        return None
+    url = f"https://clinicaltrials.gov/api/v2/studies/{nct}?format=json"
+    try:
+        data = cached_get_json(url, ttl_seconds=12 * 3600)
+    except Exception as e:
+        logger.warning("ClinicalTrials NCT fetch failed", nct_id=nct, error=str(e))
+        return None
+    if isinstance(data, dict) and data.get("protocolSection"):
+        return _study_to_trial(data)
+    studies = data.get("studies") if isinstance(data, dict) else []
+    if studies:
+        return _study_to_trial(studies[0])
+    return None
 
 
 def search_trials_by_term(term: str, page_size: int = 15) -> List[TrialSummary]:
@@ -28,42 +85,7 @@ def search_trials_by_term(term: str, page_size: int = 15) -> List[TrialSummary]:
     studies = data.get("studies") if isinstance(data, dict) else []
     out: List[TrialSummary] = []
     for s in studies or []:
-        try:
-            proto = s.get("protocolSection", {}) or {}
-            id_block = proto.get("identificationModule", {}) or {}
-            status_mod = proto.get("statusModule", {}) or {}
-            desc = proto.get("descriptionModule", {}) or {}
-            cond_mod = proto.get("conditionsModule", {}) or {}
-            sponsor = proto.get("sponsorCollaboratorsModule", {}) or {}
-            nct = id_block.get("nctId", "")
-            title = id_block.get("briefTitle", "") or id_block.get("officialTitle", "")
-            status = status_mod.get("overallStatus", "")
-            pcd = status_mod.get("primaryCompletionDateStruct") or {}
-            ccd = status_mod.get("completionDateStruct") or {}
-            primary_completion_date = ""
-            completion_date = ""
-            if isinstance(pcd, dict) and pcd.get("date"):
-                primary_completion_date = str(pcd.get("date", "")).replace("Z", "")[:10]
-            if isinstance(ccd, dict) and ccd.get("date"):
-                completion_date = str(ccd.get("date", "")).replace("Z", "")[:10]
-            phases = id_block.get("phases") or []
-            phase = ",".join(phases) if isinstance(phases, list) else str(phases)
-            conds = cond_mod.get("conditions", []) or []
-            lead = sponsor.get("leadSponsor", {}) or {}
-            sp_name = lead.get("name", "")
-            out.append(
-                TrialSummary(
-                    nct_id=nct,
-                    title=title[:500],
-                    status=status,
-                    phase=phase,
-                    conditions=[str(c) for c in conds][:12],
-                    sponsor=sp_name,
-                    primary_completion_date=primary_completion_date,
-                    completion_date=completion_date,
-                    raw={},
-                )
-            )
-        except Exception:
-            continue
+        t = _study_to_trial(s)
+        if t:
+            out.append(t)
     return out

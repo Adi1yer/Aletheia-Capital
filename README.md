@@ -243,6 +243,15 @@ To set up:
    - Daily position health check: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `BIOTECH_ALPACA_API_KEY`, `BIOTECH_ALPACA_SECRET_KEY`
 3. Workflows trigger automatically on schedule, or manually via **Actions → Run workflow**
 
+### Biotech thesis validation
+
+The biotech scanner runs **dual paper arms** (mechanical straddle on every catalyst pass + LLM-gated straddle when gates pass), logs outcomes to `data/biotech/thesis_ledger.jsonl`, and emails a **thesis scorecard** (win rate, PnL vs premium, A/B comparison). See [docs/BIOTECH_THESIS.md](docs/BIOTECH_THESIS.md).
+
+```bash
+poetry run python biotech_catalyst_scan.py --discover-candidates
+poetry run python daily_health_check.py --account biotech
+```
+
 ## Weekly Email Report
 
 Each run sends an HTML email containing:

@@ -1,0 +1,11 @@
+{
+  "min_llm_prob_mid": 0.45,
+  "min_prob_range_width": 0.1,
+  "max_premium_pct_equity": 0.02,
+  "discovery_min_phase": 2,
+  "readout_max_forward_days": 90,
+  "min_days_to_readout": 0,
+  "max_premium_to_expected_move_ratio": 8.0,
+  "mechanical_arm_enabled": true,
+  "llm_gated_arm_enabled": true
+}
