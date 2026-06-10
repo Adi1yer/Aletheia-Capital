@@ -2,6 +2,8 @@
 
 **New to the project?** Start with **[GETTING_STARTED.md](GETTING_STARTED.md)** for environment setup and first run.
 
+**Cloning for development?** Configure git identity for [@Adi1yer](https://github.com/Adi1yer) — see [SETUP.md](../SETUP.md#git-commit-identity).
+
 | Document | Purpose |
 |----------|---------|
 | [GETTING_STARTED.md](GETTING_STARTED.md) | One-place setup: Python, Poetry, .env, Ollama/API, run commands |

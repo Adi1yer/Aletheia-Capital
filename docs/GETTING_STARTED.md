@@ -50,6 +50,19 @@ cd ai-hedge-fund-production
 poetry install
 ```
 
+## 3b. Git commit identity (required for contributors)
+
+Official repo: **[github.com/Adi1yer/Aletheia-Capital](https://github.com/Adi1yer/Aletheia-Capital)**.
+
+Set repo-local git config so your commits link to **Adi1yer** on GitHub:
+
+```bash
+git config --local user.name "Adi1yer"
+git config --local user.email "201507252+Adi1yer@users.noreply.github.com"
+```
+
+Do **not** use `adityaiyer@users.noreply.github.com` — GitHub may show your work on a different user profile. See [SETUP.md](../SETUP.md#git-commit-identity) for details.
+
 ## 4. Environment variables
 
 ```bash

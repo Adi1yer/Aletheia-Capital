@@ -1,6 +1,10 @@
 # Aletheia Capital — AI Hedge Fund
 
+**Repository:** [github.com/Adi1yer/Aletheia-Capital](https://github.com/Adi1yer/Aletheia-Capital) · **Maintainer:** [@Adi1yer](https://github.com/Adi1yer)
+
 An AI-powered hedge fund that uses 22 specialized investment agents to analyze 500+ stocks weekly, make autonomous trading decisions, and execute via Alpaca paper trading. Built for automated weekly operation via GitHub Actions.
+
+> **Contributors:** Configure git so commits attribute to **Adi1yer** only (see [SETUP.md](SETUP.md#git-commit-identity)). Do not use generic `adityaiyer@users.noreply.github.com` — GitHub may link that to a different account.
 
 ## How It Works
 

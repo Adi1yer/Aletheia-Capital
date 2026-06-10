@@ -1,5 +1,7 @@
 # Workflow → paper account mapping
 
+**GitHub repository:** [Adi1yer/Aletheia-Capital](https://github.com/Adi1yer/Aletheia-Capital) — commits should use the **Adi1yer** noreply email (`201507252+Adi1yer@users.noreply.github.com`). See [SETUP.md](../SETUP.md#git-commit-identity).
+
 Alpaca allows **3 paper accounts per email**. This repo uses:
 
 | # | Physical account | Env secrets | Sleeves |
