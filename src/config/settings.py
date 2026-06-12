@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,22 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_empty_env_strings(cls, data):
+        """Treat empty env vars as unset so field defaults apply.
+
+        GitHub Actions injects missing secrets as empty strings (e.g.
+        IBKR_GATEWAY_PORT: ''), which would otherwise fail int parsing.
+        """
+        if isinstance(data, dict):
+            return {
+                k: v
+                for k, v in data.items()
+                if not (isinstance(v, str) and v.strip() == "")
+            }
+        return data
 
     # Alpaca API (required for trading, optional for testing)
     alpaca_api_key: Optional[str] = None
