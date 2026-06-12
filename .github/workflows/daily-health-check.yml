@@ -55,12 +55,15 @@ jobs:
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           BIOTECH_ALPACA_API_KEY: ${{ secrets.BIOTECH_ALPACA_API_KEY }}
           BIOTECH_ALPACA_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
+          BIOTECH_ALPACA_API_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
           MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
           HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
           HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+          HEDGE_ALPACA_API_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
           FOREX_IBKR_ACCOUNT_ID: ${{ secrets.FOREX_IBKR_ACCOUNT_ID }}
           FUTURES_IBKR_ACCOUNT_ID: ${{ secrets.FUTURES_IBKR_ACCOUNT_ID }}
           COMMODITIES_IBKR_ACCOUNT_ID: ${{ secrets.COMMODITIES_IBKR_ACCOUNT_ID }}
@@ -68,7 +71,7 @@ jobs:
           IBKR_GATEWAY_PORT: ${{ secrets.IBKR_GATEWAY_PORT }}
         run: |
           set -e
-          poetry run python daily_health_check.py --account all
+          poetry run python daily_health_check.py --account all --ci
           poetry run python -c "from src.fund.orchestrator import run_orchestrator; run_orchestrator()"
 
       - name: Save daily snapshots

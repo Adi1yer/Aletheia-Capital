@@ -156,17 +156,34 @@ def main(argv: list[str] | None = None) -> int:
         help="all | stock | biotech | both | workflow_id (e.g. weekly-scan)",
     )
     p.add_argument("--max-position-pct", type=float, default=25.0)
+    p.add_argument(
+        "--ci",
+        action="store_true",
+        help="CI mode: never fail on concentration alerts (exit 1 only if no snapshots saved)",
+    )
+    p.add_argument(
+        "--fail-on-alerts",
+        action="store_true",
+        help="Exit 2 when any account exceeds --max-position-pct (default off in --ci)",
+    )
     args = p.parse_args(argv)
+    fail_on_alerts = bool(args.fail_on_alerts) and not args.ci
 
     workflows = _resolve_accounts_arg(args.account)
     if not workflows:
         logger.error("No matching workflows", account=args.account)
+        print(
+            "DAILY HEALTH CHECK FAILED: no workflow accounts with credentials configured. "
+            "Set ALPACA_*, BIOTECH_ALPACA_*, and MULTI_SLEEVE_ALPACA_* secrets.",
+            file=sys.stderr,
+        )
         return 1
 
     worst = 0
     skipped = 0
     saved = 0
     errors: List[str] = []
+    alert_msgs: List[str] = []
     for wf in workflows:
         if not workflow_credentials_configured(wf):
             logger.warning("Skipping workflow — credentials not set", workflow=wf.workflow_id)
@@ -189,10 +206,19 @@ def main(argv: list[str] | None = None) -> int:
                 path=str(path),
                 alerts=len(alerts),
             )
-            if wf.workflow_id == "biotech-catalyst":
-                _run_biotech_hooks(broker)
             saved += 1
             worst = max(worst, xc)
+            for a in alerts:
+                alert_msgs.append(f"{wf.workflow_id}: {a}")
+            if wf.workflow_id == "biotech-catalyst":
+                try:
+                    _run_biotech_hooks(broker)
+                except Exception as hook_err:
+                    logger.warning(
+                        "Biotech post-snapshot hooks failed",
+                        workflow=wf.workflow_id,
+                        error=str(hook_err),
+                    )
         except Exception as e:
             msg = f"{wf.workflow_id}: {e}"
             logger.error("Daily snapshot failed", workflow=wf.workflow_id, error=str(e))
@@ -202,8 +228,21 @@ def main(argv: list[str] | None = None) -> int:
             if hasattr(broker, "disconnect"):
                 broker.disconnect()
 
+    if alert_msgs:
+        logger.warning("Concentration alerts", alerts=alert_msgs)
+        for line in alert_msgs:
+            print(f"ALERT: {line}", file=sys.stderr)
+
     if errors:
         logger.warning("Daily health check account errors", count=len(errors), errors=errors)
+        for line in errors:
+            print(f"ERROR: {line}", file=sys.stderr)
+
+    print(
+        f"Daily health check: saved={saved}/{len(workflows)} "
+        f"skipped={skipped} concentration_alerts={len(alert_msgs)}"
+    )
+
     if saved == 0:
         logger.error(
             "No snapshots saved",
@@ -211,12 +250,13 @@ def main(argv: list[str] | None = None) -> int:
             skipped=skipped,
             errors=errors,
         )
+        print("DAILY HEALTH CHECK FAILED: no snapshots saved.", file=sys.stderr)
         return 1
     if errors:
-        # At least one book snapshot succeeded; do not fail CI for a single bad account.
         logger.warning("Partial daily health check", saved=saved, failed=len(errors))
-        return worst
-    return worst
+    if fail_on_alerts and worst == 2:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
