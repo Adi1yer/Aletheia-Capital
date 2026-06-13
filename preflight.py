@@ -13,7 +13,7 @@ import structlog
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
-from src.broker.registry import list_workflows, workflow_credentials_configured
+from src.broker.registry import get_alpaca_credentials, list_physical_accounts
 from src.config.settings import settings
 from src.llm.models import get_llm_for_agent
 
@@ -47,19 +47,16 @@ def _check_workflow_alpaca(workflow_id: str, api_key: str, secret_key: str) -> N
 
 
 def _check_all_configured_alpaca() -> None:
-    import os
-
-    for wf in list_workflows(enabled_only=True):
+    checked: set[str] = set()
+    for wf in list_physical_accounts(enabled_only=True):
         if wf.broker != "alpaca":
             continue
-        if not workflow_credentials_configured(wf):
-            logger.warning("SKIP alpaca workflow — keys not set", workflow=wf.workflow_id)
+        prefix = wf.physical_account_key
+        if prefix in checked:
             continue
-        _check_workflow_alpaca(
-            wf.workflow_id,
-            os.environ.get(wf.api_key_env, ""),
-            os.environ.get(wf.secret_key_env, ""),
-        )
+        checked.add(prefix)
+        key, sec = get_alpaca_credentials(wf)
+        _check_workflow_alpaca(wf.workflow_id, key, sec)
 
 
 def _check_main_alpaca() -> None:

@@ -87,3 +87,36 @@ def test_finnhub_is_non_failing_when_key_missing(monkeypatch):
 
     monkeypatch.setattr(preflight.requests, "get", _unexpected_request)
     preflight._check_finnhub()
+
+
+def test_all_workflows_uses_api_secret_key_env(monkeypatch):
+    """Satellite workflows store secrets as {PREFIX}_API_SECRET_KEY in GitHub."""
+    from src.broker.registry import WorkflowAccount
+
+    wf = WorkflowAccount(
+        workflow_id="congressional",
+        broker="alpaca",
+        env_prefix="MULTI_SLEEVE_ALPACA",
+        snapshot_subdir="multi_sleeve",
+        data_dir="data/congressional",
+        account_group="multi_sleeve",
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    monkeypatch.setenv("MULTI_SLEEVE_ALPACA_API_KEY", "pk-test")
+    monkeypatch.setenv("MULTI_SLEEVE_ALPACA_API_SECRET_KEY", "sk-test")
+    monkeypatch.delenv("MULTI_SLEEVE_ALPACA_SECRET_KEY", raising=False)
+    monkeypatch.setattr(
+        preflight,
+        "list_physical_accounts",
+        lambda enabled_only=True: [wf],
+    )
+    monkeypatch.setattr(
+        preflight,
+        "_check_workflow_alpaca",
+        lambda wid, key, sec: calls.append((wid, key, sec)),
+    )
+
+    preflight._check_all_configured_alpaca()
+
+    assert calls == [("congressional", "pk-test", "sk-test")]
