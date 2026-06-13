@@ -36,16 +36,20 @@ jobs:
         env:
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
           MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          MULTI_SLEEVE_ALPACA_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
           HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
           HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
-        run: poetry run python preflight.py --skip-main --skip-biotech --skip-deepseek --skip-smtp --skip-finnhub --all-workflows
+          HEDGE_ALPACA_API_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+        run: poetry run python preflight.py --satellite-only --skip-deepseek --skip-smtp --skip-finnhub
 
       - name: Run congressional scan
         env:
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
           MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          MULTI_SLEEVE_ALPACA_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
           HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
           HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+          HEDGE_ALPACA_API_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: poetry run python congressional_scan.py --execute
 

@@ -89,6 +89,24 @@ def test_finnhub_is_non_failing_when_key_missing(monkeypatch):
     preflight._check_finnhub()
 
 
+def test_satellite_only_flag(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        preflight,
+        "_check_satellite_alpaca",
+        lambda: calls.append("satellite"),
+    )
+    monkeypatch.setattr(preflight, "_check_deepseek", lambda: calls.append("deepseek"))
+    monkeypatch.setattr(preflight, "_check_smtp", lambda: calls.append("smtp"))
+    monkeypatch.setattr(preflight, "_check_finnhub", lambda: calls.append("finnhub"))
+
+    rc = preflight.main(["--satellite-only", "--skip-deepseek", "--skip-smtp", "--skip-finnhub"])
+
+    assert rc == 0
+    assert calls == ["satellite"]
+
+
 def test_all_workflows_uses_api_secret_key_env(monkeypatch):
     """Satellite workflows store secrets as {PREFIX}_API_SECRET_KEY in GitHub."""
     from src.broker.registry import WorkflowAccount

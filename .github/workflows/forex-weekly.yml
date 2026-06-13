@@ -1,8 +1,7 @@
 name: Forex Weekly
 
+# IBKR sleeve disabled in config/workflow_accounts.yaml — manual dispatch only.
 on:
-  schedule:
-    - cron: "0 18 * * 1"
   workflow_dispatch:
 
 jobs:

@@ -13,7 +13,12 @@ import structlog
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
-from src.broker.registry import get_alpaca_credentials, list_physical_accounts
+from src.broker.registry import (
+    get_alpaca_credentials,
+    get_workflow,
+    list_physical_accounts,
+    workflow_credentials_configured,
+)
 from src.config.settings import settings
 from src.llm.models import get_llm_for_agent
 
@@ -59,16 +64,33 @@ def _check_all_configured_alpaca() -> None:
         _check_workflow_alpaca(wf.workflow_id, key, sec)
 
 
+def _check_workflow_account_alpaca(workflow_id: str) -> None:
+    wf = get_workflow(workflow_id)
+    if wf is None:
+        raise RuntimeError(f"Unknown workflow: {workflow_id}")
+    key, sec = get_alpaca_credentials(wf)
+    _check_workflow_alpaca(workflow_id, key, sec)
+
+
+def _check_satellite_alpaca() -> None:
+    wf = get_workflow("hedge-weekly")
+    if wf is None:
+        raise RuntimeError("hedge-weekly not in registry")
+    if not workflow_credentials_configured(wf):
+        raise RuntimeError(
+            "Satellite Alpaca credentials not configured "
+            "(set MULTI_SLEEVE_ALPACA_* or HEDGE_ALPACA_*)"
+        )
+    key, sec = get_alpaca_credentials(wf)
+    _check_workflow_alpaca("multi_sleeve", key, sec)
+
+
 def _check_main_alpaca() -> None:
-    key = (settings.alpaca_api_key or "").strip()
-    sec = (settings.alpaca_secret_key or "").strip()
-    _check_workflow_alpaca("weekly-scan", key, sec)
+    _check_workflow_account_alpaca("weekly-scan")
 
 
 def _check_biotech_alpaca() -> None:
-    key = (settings.biotech_alpaca_api_key or "").strip()
-    sec = (settings.biotech_alpaca_secret_key or "").strip()
-    _check_workflow_alpaca("biotech-catalyst", key, sec)
+    _check_workflow_account_alpaca("biotech-catalyst")
 
 
 def _check_deepseek() -> None:
@@ -121,6 +143,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--skip-biotech", action="store_true")
     p.add_argument("--skip-main", action="store_true", help="Skip main equity Alpaca check")
     p.add_argument("--all-workflows", action="store_true", help="Ping every configured Alpaca workflow")
+    p.add_argument(
+        "--satellite-only",
+        action="store_true",
+        help="Ping shared multi-sleeve Alpaca account only (hedge/options/congressional/macro/crypto)",
+    )
     return p.parse_args(argv)
 
 
@@ -129,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     checks: list[tuple[str, Callable[[], None]]] = []
     if args.all_workflows:
         checks = [("all_alpaca_workflows", _check_all_configured_alpaca)]
+    elif args.satellite_only:
+        checks = [("satellite_alpaca", _check_satellite_alpaca)]
     else:
         if not args.skip_main:
             checks.append(("main_alpaca", _check_main_alpaca))

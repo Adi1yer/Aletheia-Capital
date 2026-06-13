@@ -33,12 +33,28 @@ jobs:
           restore-keys: |
             satellite-data-${{ github.repository }}-
 
+      - name: Preflight checks
+        env:
+          MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
+          MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          MULTI_SLEEVE_ALPACA_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
+          HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+          HEDGE_ALPACA_API_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        run: poetry run python preflight.py --satellite-only --skip-deepseek --skip-finnhub
+
       - name: Send fund weekly digest
         env:
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
           MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
+          MULTI_SLEEVE_ALPACA_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
           HEDGE_ALPACA_API_KEY: ${{ secrets.HEDGE_ALPACA_API_KEY }}
           HEDGE_ALPACA_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
+          HEDGE_ALPACA_API_SECRET_KEY: ${{ secrets.HEDGE_ALPACA_SECRET_KEY }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}

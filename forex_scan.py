@@ -17,6 +17,7 @@ import structlog
 from src.data.macro_signals import spy_regime_harvest
 from src.fund.orchestrator import run_orchestrator
 from src.sleeves.common import append_ledger, init_workflow_broker
+from src.sleeves.workflow_guard import skip_if_workflow_disabled
 from src.sleeves.ibkr_signals import rank_by_momentum
 
 logger = structlog.get_logger()
@@ -34,6 +35,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Forex weekly sleeve")
     p.add_argument("--execute", action="store_true")
     args = p.parse_args()
+
+    if skip_if_workflow_disabled(WORKFLOW_ID):
+        return 0
 
     run_orchestrator()
     ranked = rank_by_momentum(PAIRS, months=1)
