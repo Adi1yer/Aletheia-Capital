@@ -37,7 +37,7 @@ def build_snapshot(ticker: str, news_limit: int = 12) -> BiotechSnapshot:
         logger.warning("yfinance snapshot partial", ticker=t, error=str(e))
 
     term = company_name or t
-    trials: List[TrialSummary] = search_trials_by_term(term, page_size=15)
+    trials: List[TrialSummary] = search_trials_by_term(term, page_size=60)
 
     filings_raw = recent_filings(t, limit=8)
     filings: List[FilingRef] = []

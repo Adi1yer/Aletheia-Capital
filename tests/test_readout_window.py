@@ -5,9 +5,35 @@ from datetime import date, timedelta
 from src.biotech.models import BiotechSnapshot, TrialSummary
 from src.biotech.readout_window import (
     best_readout_date,
+    parse_iso_date,
     snapshot_has_readout_catalyst,
     trial_in_readout_window,
 )
+
+
+def test_parse_iso_date_full():
+    assert parse_iso_date("2026-06-15") == date(2026, 6, 15)
+
+
+def test_parse_iso_date_month_precision():
+    # CT.gov frequently returns YYYY-MM; must not be dropped.
+    assert parse_iso_date("2026-06") == date(2026, 6, 1)
+
+
+def test_parse_iso_date_year_precision():
+    assert parse_iso_date("2026") == date(2026, 1, 1)
+
+
+def test_parse_iso_date_empty():
+    assert parse_iso_date("") is None
+    assert parse_iso_date(None) is None
+
+
+def test_month_precision_readout_counts_as_catalyst():
+    today = date(2026, 6, 15)
+    t = TrialSummary(nct_id="NCT1", phase="PHASE3", primary_completion_date="2026-07")
+    assert best_readout_date(t) == date(2026, 7, 1)
+    assert trial_in_readout_window(t, today, forward_days=120, past_grace_days=45) is True
 
 
 def test_trial_in_window_future():

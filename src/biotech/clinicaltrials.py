@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 from urllib.parse import quote
 
@@ -12,6 +13,25 @@ from src.biotech.models import TrialSummary
 
 logger = structlog.get_logger()
 
+# Legal-entity suffixes that over-constrain the ClinicalTrials.gov free-text query
+# (e.g. "Alnylam Pharmaceuticals, Inc." returns 3 hits vs 96 without the suffix).
+_LEGAL_SUFFIX_RE = re.compile(
+    r"[,\.]?\s+(inc|incorporated|corp|corporation|ltd|limited|llc|l\.l\.c|plc|"
+    r"n\.v|s\.a|a\.g|ag|se|co|company|holdings|group|sa|nv)\.?$",
+    re.IGNORECASE,
+)
+
+
+def clean_company_term(name: str) -> str:
+    """Strip commas and trailing legal-entity suffixes to broaden trial search."""
+    term = (name or "").strip()
+    term = term.replace(",", " ")
+    prev = None
+    while prev != term:
+        prev = term
+        term = _LEGAL_SUFFIX_RE.sub("", term).strip()
+    return re.sub(r"\s+", " ", term).strip() or (name or "").strip()
+
 
 def _study_to_trial(s: dict) -> Optional[TrialSummary]:
     try:
@@ -19,6 +39,7 @@ def _study_to_trial(s: dict) -> Optional[TrialSummary]:
         id_block = proto.get("identificationModule", {}) or {}
         status_mod = proto.get("statusModule", {}) or {}
         cond_mod = proto.get("conditionsModule", {}) or {}
+        design_mod = proto.get("designModule", {}) or {}
         sponsor = proto.get("sponsorCollaboratorsModule", {}) or {}
         nct = id_block.get("nctId", "")
         title = id_block.get("briefTitle", "") or id_block.get("officialTitle", "")
@@ -31,7 +52,8 @@ def _study_to_trial(s: dict) -> Optional[TrialSummary]:
             primary_completion_date = str(pcd.get("date", "")).replace("Z", "")[:10]
         if isinstance(ccd, dict) and ccd.get("date"):
             completion_date = str(ccd.get("date", "")).replace("Z", "")[:10]
-        phases = id_block.get("phases") or []
+        # ClinicalTrials.gov API v2 exposes phases under designModule (not identificationModule).
+        phases = design_mod.get("phases") or id_block.get("phases") or []
         phase = ",".join(phases) if isinstance(phases, list) else str(phases)
         conds = cond_mod.get("conditions", []) or []
         lead = sponsor.get("leadSponsor", {}) or {}
@@ -70,11 +92,16 @@ def fetch_trial_by_nct_id(nct_id: str) -> Optional[TrialSummary]:
     return None
 
 
-def search_trials_by_term(term: str, page_size: int = 15) -> List[TrialSummary]:
-    """Search studies; `term` is typically company long name."""
-    if not term.strip():
+def search_trials_by_term(term: str, page_size: int = 60) -> List[TrialSummary]:
+    """Search studies; `term` is typically company long name.
+
+    A larger default page size is required so near-term readouts surface — the
+    relevance-sorted default otherwise returns mostly old/far-future trials.
+    """
+    cleaned = clean_company_term(term)
+    if not cleaned:
         return []
-    q = quote(term.strip())
+    q = quote(cleaned)
     url = f"https://clinicaltrials.gov/api/v2/studies?query.term={q}&pageSize={page_size}&format=json"
     try:
         data = cached_get_json(url, ttl_seconds=12 * 3600)

@@ -10,15 +10,20 @@ from src.biotech.models import BiotechSnapshot, TrialSummary
 
 
 def parse_iso_date(s: Optional[str]) -> Optional[date]:
-    """Parse YYYY-MM-DD from ClinicalTrials date strings."""
+    """Parse a date from ClinicalTrials date strings.
+
+    CT.gov often returns month-precision (YYYY-MM) or year-only (YYYY) dates.
+    Missing day/month default to the 1st so these readouts aren't silently dropped.
+    """
     if not s or not str(s).strip():
         return None
-    raw = str(s).strip().replace("Z", "")
-    raw = raw[:10]
-    try:
-        return datetime.strptime(raw, "%Y-%m-%d").date()
-    except ValueError:
-        return None
+    raw = str(s).strip().replace("Z", "")[:10]
+    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def trial_phase_number(trial: TrialSummary) -> int:
