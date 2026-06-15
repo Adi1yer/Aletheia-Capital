@@ -9,6 +9,22 @@ import structlog
 logger = structlog.get_logger()
 
 
+def _extract_close_series(prices) -> list[float]:
+    """Normalize DataAggregator List[Price] or pandas-like frames to close floats."""
+    if prices is None:
+        return []
+    if isinstance(prices, list):
+        if prices and hasattr(prices[0], "close"):
+            return [float(p.close) for p in prices if getattr(p, "close", None) is not None]
+        return []
+    try:
+        if hasattr(prices, "columns") and "close" in prices.columns:
+            return [float(x) for x in prices["close"].astype(float).tolist()]
+    except Exception:
+        pass
+    return []
+
+
 def detect_regime(
     data_provider,
     start_date: str,
@@ -27,12 +43,12 @@ def detect_regime(
     }
     try:
         prices = data_provider.get_prices(benchmark, start_date, end_date)
-        if prices is None or len(prices) < 200:
+        closes = _extract_close_series(prices)
+        if len(closes) < 200:
             out["detail"] = "insufficient SPY history"
             return out
-        closes = prices["close"].astype(float)
-        last = float(closes.iloc[-1])
-        sma = float(closes.tail(200).mean())
+        last = closes[-1]
+        sma = sum(closes[-200:]) / 200.0
         out["last_close"] = round(last, 2)
         out["sma_200"] = round(sma, 2)
         if last < sma * 0.99:

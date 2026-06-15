@@ -404,11 +404,17 @@ def main() -> None:
     if keep_weeks > 0:
         scan_cache.prune_old_runs(keep_weeks=keep_weeks)
 
-    # ── Email (exactly once) ──
+    # ── Email (exactly once) — failure must not fail the workflow after a successful scan ──
     recipient = (args.email_to or settings.recipient_email or "").strip()
     if recipient:
-        get_email_notifier().send_trading_results(recipient, results)
-        logger.info("Weekly email sent", recipient=recipient, run_id=results.get("run_id"))
+        try:
+            sent = get_email_notifier().send_trading_results(recipient, results)
+            if sent:
+                logger.info("Weekly email sent", recipient=recipient, run_id=results.get("run_id"))
+            else:
+                logger.warning("Weekly email not sent (SMTP/send failed)", recipient=recipient)
+        except Exception as e:
+            logger.error("Weekly email failed (non-fatal)", recipient=recipient, error=str(e))
     else:
         logger.info("No email recipient configured; skipping email")
 

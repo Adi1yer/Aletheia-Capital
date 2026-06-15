@@ -263,7 +263,8 @@ class TradingPipeline:
 
         from src.portfolio.regime import apply_regime_to_run_config, detect_regime
 
-        regime = detect_regime(self.data_provider, start_date, end_date)
+        regime_start = (datetime.now() - relativedelta(months=14)).strftime("%Y-%m-%d")
+        regime = detect_regime(self.data_provider, regime_start, end_date)
         run_config = apply_regime_to_run_config(run_config, regime)
 
         registered_keys = self.registry.get_agent_keys()
@@ -716,6 +717,15 @@ class TradingPipeline:
             equity += (pos.get("long", 0) * price) - (pos.get("short", 0) * price)
         port_dict["equity"] = round(equity, 2)
 
+        def _safe_dump(obj: Any) -> Any:
+            if obj is None:
+                return None
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+            if isinstance(obj, dict):
+                return obj
+            return str(obj)
+
         results = {
             "run_id": run_id,
             "timestamp": datetime.now().isoformat(),
@@ -727,12 +737,12 @@ class TradingPipeline:
             "broker_used": broker_used,
             "agent_signals": {
                 agent_key: {
-                    ticker: signal.model_dump() for ticker, signal in ticker_signals.items()
+                    ticker: _safe_dump(signal) for ticker, signal in ticker_signals.items()
                 }
                 for agent_key, ticker_signals in agent_signals.items()
             },
             "risk_analysis": risk_analysis,
-            "decisions": {ticker: decision.model_dump() for ticker, decision in decisions.items()},
+            "decisions": {ticker: _safe_dump(decision) for ticker, decision in decisions.items()},
             "execution_results": execution_results,
             "covered_call_results": cc_results,
             "covered_call_diagnostics": cc_diagnostics,
