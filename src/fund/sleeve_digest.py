@@ -37,6 +37,25 @@ def _read_ledger_tail(data_dir: str, limit: int = 3) -> List[Dict[str, Any]]:
     return rows[-limit:]
 
 
+def _infer_ledger_reason(latest: Dict[str, Any], *, creds_ok: bool, has_ledger: bool) -> str:
+    if latest.get("reason"):
+        return str(latest["reason"])
+    if latest.get("note"):
+        return str(latest["note"])
+    if latest.get("regime"):
+        return str(latest["regime"])
+    if not has_ledger:
+        return "credentials_missing" if not creds_ok else "no_ledger_file"
+    if latest.get("executed"):
+        return "executed"
+    picks = latest.get("picks")
+    if picks is not None and isinstance(picks, list) and len(picks) == 0:
+        return "no_picks"
+    if latest.get("action"):
+        return str(latest["action"])
+    return "ran_no_trade"
+
+
 def build_sleeve_digest(*, run_date: str | None = None) -> Dict[str, Any]:
     """Aggregate latest ledger rows and equity snapshots per satellite workflow."""
     run_date = run_date or date.today().isoformat()
@@ -49,18 +68,16 @@ def build_sleeve_digest(*, run_date: str | None = None) -> Dict[str, Any]:
         creds_ok = workflow_credentials_configured(wf)
         eq_info = equity.get(wf.workflow_id) or {}
         ledger_rows = _read_ledger_tail(wf.data_dir)
+        has_ledger = bool(ledger_rows)
         latest = ledger_rows[-1] if ledger_rows else {}
         action = latest.get("action") or ("executed" if latest.get("executed") else "skip")
-        reason = (
-            latest.get("reason")
-            or latest.get("note")
-            or latest.get("regime")
-            or ("credentials_missing" if not creds_ok else "no_ledger")
-        )
+        reason = _infer_ledger_reason(latest, creds_ok=creds_ok, has_ledger=has_ledger)
         sections.append(
             {
                 "workflow_id": wf.workflow_id,
                 "label": wf.label,
+                "snapshot_subdir": wf.snapshot_subdir,
+                "account_group": wf.account_group or wf.snapshot_subdir,
                 "credentials_ok": creds_ok,
                 "equity": eq_info.get("equity"),
                 "equity_delta_pct_1d": eq_info.get("equity_delta_pct_1d"),
@@ -70,13 +87,17 @@ def build_sleeve_digest(*, run_date: str | None = None) -> Dict[str, Any]:
             }
         )
 
+    equity_by_subdir: Dict[str, float] = {}
+    for s in sections:
+        sub = str(s.get("snapshot_subdir") or "")
+        eq = s.get("equity")
+        if sub and eq is not None:
+            equity_by_subdir[sub] = float(eq)
+
     return {
         "run_date": run_date,
         "sections": sections,
-        "total_satellite_equity": round(
-            sum(float(s.get("equity") or 0) for s in sections if s.get("equity") is not None),
-            2,
-        ),
+        "total_satellite_equity": round(sum(equity_by_subdir.values()), 2),
     }
 
 

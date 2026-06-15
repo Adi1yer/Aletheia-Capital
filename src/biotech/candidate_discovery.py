@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import structlog
 
 from src.biotech.ingest import build_snapshot
+from src.biotech.market_quotes import get_ticker_profile
 from src.biotech.readout_window import (
     best_readout_date,
     primary_catalyst_trial,
@@ -18,14 +19,6 @@ from src.biotech.readout_window import (
 from src.config.settings import settings
 
 logger = structlog.get_logger()
-
-_BIOTECH_INDUSTRY_HINTS = (
-    "biotech",
-    "biotechnology",
-    "drug",
-    "pharmaceutical",
-    "life sciences",
-)
 
 
 def _load_discovery_blocklist(path: str, env_csv: str) -> Set[str]:
@@ -53,42 +46,16 @@ def _load_discovery_blocklist(path: str, env_csv: str) -> Set[str]:
 
 def _profile_ticker(ticker: str) -> Dict[str, Any]:
     """Fetch lightweight metadata for universe filtering."""
-    import yfinance as yf
-
-    out: Dict[str, Any] = {
-        "ticker": ticker,
-        "is_biotech": False,
-        "last_price": 0.0,
-        "avg_dollar_volume_30d": 0.0,
-        "has_yf_options": False,
-        "market_cap": None,
-        "error": "",
+    prof = get_ticker_profile(ticker)
+    return {
+        "ticker": prof.get("ticker") or ticker,
+        "is_biotech": bool(prof.get("is_biotech")),
+        "last_price": float(prof.get("last_price") or 0.0),
+        "avg_dollar_volume_30d": float(prof.get("avg_dollar_volume_30d") or 0.0),
+        "has_yf_options": bool(prof.get("has_yf_options")),
+        "market_cap": prof.get("market_cap"),
+        "error": str(prof.get("error") or ""),
     }
-    try:
-        tk = yf.Ticker(ticker)
-        info = tk.info or {}
-        sector = str(info.get("sector") or "").lower()
-        industry = str(info.get("industry") or "").lower()
-        out["is_biotech"] = (
-            "healthcare" in sector and any(h in industry for h in _BIOTECH_INDUSTRY_HINTS)
-        ) or any(h in industry for h in _BIOTECH_INDUSTRY_HINTS)
-        mc = info.get("marketCap")
-        if mc is not None:
-            try:
-                out["market_cap"] = float(mc)
-            except (TypeError, ValueError):
-                out["market_cap"] = None
-        hist = tk.history(period="1mo")
-        if hist is not None and not hist.empty:
-            out["last_price"] = float(hist["Close"].iloc[-1])
-            out["avg_dollar_volume_30d"] = float((hist["Close"] * hist["Volume"]).mean())
-        try:
-            out["has_yf_options"] = bool(getattr(tk, "options", []) or [])
-        except Exception:
-            out["has_yf_options"] = False
-    except Exception as e:
-        out["error"] = str(e)
-    return out
 
 
 def discover_catalyst_candidates(

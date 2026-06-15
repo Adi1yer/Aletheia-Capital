@@ -42,6 +42,7 @@ def main() -> int:
         "tickers": DEFAULT_CRYPTO_TICKERS,
         "pipeline_summary": str(results)[:500],
         "executed": args.execute,
+        "reason": "completed" if args.execute else "analysis_only",
     }
     append_ledger(WORKFLOW_ID, row)
     logger.info("Crypto weekly scan complete")

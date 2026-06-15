@@ -9,32 +9,27 @@ import structlog
 
 from src.biotech.clinicaltrials import search_trials_by_term
 from src.biotech.edgar import recent_filings
+from src.biotech.market_quotes import get_last_price, get_ticker_profile
 from src.biotech.models import BiotechSnapshot, FilingRef, TrialSummary
 
 logger = structlog.get_logger()
 
 
 def build_snapshot(ticker: str, news_limit: int = 12) -> BiotechSnapshot:
-    import yfinance as yf
-
     t = ticker.upper().strip()
     end = datetime.now().strftime("%Y-%m-%d")
 
-    company_name = ""
-    sector = ""
-    industry = ""
-    last_price = None
-    try:
-        stock = yf.Ticker(t)
-        info = stock.info or {}
-        company_name = info.get("longName") or info.get("shortName") or t
-        sector = info.get("sector") or ""
-        industry = info.get("industry") or ""
-        hist = stock.history(period="5d")
-        if hist is not None and not hist.empty:
-            last_price = float(hist["Close"].iloc[-1])
-    except Exception as e:
-        logger.warning("yfinance snapshot partial", ticker=t, error=str(e))
+    profile = get_ticker_profile(t)
+    company_name = str(profile.get("company_name") or t)
+    sector = str(profile.get("sector") or "")
+    industry = str(profile.get("industry") or "")
+    last_price = get_last_price(t)
+    if last_price is None and profile.get("last_price"):
+        try:
+            lp = float(profile["last_price"])
+            last_price = lp if lp > 0 else None
+        except (TypeError, ValueError):
+            pass
 
     term = company_name or t
     trials: List[TrialSummary] = search_trials_by_term(term, page_size=60)
@@ -52,8 +47,9 @@ def build_snapshot(ticker: str, news_limit: int = 12) -> BiotechSnapshot:
 
     news_titles: List[str] = []
     try:
-        stock = yf.Ticker(t)
-        news = stock.news or []
+        import yfinance as yf
+
+        news = yf.Ticker(t).news or []
         for n in news[:news_limit]:
             if isinstance(n, dict):
                 news_titles.append(n.get("title", "") or "")

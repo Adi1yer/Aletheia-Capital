@@ -33,6 +33,14 @@ jobs:
           restore-keys: |
             satellite-data-${{ github.repository }}-
 
+      - name: Restore daily snapshots (fallback)
+        uses: actions/cache/restore@v4
+        with:
+          path: data/daily_snapshots
+          key: daily-snapshots-${{ github.repository }}-main
+          restore-keys: |
+            daily-snapshots-${{ github.repository }}-
+
       - name: Preflight checks
         env:
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
@@ -75,3 +83,10 @@ jobs:
             data/fund
             data/daily_snapshots/multi_sleeve
           key: satellite-data-${{ github.repository }}-main
+
+      - name: Save daily snapshots
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/daily_snapshots
+          key: daily-snapshots-${{ github.repository }}-main

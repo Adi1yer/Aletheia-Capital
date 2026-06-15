@@ -28,6 +28,15 @@ def main() -> int:
     args = p.parse_args()
 
     run_orchestrator()
+
+    from src.ops.account_snapshot import snapshot_physical_account
+
+    snap_path = snapshot_physical_account("multi_sleeve")
+    if snap_path:
+        logger.info("Refreshed multi_sleeve snapshot before digest", path=str(snap_path))
+    else:
+        logger.warning("Could not refresh multi_sleeve snapshot; using cached data if any")
+
     digest = build_sleeve_digest()
     body = format_digest_markdown(digest)
     print(body)

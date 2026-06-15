@@ -61,7 +61,12 @@ def main() -> int:
 
     run_orchestrator()
     picks = _recent_buys()
-    row = {"run_date": date.today().isoformat(), "picks": picks, "executed": False}
+    row = {
+        "run_date": date.today().isoformat(),
+        "picks": picks,
+        "executed": False,
+        "reason": "no_congressional_buys" if not picks else "pending_execution",
+    }
 
     try:
         broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
@@ -85,6 +90,11 @@ def main() -> int:
             except Exception as e:
                 pick["error"] = str(e)
         row["executed"] = True
+
+    if picks and row.get("executed"):
+        row["reason"] = "executed"
+    elif picks:
+        row["reason"] = "picks_found_not_executed"
 
     append_ledger(WORKFLOW_ID, row)
     logger.info("Congressional scan", picks=len(picks))

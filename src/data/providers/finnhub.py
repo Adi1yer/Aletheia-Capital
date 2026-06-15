@@ -140,3 +140,24 @@ class FinnhubProvider(DataProvider):
         if out:
             logger.info("Fetched analyst recommendations", ticker=ticker, count=len(out))
         return out
+
+    def get_latest_quote(self, ticker: str) -> Optional[float]:
+        """Current price from /quote (field `c`)."""
+        raw = self._get("/quote", params={"symbol": ticker.upper()})
+        if not isinstance(raw, dict):
+            return None
+        for key in ("c", "pc"):
+            val = raw.get(key)
+            if val is not None:
+                try:
+                    px = float(val)
+                    if px > 0:
+                        return px
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def get_company_profile(self, ticker: str) -> Dict[str, Any]:
+        """Company profile from /stock/profile2."""
+        raw = self._get("/stock/profile2", params={"symbol": ticker.upper()})
+        return raw if isinstance(raw, dict) else {}

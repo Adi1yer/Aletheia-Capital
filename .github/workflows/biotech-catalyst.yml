@@ -83,6 +83,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_ENDPOINT_URL: ${{ secrets.AWS_ENDPOINT_URL }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           BIOTECH_ALPACA_API_KEY: ${{ secrets.BIOTECH_ALPACA_API_KEY }}
           BIOTECH_ALPACA_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
           BIOTECH_ALPACA_API_SECRET_KEY: ${{ secrets.BIOTECH_ALPACA_SECRET_KEY }}
