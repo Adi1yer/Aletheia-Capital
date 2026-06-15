@@ -11,6 +11,7 @@ import uuid
 from src.agents.registry import get_registry
 from src.agents.base import AgentSignal
 from src.agents.tiers import resolve_active_agent_keys, skipped_agent_keys
+from src.config.settings import settings
 from src.risk.manager import RiskManager
 from src.portfolio.manager import PortfolioManager
 from src.portfolio.models import Portfolio
