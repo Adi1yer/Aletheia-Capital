@@ -50,3 +50,21 @@ def write_run_manifest(path: Path, manifest: Dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
+
+def build_deployment_attestation(
+    *,
+    run_id: str,
+    promoted: bool,
+    promotion_reason: str,
+    rollback_trigger: str,
+    manifest_sha256: str,
+) -> Dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "promoted": bool(promoted),
+        "promotion_reason": promotion_reason,
+        "rollback_trigger": rollback_trigger,
+        "manifest_sha256": manifest_sha256,
+        "attestation_version": "1.0",
+    }
+

@@ -33,3 +33,6 @@ jobs:
 
       - name: Build operator cockpit artifact
         run: poetry run python scripts/operator_cockpit.py
+
+      - name: Ops orchestrator smoke
+        run: poetry run python scripts/ops_orchestrator.py --stage cockpit,slo,gonogo

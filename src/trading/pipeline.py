@@ -489,6 +489,7 @@ class TradingPipeline:
                     run_config.get("max_short_position_pct", settings.max_short_position_pct)
                 ),
                 max_short_tickers=int(run_config.get("max_short_tickers", 5)),
+                use_portfolio_optimizer=bool(run_config.get("use_portfolio_optimizer", False)),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(
@@ -553,6 +554,7 @@ class TradingPipeline:
                     stop_loss_pct=float(sl_pct) if sl_pct is not None else None,
                     use_limit_orders=bool(run_config.get("use_limit_orders", False)),
                     limit_slippage_pct=float(run_config.get("limit_slippage_pct", 0.002)),
+                    run_config=run_config,
                 )
         else:
             logger.info("Dry run mode - trades not executed")
@@ -811,6 +813,20 @@ class TradingPipeline:
                 logger.warning("Policy promotion apply failed", error=str(e))
 
             try:
+                from src.trading.run_manifest import build_deployment_attestation
+
+                promo = (weight_meta or {}).get("promotion") or {}
+                learning_context["deployment_attestation"] = build_deployment_attestation(
+                    run_id=run_id,
+                    promoted=bool(promo.get("promote", False)),
+                    promotion_reason=str(promo.get("reason") or ""),
+                    rollback_trigger="slo_breach_or_pretrade_block",
+                    manifest_sha256=str(learning_context.get("manifest_sha256") or ""),
+                )
+            except Exception:
+                pass
+
+            try:
                 from src.backtesting.agent_evaluator import load_scorecard
                 from src.performance.learning_changelog import append_changelog_entry
 
@@ -977,12 +993,35 @@ class TradingPipeline:
         except Exception as e:
             results["shadow_validation"] = {"variants": [], "error": str(e)}
         try:
+            if scan_cache is not None:
+                from src.data.providers.trust_plane import detect_provider_drift
+
+                runs = scan_cache.list_runs(limit=2)
+                if len(runs) >= 2:
+                    left = scan_cache.load_run(runs[1]["run_id"]).get("risk") or {}
+                    right = scan_cache.load_run(runs[0]["run_id"]).get("risk") or {}
+                    results["provider_drift_alarms"] = detect_provider_drift(left, right)
+        except Exception:
+            pass
+        try:
             from src.ops.slo import evaluate_slos
             from src.utils.alerts import send_alert
+            from src.ops.go_no_go import build_go_no_go_report
 
             results["slo"] = evaluate_slos(results)
+            results["go_no_go"] = build_go_no_go_report(results)
             if not results["slo"].get("ok"):
                 send_alert("Weekly SLO breach", "One or more SLO checks failed", results["slo"])
+        except Exception:
+            pass
+        try:
+            from src.performance.alpha_lifecycle import evaluate_lane_retirement
+            from src.agents.champion_challenger import lane_summary
+
+            results["alpha_lifecycle"] = {
+                "lane_retirement": [evaluate_lane_retirement(lane) for lane in ("fundamentals", "technicals", "sentiment")],
+                "champion_challenger": lane_summary(),
+            }
         except Exception:
             pass
 

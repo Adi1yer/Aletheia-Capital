@@ -56,3 +56,12 @@ def apply_shadow_variants(run_config: Dict[str, Any]) -> Dict[str, Any]:
         )
     out["shadow_variants"] = norm
     return out
+
+
+def apply_phase12_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(run_config)
+    out.setdefault("use_portfolio_optimizer", False)
+    out.setdefault("use_adaptive_execution_tactics", True)
+    out.setdefault("reconcile_polls", 3)
+    out.setdefault("canary_min_consecutive", 3)
+    return out
