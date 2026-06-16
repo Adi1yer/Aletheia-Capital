@@ -563,6 +563,14 @@ class TradingPipeline:
                 recent_orders = self.broker.get_recent_orders(limit=50)
             except Exception as e:
                 logger.warning("Could not refresh orders after execute", error=str(e))
+        reconciliation = {}
+        if execute and self.broker and open_orders:
+            try:
+                from src.trading.reconciler import reconcile_orders
+
+                reconciliation = reconcile_orders(broker=self.broker, max_polls=int(run_config.get("reconcile_polls", 3)))
+            except Exception as e:
+                logger.warning("Execution reconciliation failed", error=str(e))
 
         latest_price_map = {
             t: float(risk_analysis[t]["current_price"])
@@ -721,6 +729,10 @@ class TradingPipeline:
                     portfolio_after=portfolio_after,
                     execution_results=execution_results,
                     duration_seconds=duration_seconds,
+                    diagnostics_artifacts={
+                        "pretrade_simulation": pretrade,
+                        "reconciliation": reconciliation,
+                    },
                 )
             except Exception as e:
                 logger.error("Scan cache save failed", error=str(e))
@@ -764,13 +776,20 @@ class TradingPipeline:
                 from pathlib import Path
                 import json
                 from src.performance.policy_calibration import apply_learned_policy, save_policy, compute_policy, load_policy
+                from src.performance.canary_autopromoter import append_canary_result, evaluate_canary
 
                 proposed = compute_policy(run_config, saved_policy=load_policy())
                 promo = (weight_meta or {}).get("promotion") or {}
                 exp = run_config.get("experiment") or {}
                 if str(exp.get("variant") or "").lower() == "canary":
-                    promo["promote"] = False
-                    promo["reason"] = "canary_variant_no_promotion"
+                    candidate_id = str(exp.get("name") or "unknown")
+                    append_canary_result(
+                        candidate_id,
+                        {"delta_accuracy_pp": float((learning_context.get("promotion") or {}).get("delta_acc_pp") or 0.0)},
+                    )
+                    verdict = evaluate_canary(candidate_id, min_consecutive=int(run_config.get("canary_min_consecutive", 3)))
+                    promo["promote"] = bool(verdict.get("promote"))
+                    promo["reason"] = str(verdict.get("reason") or "canary_evaluated")
                 policy_dir = Path("data/performance")
                 policy_dir.mkdir(parents=True, exist_ok=True)
                 candidate_path = policy_dir / "policy_calibration.candidate.json"
@@ -887,6 +906,7 @@ class TradingPipeline:
             "learning_context": learning_context,
             "csp_results": csp_results,
             "regime": run_config.get("regime") or {},
+            "reconciliation": reconciliation,
         }
         try:
             from src.trading.provenance import build_provenance
@@ -906,8 +926,56 @@ class TradingPipeline:
         try:
             if hasattr(self.data_provider, "data_quality_score"):
                 results["data_quality"] = self.data_provider.data_quality_score()
+                if float(results["data_quality"].get("score") or 100.0) < 80.0:
+                    results["degrade_mode_label"] = "provider_degraded_fallback"
         except Exception:
             pass
+        try:
+            from src.performance.cost_optimizer import compute_lane_utility, tune_lane_budget
+
+            lane_utility = compute_lane_utility(results)
+            results["lane_utility"] = lane_utility
+            cur = dict((run_config.get("lane_llm_budget") or {}))
+            if cur:
+                results["lane_budget_recommendation"] = tune_lane_budget(cur, lane_utility)
+        except Exception:
+            pass
+        try:
+            from src.trading.replay import decision_diff
+
+            shadows = []
+            baseline_decisions = results.get("decisions") or {}
+            for variant in (run_config.get("shadow_variants") or []):
+                ov = dict(variant.get("overrides") or {})
+                shadow_cfg = dict(run_config)
+                shadow_cfg.update(ov)
+                shadow_cfg["save_to_cache"] = False
+                shadow_cfg["shadow_variants"] = []
+                shadow_res = self.run_weekly_trading(
+                    tickers=tickers,
+                    start_date=start_date,
+                    end_date=end_date,
+                    execute=False,
+                    scan_cache=None,
+                    run_config=shadow_cfg,
+                )
+                d = decision_diff({"decisions": baseline_decisions}, {"decisions": shadow_res.get("decisions") or {}})
+                shadows.append(
+                    {
+                        "name": str(variant.get("name") or "candidate"),
+                        "config_overrides": ov,
+                        "decision_diff": d,
+                        "summary": {
+                            "changed": len(d.get("changed") or []),
+                            "missing": len(d.get("missing") or []),
+                            "new": len(d.get("new") or []),
+                        },
+                    }
+                )
+            if shadows:
+                results["shadow_validation"] = {"variants": shadows}
+        except Exception as e:
+            results["shadow_validation"] = {"variants": [], "error": str(e)}
         try:
             from src.ops.slo import evaluate_slos
             from src.utils.alerts import send_alert
