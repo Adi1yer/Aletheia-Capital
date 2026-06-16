@@ -188,15 +188,23 @@ class EmailNotifier:
         buy_count = sum(1 for d in all_decisions.values() if d.get("action") in ("buy", "cover"))
         sell_count = sum(1 for d in all_decisions.values() if d.get("action") == "sell")
         executed = results.get("execution_results", {})
-        executed_count = (
-            sum(
-                1
-                for r in executed.values()
-                if r and (not isinstance(r, dict) or r.get("status") != "failed")
+        es = results.get("execution_status") or {}
+        if es.get("had_live_execution"):
+            from src.trading.execution_status import execution_subject_fragment
+
+            exec_part = execution_subject_fragment(es)
+            executed_count = int(es.get("submitted") or 0)
+        else:
+            exec_part = ""
+            executed_count = (
+                sum(
+                    1
+                    for r in executed.values()
+                    if r and (not isinstance(r, dict) or r.get("status") != "failed")
+                )
+                if executed
+                else 0
             )
-            if executed
-            else 0
-        )
 
         ts = results.get("timestamp")
         week_label = "Week"
@@ -211,7 +219,8 @@ class EmailNotifier:
         cc_results = results.get("covered_call_results") or []
         cc_written = sum(1 for r in cc_results if r.get("status") == "executed")
         cc_part = f", {cc_written} Calls Written" if cc_written else ""
-        subject = f"{week_label} – {buy_count} Buys, {sell_count} Sells, {executed_count} Executed{cc_part} ({decision_count} analyzed)"
+        exec_label = exec_part or (f"{executed_count} Executed" if executed_count else "0 Executed")
+        subject = f"{week_label} – {buy_count} Buys, {sell_count} Sells, {exec_label}{cc_part} ({decision_count} analyzed)"
 
         # Build past performance snapshot from scan cache (if available)
         past_perf = self._build_past_performance(results)
@@ -230,6 +239,65 @@ class EmailNotifier:
             body_html=html_body,
         )
 
+    def _execution_status_text_lines(self, results: dict) -> List[str]:
+        es = results.get("execution_status") or {}
+        if not es.get("had_live_execution"):
+            return []
+        lines = [
+            "ORDER EXECUTION STATUS",
+            "-" * 80,
+        ]
+        if es.get("run_in_rth"):
+            lines.append("Market session: US regular hours (9:30 AM–4:00 PM ET)")
+        else:
+            lines.append("Market session: OUTSIDE US regular hours")
+            if es.get("next_open_et"):
+                lines.append(f"Next regular open: {es['next_open_et']} ET")
+        lines.append(
+            "This run: "
+            f"{int(es.get('submitted', 0))} submitted to broker, "
+            f"{int(es.get('filled', 0))} filled, "
+            f"{int(es.get('pending', 0))} pending/open, "
+            f"{int(es.get('partial', 0))} partial, "
+            f"{int(es.get('failed', 0))} failed"
+        )
+        if es.get("note"):
+            lines.append(str(es["note"]))
+        lines.append(
+            "Note: “Submitted” means Alpaca accepted the order; fills may arrive at the next market open."
+        )
+        return lines
+
+    def _execution_status_html_block(self, results: dict) -> str:
+        es = results.get("execution_status") or {}
+        if not es.get("had_live_execution"):
+            return ""
+        session = (
+            "US regular hours (9:30 AM–4:00 PM ET)"
+            if es.get("run_in_rth")
+            else "Outside US regular hours"
+        )
+        next_open = ""
+        if not es.get("run_in_rth") and es.get("next_open_et"):
+            next_open = f"<br/><strong>Next regular open:</strong> {html_escape(str(es['next_open_et']))} ET"
+        note = f"<br/><em>{html_escape(str(es['note']))}</em>" if es.get("note") else ""
+        return f"""
+        <div class="section" style="background:#fff8e6;border-left:4px solid #e6a700;padding:12px;margin:12px 0;">
+            <h2>Order execution status</h2>
+            <p>
+                <strong>Market session:</strong> {html_escape(session)}{next_open}<br/>
+                <strong>This run:</strong>
+                {int(es.get('submitted', 0))} submitted,
+                {int(es.get('filled', 0))} filled,
+                {int(es.get('pending', 0))} pending/open,
+                {int(es.get('partial', 0))} partial,
+                {int(es.get('failed', 0))} failed<br/>
+                <small>Submitted = broker accepted the order. After-hours runs often stay pending until the next open.</small>
+                {note}
+            </p>
+        </div>
+        """
+
     def _format_trading_results_text(
         self, results: dict, past_perf: Optional[dict] = None, outlook: Optional[str] = None
     ) -> str:
@@ -242,6 +310,7 @@ class EmailNotifier:
         text.append(f"Timestamp: {_format_timestamp(results.get('timestamp', 'N/A'))}")
         text.append(f"Tickers Analyzed: {len(results.get('tickers', []))}")
         text.append(f"Decisions Made: {len(results.get('decisions', {}))}")
+        text.extend(self._execution_status_text_lines(results))
         text.append("")
         iw = (results.get("intraweek_stock_summary") or "").strip()
         if iw:
@@ -647,6 +716,12 @@ class EmailNotifier:
             text.append(
                 f"Sizing/risk blocked buys: {int(dd.get('buy_blocked_by_risk_or_sizing_count', 0))}"
             )
+            lane_ct = dd.get("lane_contributions") or {}
+            if lane_ct:
+                text.append(
+                    f"Lane contributions: bullish={int(lane_ct.get('bullish', 0))}, "
+                    f"bearish={int(lane_ct.get('bearish', 0))}, total={int(lane_ct.get('total', 0))}"
+                )
             blockers = dd.get("buy_blockers") or {}
             if isinstance(blockers, dict) and blockers:
                 pairs = [f"{k}={int(v)}" for k, v in blockers.items()]
@@ -676,24 +751,48 @@ class EmailNotifier:
                     f"CC lots: held={int(dd.get('cc_held_lot_count', 0))}, "
                     f"lot_build={int(dd.get('cc_lot_build_count', 0))}"
                 )
+            llm_budget = results.get("llm_budget") or {}
+            if llm_budget:
+                text.append(
+                    f"LLM budget: used={int(llm_budget.get('used', 0))}, "
+                    f"remaining={int(llm_budget.get('remaining', 0))}"
+                )
+            agent_errors = results.get("agent_errors") or {}
+            if agent_errors:
+                text.append(f"Agent errors: {len(agent_errors)}")
+            text.append("")
+        slo = results.get("slo") or {}
+        if slo:
+            text.append("SLO HEALTH")
+            text.append("-" * 80)
+            text.append(
+                f"Overall: {'ok' if slo.get('ok') else 'breach'}; "
+                f"coverage={int(slo.get('coverage', 0))}, "
+                f"agent_errors={int(slo.get('agent_error_count', 0))}, "
+                f"data_quality={int(slo.get('data_quality_score', 0))}"
+            )
             text.append("")
 
         # Execution Results
         exec_results = results.get("execution_results") or {}
+        es = results.get("execution_status") or {}
+        by_ticker_status = es.get("by_ticker") or {}
         if exec_results:
-            executed = sum(
-                1
-                for r in exec_results.values()
-                if r and (not isinstance(r, dict) or r.get("status") != "failed")
-            )
-            failed_tickers = [
-                t
-                for t, r in exec_results.items()
-                if (not r) or (isinstance(r, dict) and r.get("status") == "failed")
-            ]
-            text.append(f"EXECUTION RESULTS: {executed} orders executed")
+            submitted_n = int(es.get("submitted") or 0)
+            if submitted_n:
+                text.append(
+                    f"SUBMITTED TRADES (THIS RUN): {submitted_n} orders "
+                    f"({int(es.get('filled', 0))} filled, {int(es.get('pending', 0))} pending)"
+                )
+            else:
+                executed = sum(
+                    1
+                    for r in exec_results.values()
+                    if r and (not isinstance(r, dict) or r.get("status") != "failed")
+                )
+                text.append(f"EXECUTION RESULTS: {executed} orders submitted")
             decisions_map = results.get("decisions") or {}
-            executed_rows = []
+            submitted_rows = []
             for ticker, res in exec_results.items():
                 if ticker == "error" or not res:
                     continue
@@ -703,14 +802,19 @@ class EmailNotifier:
                 action = dec.get("action") or res.get("side") or "?"
                 qty = dec.get("quantity") or res.get("qty") or res.get("filled_qty") or "?"
                 reason = (dec.get("reasoning") or res.get("reason") or "").strip()
-                executed_rows.append((ticker, action, qty, reason))
-            if executed_rows:
-                text.append("EXECUTED TRADES")
+                fill_st = (by_ticker_status.get(ticker) or {}).get("status") or "submitted"
+                submitted_rows.append((ticker, action, qty, fill_st, reason))
+            if submitted_rows:
                 text.append("-" * 40)
-                for ticker, action, qty, reason in executed_rows:
-                    text.append(f"  {ticker}: {action} {qty}")
+                for ticker, action, qty, fill_st, reason in submitted_rows:
+                    text.append(f"  {ticker}: {action} {qty} [{fill_st}]")
                     if reason:
                         text.append(f"    Reason: {reason[:200]}")
+            failed_tickers = [
+                t
+                for t, r in exec_results.items()
+                if t != "error" and ((not r) or (isinstance(r, dict) and r.get("status") == "failed"))
+            ]
             if failed_tickers:
                 text.append(f"FAILED ORDERS ({len(failed_tickers)}): {', '.join(failed_tickers)}")
                 for t in failed_tickers[:10]:
@@ -838,6 +942,7 @@ class EmailNotifier:
             <p><strong>Timestamp:</strong> {_format_timestamp(results.get('timestamp', 'N/A'))}</p>
             <p><strong>Tickers Analyzed:</strong> {len(results.get('tickers', []))}</p>
             <p><strong>Decisions Made:</strong> {len(results.get('decisions', {}))}</p>
+            {self._execution_status_html_block(results)}
         """
         iw = (results.get("intraweek_stock_summary") or "").strip()
         if iw:
@@ -1173,24 +1278,48 @@ class EmailNotifier:
                     </table>
                 </div>
                 """
+                slo = results.get("slo") or {}
+                if slo:
+                    html += f"""
+                    <div class="section">
+                        <h2>SLO Health</h2>
+                        <table>
+                            <tr><th>Metric</th><th>Value</th></tr>
+                            <tr><td>Overall</td><td>{'ok' if slo.get("ok") else 'breach'}</td></tr>
+                            <tr><td>Decision coverage</td><td>{int(slo.get("coverage", 0))}</td></tr>
+                            <tr><td>Agent errors</td><td>{int(slo.get("agent_error_count", 0))}</td></tr>
+                            <tr><td>Data quality score</td><td>{int(slo.get("data_quality_score", 0))}</td></tr>
+                        </table>
+                    </div>
+                    """
+                lane_ct = dd.get("lane_contributions") or {}
+                llm_budget = results.get("llm_budget") or {}
+                agent_errors = results.get("agent_errors") or {}
+                html += f"""
+                <div class="section">
+                    <h2>Run Observability</h2>
+                    <table>
+                        <tr><th>Metric</th><th>Value</th></tr>
+                        <tr><td>Lane contributions (bull / bear / total)</td><td>{int(lane_ct.get("bullish", 0))} / {int(lane_ct.get("bearish", 0))} / {int(lane_ct.get("total", 0))}</td></tr>
+                        <tr><td>LLM budget (used / remaining)</td><td>{int(llm_budget.get("used", 0))} / {int(llm_budget.get("remaining", 0))}</td></tr>
+                        <tr><td>Agent errors</td><td>{len(agent_errors)}</td></tr>
+                    </table>
+                </div>
+                """
 
-            # Failed orders section
+            # Submitted / filled orders this run
             exec_results = results.get("execution_results") or {}
+            es = results.get("execution_status") or {}
+            by_ticker_status = es.get("by_ticker") or {}
             if exec_results:
                 failed_tickers = [
                     t
                     for t, r in exec_results.items()
-                    if (not r) or (isinstance(r, dict) and r.get("status") == "failed")
-                ]
-                executed_count = sum(
-                    1
-                    for t, r in exec_results.items()
                     if t != "error"
-                    and r
-                    and (not isinstance(r, dict) or r.get("status") != "failed")
-                )
+                    and ((not r) or (isinstance(r, dict) and r.get("status") == "failed"))
+                ]
                 decisions_map = results.get("decisions") or {}
-                executed_rows = []
+                submitted_rows = []
                 for ticker, res in exec_results.items():
                     if ticker == "error" or not res:
                         continue
@@ -1200,20 +1329,24 @@ class EmailNotifier:
                     action = dec.get("action") or res.get("side") or "?"
                     qty = dec.get("quantity") or res.get("qty") or res.get("filled_qty") or "?"
                     reason = html_escape((dec.get("reasoning") or res.get("reason") or "")[:200])
-                    executed_rows.append((ticker, action, qty, reason))
-                if executed_rows:
+                    fill_st = html_escape(
+                        str((by_ticker_status.get(ticker) or {}).get("status") or "submitted")
+                    )
+                    submitted_rows.append((ticker, action, qty, fill_st, reason))
+                if submitted_rows:
                     html += """
                     <div class="section">
-                        <h2>Executed trades</h2>
+                        <h2>Submitted trades (this run)</h2>
                         <table>
-                            <tr><th>Ticker</th><th>Action</th><th>Qty</th><th>Reasoning</th></tr>
+                            <tr><th>Ticker</th><th>Action</th><th>Qty</th><th>Fill status</th><th>Reasoning</th></tr>
                     """
-                    for ticker, action, qty, reason in executed_rows:
+                    for ticker, action, qty, fill_st, reason in submitted_rows:
                         html += f"""
                             <tr>
                                 <td>{html_escape(str(ticker))}</td>
                                 <td>{html_escape(str(action))}</td>
                                 <td>{html_escape(str(qty))}</td>
+                                <td>{fill_st}</td>
                                 <td>{reason}</td>
                             </tr>
                         """

@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
@@ -24,3 +27,6 @@ jobs:
 
       - name: Run pytest
         run: poetry run pytest -q
+
+      - name: Build operator cockpit artifact
+        run: poetry run python scripts/operator_cockpit.py

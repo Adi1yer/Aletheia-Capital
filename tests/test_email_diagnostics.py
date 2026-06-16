@@ -21,6 +21,17 @@ def _base_results():
         "execution_results": {
             "SMCI": {"status": "filled", "qty": 10},
         },
+        "execution_status": {
+            "had_live_execution": True,
+            "run_in_rth": True,
+            "submitted": 1,
+            "filled": 1,
+            "pending": 0,
+            "partial": 0,
+            "failed": 0,
+            "by_ticker": {"SMCI": {"status": "filled", "broker_status": "filled"}},
+            "note": "",
+        },
         "covered_call_results": [],
         "covered_call_diagnostics": {"enabled": True, "execute_mode": True},
         "decision_diagnostics": {
@@ -36,7 +47,10 @@ def _base_results():
             "cash_rotation_skip_reason": "buy_meaningfully_allocatable",
             "cc_held_lot_count": 2,
             "cc_lot_build_count": 0,
+            "lane_contributions": {"bullish": 4, "bearish": 2, "total": 6},
         },
+        "llm_budget": {"used": 120, "remaining": 40},
+        "agent_errors": {"growth_analyst": "timeout"},
         "learning_context": {
             "feedback_refresh_ok": True,
             "scorecard_present": False,
@@ -61,7 +75,11 @@ def test_text_email_contains_diagnostics_blocks():
     assert "Learned policy" in text
     assert "LEARNING CHANGELOG" in text
     assert "DECISION DIAGNOSTICS" in text
-    assert "EXECUTED TRADES" in text
+    assert "SUBMITTED TRADES (THIS RUN)" in text
+    assert "ORDER EXECUTION STATUS" in text
+    assert "Lane contributions" in text
+    assert "LLM budget" in text
+    assert "Agent errors" in text
 
 
 def test_html_email_contains_diagnostics_blocks():
@@ -71,7 +89,9 @@ def test_html_email_contains_diagnostics_blocks():
     assert "Learning context" in html
     assert "Scan cache (before / after)" in html
     assert "Decision Diagnostics" in html
-    assert "Executed trades" in html
+    assert "Submitted trades (this run)" in html
+    assert "Order execution status" in html
+    assert "Run Observability" in html
     assert "Learned policy" in html
     assert "Learning changelog" in html
     assert "buy_conf=62" in html
