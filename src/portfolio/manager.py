@@ -148,6 +148,7 @@ class PortfolioManager:
         enable_short_selling: bool = False,
         max_short_position_pct: float = 0.05,
         max_short_tickers: int = 5,
+        use_portfolio_optimizer: bool = False,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -707,6 +708,43 @@ class PortfolioManager:
         self._last_cc_lot_tickers = cc_lot_tickers
         self._last_csp_tickers = csp_lot_tickers
         self._last_csp_scores = csp_scores
+
+        if use_portfolio_optimizer:
+            try:
+                from src.portfolio.optimizer import optimize_allocations
+
+                current_prices = {
+                    t: float((risk_analysis.get(t) or {}).get("current_price") or 0.0)
+                    for t in tickers
+                }
+                equity = float(portfolio.get_equity(current_prices))
+                candidates = []
+                for t, d in decisions.items():
+                    if d.action != "buy" or d.quantity <= 0:
+                        continue
+                    risk = risk_analysis.get(t) or {}
+                    candidates.append(
+                        {
+                            "ticker": t,
+                            "score": float(d.confidence),
+                            "price": float(risk.get("current_price") or 1.0),
+                            "sector": str(risk.get("sector") or "unknown"),
+                        }
+                    )
+                opt = optimize_allocations(
+                    candidates,
+                    equity=max(equity, float(portfolio.cash)),
+                    cash_buffer_pct=cash_buffer_pct,
+                    max_position_pct=max_position_pct,
+                    max_sector_pct=max_sector_pct,
+                )
+                diagnostics["optimizer_metrics"] = opt.get("metrics") or {}
+                for ticker, row in (opt.get("allocations") or {}).items():
+                    if ticker in decisions and decisions[ticker].action == "buy":
+                        decisions[ticker].quantity = int(row.get("quantity") or decisions[ticker].quantity)
+            except Exception:
+                diagnostics["optimizer_metrics"] = {"error": "optimizer_failed"}
+
         self._last_rebalance_diagnostics = diagnostics
         return decisions
 

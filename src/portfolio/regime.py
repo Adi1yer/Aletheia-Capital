@@ -68,6 +68,13 @@ def detect_regime(
 
 def apply_regime_to_run_config(run_config: Dict[str, Any], regime: Dict[str, Any]) -> Dict[str, Any]:
     """Adjust rebalance knobs when regime_mode is auto."""
+    try:
+        from src.portfolio.regime_intelligence import apply_hysteresis, route_policy_by_regime
+
+        regime = apply_hysteresis(regime)
+        run_config = route_policy_by_regime(regime, run_config)
+    except Exception:
+        pass
     if str(run_config.get("regime_mode", "")).lower() not in ("auto", "on", "true", "1"):
         run_config["regime"] = regime
         return run_config
