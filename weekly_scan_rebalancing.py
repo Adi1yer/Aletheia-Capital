@@ -239,6 +239,11 @@ def main() -> None:
     p.add_argument("--max-csp-tickers", type=int, default=2)
     p.add_argument("--max-csp-collateral-pct", type=float, default=0.10)
     p.add_argument("--regime-mode", type=str, default="", help="auto to adjust knobs from SPY regime")
+    p.add_argument(
+        "--use-portfolio-optimizer",
+        action="store_true",
+        help="Use constrained portfolio optimizer for buy sizing.",
+    )
     p.add_argument("--wash-sale-days", type=int, default=0)
     args = p.parse_args()
 
@@ -389,10 +394,17 @@ def main() -> None:
         "min_hold_weeks_before_rotation": int(args.min_hold_weeks_before_rotation),
         "min_csp_premium_usd": float(args.min_csp_premium_usd),
         "min_csp_annualized_yield_pct": float(args.min_csp_annualized_yield_pct),
+        "use_portfolio_optimizer": bool(args.use_portfolio_optimizer),
     }
     if profile_name:
         run_config = merge_run_profile(run_config, profile_name)
         run_config["run_profile"] = profile_name
+    try:
+        from src.trading.run_config import apply_phase12_defaults
+
+        run_config = apply_phase12_defaults(run_config)
+    except Exception:
+        pass
     if (args.agents or "").strip():
         run_config["active_agent_keys"] = [
             a.strip() for a in args.agents.split(",") if a.strip()

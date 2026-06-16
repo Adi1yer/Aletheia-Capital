@@ -115,7 +115,12 @@ jobs:
             --enable-cash-secured-puts --min-csp-score 45 --max-csp-tickers 2 --max-csp-collateral-pct 0.10 \
             --min-csp-premium-usd 75 --min-csp-annualized-yield-pct 3.0 \
             --max-position-pct 0.20 --max-sector-pct 0.35 \
-            --regime-mode auto
+            --regime-mode auto \
+            --use-portfolio-optimizer
+
+      - name: Post-run ops orchestrator
+        if: always()
+        run: poetry run python scripts/ops_orchestrator.py --stage cockpit,slo,gonogo
 
       - name: Upload weekly run summary artifact
         if: always()
@@ -128,6 +133,8 @@ jobs:
             data/scan_cache/**/meta.json
             data/scan_cache/**/decisions.json
             data/scan_cache/**/execution_results.json
+            data/performance/operator_cockpit_latest.json
+            data/performance/ops_orchestrator_latest.json
           if-no-files-found: ignore
 
       - name: Save performance data

@@ -7,7 +7,8 @@
     "financial_limit": 1,
     "dossier_financial_limit": 5,
     "save_to_cache": true,
-    "broker_required": true
+    "broker_required": true,
+    "use_portfolio_optimizer": true
   },
   "dev-smoke": {
     "max_stocks": 10,
