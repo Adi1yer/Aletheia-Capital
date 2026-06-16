@@ -56,12 +56,36 @@ class DataAggregator(DataProvider):
         
         logger.info("Initialized data aggregator", provider_count=len(self.providers))
         self._quality_metrics: Dict[str, int] = {"schema_failures": 0, "empty_payloads": 0}
+        self._trust_metrics: Dict[str, int] = {}
+
+    def provider_trust_scores(self) -> Dict[str, float]:
+        metrics = getattr(self, "_trust_metrics", None) or {}
+        scores: Dict[str, float] = {}
+        for provider in self.providers:
+            name = type(provider).__name__
+            total = max(1, int(metrics.get(f"total_{name}", 0)))
+            trust = int(metrics.get(f"trust_{name}", 0)) / total
+            scores[name] = round(trust if metrics.get(f"total_{name}") else 1.0, 4)
+        return scores
+
+    def record_provider_outcome(self, provider_name: str, success: bool) -> None:
+        from src.data.providers.trust_plane import update_provider_trust
+
+        if not hasattr(self, "_trust_metrics"):
+            self._trust_metrics = {}
+        update_provider_trust(self._trust_metrics, provider=provider_name, success=success)
 
     def data_quality_score(self) -> Dict[str, Any]:
         failures = int(self._quality_metrics.get("schema_failures", 0))
         empties = int(self._quality_metrics.get("empty_payloads", 0))
         score = max(0, 100 - failures * 5 - empties)
-        return {"score": score, "schema_failures": failures, "empty_payloads": empties}
+        trust = self.provider_trust_scores()
+        return {
+            "score": score,
+            "schema_failures": failures,
+            "empty_payloads": empties,
+            "provider_trust": trust,
+        }
     
     def get_prices(
         self,
@@ -106,9 +130,11 @@ class DataAggregator(DataProvider):
                     prices_dict = [p.model_dump() if hasattr(p, 'model_dump') else p for p in prices]
                     self.cache.set_prices(ticker, start_date, end_date, prices_dict)
                     logger.debug("Cached prices", ticker=ticker, count=len(prices))
+                    self.record_provider_outcome(type(provider).__name__, True)
                     return prices
             except Exception as e:
                 logger.warning("Provider failed, trying next", provider=type(provider).__name__, error=str(e))
+                self.record_provider_outcome(type(provider).__name__, False)
                 continue
         
         # This is expected for some symbols (e.g., delisted/SPAC/ADR tickers); treat as a soft warning

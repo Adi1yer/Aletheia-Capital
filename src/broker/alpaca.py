@@ -156,6 +156,7 @@ class AlpacaBroker:
         stop_loss_pct: Optional[float] = None,
         use_limit_order: bool = False,
         limit_slippage_pct: float = 0.002,
+        execution_tactic: Optional[Dict] = None,
     ) -> Optional[Dict]:
         """
         Execute a trading order
@@ -170,6 +171,11 @@ class AlpacaBroker:
         if decision.action == "hold" or decision.quantity == 0:
             logger.info("Skipping hold order", ticker=ticker)
             return None
+
+        tactic = execution_tactic or {}
+        if tactic:
+            use_limit_order = bool(tactic.get("use_limit_order", use_limit_order))
+            limit_slippage_pct = float(tactic.get("limit_slippage_pct", limit_slippage_pct))
 
         try:
             if decision.action in ["buy", "cover"]:
@@ -255,6 +261,7 @@ class AlpacaBroker:
                 "side": str(order.side) if hasattr(order.side, "value") else order.side,
                 "status": str(order.status) if hasattr(order.status, "value") else order.status,
                 "success": True,
+                "execution_tactic": (execution_tactic or {}).get("tactic"),
             }
 
         except Exception as e:
@@ -274,6 +281,7 @@ class AlpacaBroker:
         stop_loss_pct: Optional[float] = None,
         use_limit_orders: bool = False,
         limit_slippage_pct: float = 0.002,
+        run_config: Optional[Dict] = None,
     ) -> Dict[str, Optional[Dict]]:
         """
         Execute multiple trading decisions with rate limiting
@@ -320,6 +328,18 @@ class AlpacaBroker:
         executed = 0
         for i, (ticker, decision) in enumerate(ordered, 1):
             px = prices.get(ticker)
+            tactic = None
+            try:
+                from src.trading.execution_tactics import select_execution_tactic
+
+                tactic = select_execution_tactic(
+                    ticker=ticker,
+                    action=decision.action,
+                    current_price=float(px) if px is not None else None,
+                    run_config=run_config or {"use_limit_orders": use_limit_orders, "limit_slippage_pct": limit_slippage_pct},
+                )
+            except Exception:
+                tactic = None
             result = self.execute_order(
                 ticker,
                 decision,
@@ -327,6 +347,7 @@ class AlpacaBroker:
                 stop_loss_pct=stop_loss_pct,
                 use_limit_order=use_limit_orders,
                 limit_slippage_pct=limit_slippage_pct,
+                execution_tactic=tactic,
             )
             results[ticker] = result
 

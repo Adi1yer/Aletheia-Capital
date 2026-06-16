@@ -172,3 +172,19 @@ def slippage_by_reason_class(weeks: int = 12, path: Path = LEDGER_PATH) -> Dict[
         rc = str(r.get("reason_class") or "other")
         buckets.setdefault(rc, []).append(float(bps))
     return {k: round(sum(v) / len(v), 2) for k, v in buckets.items() if v}
+
+
+def implementation_shortfall_summary(weeks: int = 12, path: Path = LEDGER_PATH) -> Dict[str, Any]:
+    """Aggregate implementation shortfall (slippage bps) by side and liquidity proxy."""
+    rows = recent_fills(weeks=weeks, path=path)
+    by_side: Dict[str, List[float]] = {}
+    for r in rows:
+        bps = r.get("slippage_bps")
+        if bps is None:
+            continue
+        side = str(r.get("side") or "other")
+        by_side.setdefault(side, []).append(float(bps))
+    return {
+        "by_side_bps": {k: round(sum(v) / len(v), 2) for k, v in by_side.items() if v},
+        "fill_count": len(rows),
+    }
