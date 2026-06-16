@@ -37,8 +37,12 @@ logger = structlog.get_logger()
 
 def main() -> None:
     from src.fund.orchestrator import run_orchestrator
+    from src.risk.fund_risk import should_halt_workflow
 
     run_orchestrator()
+    if should_halt_workflow("weekly-scan"):
+        logger.warning("weekly-scan halted by fund risk kill switch")
+        raise SystemExit(0)
 
     p = argparse.ArgumentParser(description="Weekly scan + portfolio rebalancing")
     p.add_argument(
@@ -369,7 +373,10 @@ def main() -> None:
         "agent_tier_core_only": str(args.agent_tier_mode) == "core",
         "financial_limit": 1,
         "dossier_financial_limit": 5,
+        "focused_financial_limit": 5,
         "llm_cache": not args.no_llm_cache,
+        "max_llm_calls": 4000,
+        "require_s3_restore": bool(os.getenv("SCAN_CACHE_S3_BUCKET")),
         "broker_required": broker_required,
         "max_position_pct": float(args.max_position_pct),
         "max_sector_pct": float(args.max_sector_pct),

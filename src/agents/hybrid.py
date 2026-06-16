@@ -81,13 +81,27 @@ class HybridAgentMixin:
                 reasoning=rule.facts.get("reason", "Insufficient data for analysis"),
             )
 
-        if rule.skip_llm:
+        llm_budget = kwargs.get("llm_budget") if isinstance(kwargs.get("llm_budget"), dict) else {}
+        agent_key = str(kwargs.get("agent_key") or "")
+        lane = str(getattr(self, "hybrid_lane", "") or "other")
+        if rule.skip_llm or (rule.rule_confidence >= 70 and rule.passed_count() >= 3):
             names = ", ".join(c.get("name", "") for c in rule.checks if c.get("pass"))
             return AgentSignal(
                 signal=rule.suggested_signal,
                 confidence=rule.rule_confidence,
                 reasoning=f"Rule engine ({rule.lane}): {names}",
             )
+        lane_remaining = (llm_budget.get("per_lane") or {}).get(lane)
+        if llm_budget.get("remaining", 0) <= 0 or (lane_remaining is not None and int(lane_remaining) <= 0):
+            return AgentSignal(
+                signal=rule.suggested_signal,
+                confidence=rule.rule_confidence,
+                reasoning=f"Rule engine ({rule.lane}): LLM budget exhausted",
+            )
+        llm_budget["remaining"] = int(llm_budget.get("remaining", 0)) - 1
+        llm_budget["used"] = int(llm_budget.get("used", 0)) + 1
+        if lane_remaining is not None:
+            llm_budget["per_lane"][lane] = int(lane_remaining) - 1
 
         return self.explain_with_llm(ticker, inputs, rule)
 
@@ -154,7 +168,10 @@ Example: """
     def _finalize_signal(self, response: HybridExplainOutput, rule: RuleScore) -> AgentSignal:
         sig = rule.suggested_signal
         if getattr(response, "override", False) and getattr(response, "override_reason", "").strip():
-            sig = response.signal
+            reason = str(getattr(response, "override_reason", "")).lower()
+            check_names = [str(c.get("name", "")).lower() for c in (rule.checks or [])]
+            if any(name and name in reason for name in check_names):
+                sig = response.signal
 
         lo = max(0, rule.rule_confidence - 15)
         hi = min(85 if rule.passed_count() < 3 else 90, rule.rule_confidence + 15)

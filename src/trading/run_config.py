@@ -24,3 +24,18 @@ def merge_run_profile(run_config: Dict[str, Any], profile_name: Optional[str]) -
     profile = load_run_profile(profile_name)
     merged = {**profile, **run_config}
     return merged
+
+
+def apply_experiment_flags(run_config: Dict[str, Any], flags: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    flags = flags or {}
+    if not flags:
+        return run_config
+    out = dict(run_config)
+    out["experiment"] = {
+        "name": str(flags.get("name") or "unnamed"),
+        "variant": str(flags.get("variant") or "A"),
+    }
+    for k, v in flags.items():
+        if k not in ("name", "variant"):
+            out[k] = v
+    return out

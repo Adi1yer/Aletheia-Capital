@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 from datetime import datetime
 from pydantic import BaseModel, Field
 from src.agents.base import AgentSignal
+from src.agents.lane_ensemble import build_lane_signals
+from src.agents.registry import get_registry
 from src.portfolio.models import Portfolio, Position
 from src.risk.manager import RiskManager
 from src.llm.utils import call_llm_with_retry
@@ -13,27 +15,8 @@ import json
 
 logger = structlog.get_logger()
 
-GROWTH_AGENTS: Set[str] = {
-    "cathie_wood",
-    "chamath_palihapitiya",
-    "ron_baron",
-    "growth_analyst",
-    "technicals_analyst",
-    "news_sentiment_analyst",
-    "phil_fisher",
-}
-
-VALUE_AGENTS: Set[str] = {
-    "ben_graham",
-    "charlie_munger",
-    "warren_buffett",
-    "michael_burry",
-    "aswath_damodaran",
-    "peter_lynch",
-    "mohnish_pabrai",
-    "valuation_analyst",
-    "fundamentals_analyst",
-}
+GROWTH_LANES: Set[str] = {"growth"}
+VALUE_LANES: Set[str] = {"value", "valuation"}
 
 
 class PortfolioDecision(BaseModel):
@@ -245,6 +228,21 @@ class PortfolioManager:
 
         aggregated_by_ticker = {
             t: self._aggregate_signals(t, agent_signals, agent_weights) for t in tickers
+        }
+        lane_bullish = lane_bearish = 0
+        for agg in aggregated_by_ticker.values():
+            for d in agg.get("details", []):
+                a = str(d.get("agent") or "")
+                if not a.startswith("lane:"):
+                    continue
+                if d.get("signal") == "bullish":
+                    lane_bullish += 1
+                elif d.get("signal") == "bearish":
+                    lane_bearish += 1
+        diagnostics["lane_contributions"] = {
+            "bullish": lane_bullish,
+            "bearish": lane_bearish,
+            "total": lane_bullish + lane_bearish,
         }
 
         buy_scores_preview: Dict[str, int] = {}
@@ -821,6 +819,43 @@ class PortfolioManager:
         return False
 
     @staticmethod
+    def _agent_lane(agent_key: str) -> str:
+        registry = get_registry()
+        lane = getattr(registry.get(agent_key), "hybrid_lane", "") or ""
+        if lane:
+            return lane
+        legacy_growth = {
+            "cathie_wood",
+            "chamath_palihapitiya",
+            "ron_baron",
+            "growth_analyst",
+            "phil_fisher",
+            "rakesh_jhunjhunwala",
+            "aditya_iyer",
+        }
+        legacy_value = {
+            "ben_graham",
+            "charlie_munger",
+            "warren_buffett",
+            "michael_burry",
+            "aswath_damodaran",
+            "peter_lynch",
+            "mohnish_pabrai",
+            "valuation_analyst",
+            "fundamentals_analyst",
+        }
+        if agent_key in legacy_growth:
+            return "growth"
+        if agent_key in legacy_value:
+            return "value"
+        low = (agent_key or "").lower()
+        if "growth" in low:
+            return "growth"
+        if "value" in low or "valuation" in low:
+            return "value"
+        return ""
+
+    @staticmethod
     def _buy_has_camp_disagreement(
         ticker: str,
         agent_signals: Dict[str, Dict[str, AgentSignal]],
@@ -832,12 +867,13 @@ class PortfolioManager:
                 continue
             sig = ticker_signals[ticker]
             sig_signal = sig.signal if hasattr(sig, "signal") else sig.get("signal", "neutral")
-            if agent_key in GROWTH_AGENTS:
+            lane = PortfolioManager._agent_lane(agent_key)
+            if lane in GROWTH_LANES:
                 if sig_signal == "bullish":
                     growth_bull += 1
                 elif sig_signal == "bearish":
                     growth_bear += 1
-            elif agent_key in VALUE_AGENTS:
+            elif lane in VALUE_LANES:
                 if sig_signal == "bullish":
                     value_bull += 1
                 elif sig_signal == "bearish":
@@ -871,11 +907,12 @@ class PortfolioManager:
             sig_conf = sig.confidence if hasattr(sig, "confidence") else sig.get("confidence", 0)
             all_confidences.append(sig_conf * weight)
 
-            if agent_key in GROWTH_AGENTS:
+            lane = PortfolioManager._agent_lane(agent_key)
+            if lane in GROWTH_LANES:
                 growth_total += 1
                 if sig_signal == "bullish":
                     growth_bullish += 1
-            elif agent_key in VALUE_AGENTS:
+            elif lane in VALUE_LANES:
                 value_total += 1
                 if sig_signal == "bearish":
                     value_bearish += 1
@@ -911,11 +948,12 @@ class PortfolioManager:
             sig_conf = sig.confidence if hasattr(sig, "confidence") else sig.get("confidence", 0)
             all_confidences.append(sig_conf * weight)
 
-            if agent_key in GROWTH_AGENTS:
+            lane = PortfolioManager._agent_lane(agent_key)
+            if lane in GROWTH_LANES:
                 growth_total += 1
                 if sig_signal == "bearish":
                     growth_bearish += 1
-            elif agent_key in VALUE_AGENTS:
+            elif lane in VALUE_LANES:
                 value_total += 1
                 if sig_signal == "bullish":
                     value_bullish += 1
@@ -989,44 +1027,25 @@ class PortfolioManager:
         total_weight = 0.0
         signal_details = []
 
-        for agent_key, ticker_signals in agent_signals.items():
-            if ticker not in ticker_signals:
-                continue
-
-            signal = ticker_signals[ticker]
-            weight = agent_weights.get(agent_key, 1.0)
-            sig_signal = (
-                signal.signal if hasattr(signal, "signal") else signal.get("signal", "neutral")
-            )
-            sig_conf = (
-                signal.confidence if hasattr(signal, "confidence") else signal.get("confidence", 0)
-            )
-            sig_reasoning = (
-                signal.reasoning if hasattr(signal, "reasoning") else signal.get("reasoning", "")
-            )
-            try:
-                from src.performance.confidence_calibration import calibrate_confidence
-                from src.performance.promotion_gates import calibration_hold_active
-
-                if not calibration_hold_active():
-                    sig_conf = calibrate_confidence(agent_key, int(sig_conf))
-            except Exception:
-                pass
+        lane_signals = build_lane_signals(ticker, agent_signals, agent_weights)
+        for lane_key, lane_signal in lane_signals.items():
+            weight = float(lane_signal.get("weight", 0.0))
+            sig_signal = str(lane_signal.get("signal", "neutral"))
+            sig_conf = int(lane_signal.get("confidence", 0))
             weighted_confidence = sig_conf * weight
-
             if sig_signal == "bullish":
                 bullish_score += weighted_confidence
             elif sig_signal == "bearish":
                 bearish_score += weighted_confidence
-
-            total_weight += weight
+            if sig_signal in ("bullish", "bearish") and sig_conf > 0:
+                total_weight += weight
             signal_details.append(
                 {
-                    "agent": agent_key,
+                    "agent": lane_key,
                     "signal": sig_signal,
                     "confidence": sig_conf,
                     "weight": weight,
-                    "reasoning": str(sig_reasoning)[:100],
+                    "reasoning": str(lane_signal.get("reasoning", ""))[:100],
                 }
             )
 

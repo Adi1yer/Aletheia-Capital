@@ -9,6 +9,18 @@ from src.portfolio.manager import PortfolioManager
 from src.portfolio.models import Portfolio, Position
 
 
+def test_aggregate_signals_excludes_neutral_denominator():
+    pm = PortfolioManager()
+    ticker = "SMCI"
+    agent_signals = {
+        "growth_analyst": {ticker: AgentSignal(signal="bullish", confidence=90, reasoning="x")},
+        "ben_graham": {ticker: AgentSignal(signal="neutral", confidence=0, reasoning="x")},
+    }
+    out = pm._aggregate_signals(ticker, agent_signals, {"growth_analyst": 1.0, "ben_graham": 1.0})
+    assert out["signal"] == "bullish"
+    assert out["confidence"] >= 85
+
+
 def test_cash_rotation_sells_weakest_hold_to_fund_buy():
     pm = PortfolioManager()
     portfolio = Portfolio(cash=0.0)

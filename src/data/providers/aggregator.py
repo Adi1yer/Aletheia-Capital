@@ -55,6 +55,13 @@ class DataAggregator(DataProvider):
             self.cache = get_cache()
         
         logger.info("Initialized data aggregator", provider_count=len(self.providers))
+        self._quality_metrics: Dict[str, int] = {"schema_failures": 0, "empty_payloads": 0}
+
+    def data_quality_score(self) -> Dict[str, Any]:
+        failures = int(self._quality_metrics.get("schema_failures", 0))
+        empties = int(self._quality_metrics.get("empty_payloads", 0))
+        score = max(0, 100 - failures * 5 - empties)
+        return {"score": score, "schema_failures": failures, "empty_payloads": empties}
     
     def get_prices(
         self,
@@ -90,6 +97,11 @@ class DataAggregator(DataProvider):
             try:
                 prices = provider.get_prices(ticker, start_date, end_date)
                 if prices:
+                    try:
+                        _ = [Price(**(p.model_dump() if hasattr(p, "model_dump") else p)) for p in prices]
+                    except Exception:
+                        self._quality_metrics["schema_failures"] += 1
+                        continue
                     # Cache the results (convert to dict for caching)
                     prices_dict = [p.model_dump() if hasattr(p, 'model_dump') else p for p in prices]
                     self.cache.set_prices(ticker, start_date, end_date, prices_dict)
@@ -101,6 +113,7 @@ class DataAggregator(DataProvider):
         
         # This is expected for some symbols (e.g., delisted/SPAC/ADR tickers); treat as a soft warning
         logger.warning("All providers failed to fetch prices", ticker=ticker)
+        self._quality_metrics["empty_payloads"] += 1
         return []
     
     def get_financial_metrics(
@@ -123,6 +136,11 @@ class DataAggregator(DataProvider):
             try:
                 metrics = provider.get_financial_metrics(ticker, end_date, period, limit)
                 if metrics:
+                    try:
+                        _ = [FinancialMetrics(**(m.model_dump() if hasattr(m, "model_dump") else m)) for m in metrics]
+                    except Exception:
+                        self._quality_metrics["schema_failures"] += 1
+                        continue
                     # Cache the results (convert to dict for caching)
                     metrics_dict = [m.model_dump() if hasattr(m, 'model_dump') else m for m in metrics]
                     self.cache.set_financial_metrics(ticker, end_date, period, metrics_dict)
@@ -133,6 +151,7 @@ class DataAggregator(DataProvider):
                 continue
         
         logger.warning("All providers failed to fetch financial metrics", ticker=ticker)
+        self._quality_metrics["empty_payloads"] += 1
         return []
     
     def get_line_items(
