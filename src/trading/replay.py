@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Dict
 
 from src.scan_cache import ScanCache
@@ -37,4 +39,10 @@ def decision_diff(baseline: Dict[str, Any], replayed: Dict[str, Any]) -> Dict[st
         if t not in b:
             out["new"].append(t)
     return out
+
+
+def decision_hash(results: Dict[str, Any]) -> str:
+    decisions = results.get("decisions") or {}
+    blob = json.dumps(decisions, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
 

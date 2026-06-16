@@ -39,3 +39,20 @@ def apply_experiment_flags(run_config: Dict[str, Any], flags: Optional[Dict[str,
         if k not in ("name", "variant"):
             out[k] = v
     return out
+
+
+def apply_shadow_variants(run_config: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(run_config)
+    variants = out.get("shadow_variants") or []
+    norm = []
+    for v in variants:
+        if not isinstance(v, dict):
+            continue
+        norm.append(
+            {
+                "name": str(v.get("name") or "candidate"),
+                "overrides": dict(v.get("overrides") or {}),
+            }
+        )
+    out["shadow_variants"] = norm
+    return out

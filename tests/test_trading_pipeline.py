@@ -187,10 +187,22 @@ class TestTradingPipeline:
                 tickers=["AAPL"],
                 execute=False,
                 scan_cache=None,
-                run_config={"rebalance": True, "save_to_cache": False, "broker_required": False, "max_llm_calls": 5},
+                run_config={
+                    "rebalance": True,
+                    "save_to_cache": False,
+                    "broker_required": False,
+                    "max_llm_calls": 5,
+                    "shadow_variants": [
+                        {
+                            "name": "candidate",
+                            "overrides": {"min_buy_confidence": 61},
+                        }
+                    ],
+                },
             )
         assert "decisions" in out
         assert "llm_budget" in out
+        assert "shadow_validation" in out
 
     def test_run_pipeline_with_execution(self):
         # Live execution is intentionally not covered in unit tests.

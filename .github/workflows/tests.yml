@@ -28,5 +28,8 @@ jobs:
       - name: Run pytest
         run: poetry run pytest -q
 
+      - name: Golden determinism hash gate
+        run: poetry run pytest -q tests/test_phase11_determinism.py::test_golden_run_decision_hash_stable
+
       - name: Build operator cockpit artifact
         run: poetry run python scripts/operator_cockpit.py

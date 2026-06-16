@@ -1,0 +1,15 @@
+{
+  "decisions": {
+    "AAPL": {
+      "action": "buy",
+      "quantity": 10,
+      "confidence": 72
+    },
+    "MSFT": {
+      "action": "hold",
+      "quantity": 0,
+      "confidence": 58
+    }
+  },
+  "expected_hash": "4a4a28d6eb50fe86d48f982390ef8e53bfcb1036dc5e6eefdb032265a2b0b272"
+}
