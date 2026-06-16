@@ -325,3 +325,42 @@ class BacktestingEngine:
                         pnl = (position.short_cost_basis - price) * quantity
                         portfolio.cash += pnl  # Simplified
 
+    def run_weekly_replay(
+        self,
+        *,
+        max_runs: int = 8,
+        run_config: Optional[Dict[str, object]] = None,
+    ) -> Dict[str, object]:
+        """Replay recent scan-cache universes through production weekly dry-run path."""
+        from src.agents.initialize import initialize_agents
+        from src.scan_cache import ScanCache
+        from src.trading.pipeline import TradingPipeline
+
+        initialize_agents()
+        cache = ScanCache()
+        metas = sorted(cache.list_runs(limit=max_runs), key=lambda r: r.get("run_date") or "")
+        if not metas:
+            return {"runs_used": 0, "decision_count": 0, "errors": ["no_scan_cache_runs"]}
+
+        pipeline = TradingPipeline()
+        out: Dict[str, object] = {"runs_used": 0, "decision_count": 0, "errors": []}
+        for meta in metas:
+            try:
+                run = cache.load_run(meta["run_id"])
+                tickers = list((run or {}).get("tickers") or [])[:500]
+                if not tickers:
+                    continue
+                res = pipeline.run_weekly_trading(
+                    tickers=tickers,
+                    execute=False,
+                    scan_cache=None,
+                    run_config={"rebalance": True, "save_to_cache": False, **(run_config or {})},
+                )
+                out["runs_used"] = int(out["runs_used"]) + 1
+                out["decision_count"] = int(out["decision_count"]) + len(res.get("decisions") or {})
+            except Exception as e:
+                cast_errors = list(out.get("errors") or [])
+                cast_errors.append(str(e))
+                out["errors"] = cast_errors
+        return out
+

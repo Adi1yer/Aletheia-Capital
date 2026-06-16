@@ -105,6 +105,9 @@ class ScanCache:
         """
         run_path = self.base_dir / run_id
         run_path.mkdir(parents=True, exist_ok=True)
+        artifacts = run_path / "artifacts"
+        for sub in ("inputs", "transformed_features", "signals", "decisions", "execution_state", "diagnostics"):
+            (artifacts / sub).mkdir(parents=True, exist_ok=True)
 
         meta = {
             "run_id": run_id,
@@ -125,6 +128,7 @@ class ScanCache:
         _write_json(run_path / "decisions.json", _safe_dict(decisions))
         _write_json(run_path / "risk.json", _safe_dict(risk_analysis))
         _write_json(run_path / "data_snapshot.json", _safe_dict(data_snapshot))
+        _write_json(run_path / "schema_version.json", {"schema_version": 1})
 
         if portfolio_before is not None:
             _write_json(run_path / "portfolio_before.json", _safe_dict(portfolio_before))
@@ -132,6 +136,27 @@ class ScanCache:
             _write_json(run_path / "portfolio_after.json", _safe_dict(portfolio_after))
         if execution_results is not None:
             _write_json(run_path / "execution_results.json", _safe_dict(execution_results))
+        try:
+            from src.trading.run_manifest import build_run_manifest, write_run_manifest
+
+            manifest = build_run_manifest(
+                run_id=run_id,
+                run_date=run_date,
+                config=meta.get("config") or {},
+                active_agents=meta.get("active_agents") or [],
+                skipped_agents=meta.get("skipped_agents") or [],
+                artifact_dir=str(artifacts),
+                data_snapshot_path=str(run_path / "data_snapshot.json"),
+            )
+            write_run_manifest(run_path / "run_manifest.json", manifest)
+        except Exception:
+            pass
+        try:
+            from src.utils.integrity import write_checksums
+
+            write_checksums(run_path, run_path / "artifacts" / "diagnostics" / "checksums.json")
+        except Exception:
+            pass
 
         logger.info(
             "Scan run cached",
@@ -151,6 +176,7 @@ class ScanCache:
         out = {}
         for name, filename in [
             ("meta", "meta.json"),
+            ("run_manifest", "run_manifest.json"),
             ("signals", "signals.json"),
             ("decisions", "decisions.json"),
             ("risk", "risk.json"),
