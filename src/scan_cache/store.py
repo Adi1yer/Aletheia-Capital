@@ -99,6 +99,7 @@ class ScanCache:
         portfolio_after: Optional[Dict[str, Any]] = None,
         execution_results: Optional[Dict[str, Any]] = None,
         duration_seconds: Optional[float] = None,
+        diagnostics_artifacts: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Persist a full scan run. Returns the path to the run directory.
@@ -136,6 +137,10 @@ class ScanCache:
             _write_json(run_path / "portfolio_after.json", _safe_dict(portfolio_after))
         if execution_results is not None:
             _write_json(run_path / "execution_results.json", _safe_dict(execution_results))
+        if diagnostics_artifacts:
+            diag_dir = run_path / "artifacts" / "diagnostics"
+            for k, v in diagnostics_artifacts.items():
+                _write_json(diag_dir / f"{k}.json", _safe_dict(v))
         try:
             from src.trading.run_manifest import build_run_manifest, write_run_manifest
 
