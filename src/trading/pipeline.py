@@ -134,6 +134,7 @@ class TradingPipeline:
             except Exception as e:
                 logger.warning("Could not fetch orders from broker", error=str(e))
         else:
+            portfolio = Portfolio(cash=0.0, positions={})
             open_orders = []
             recent_orders = []
 
@@ -238,6 +239,8 @@ class TradingPipeline:
                 learning_context["s3_runs_restored"] = restore_recent_runs(
                     n=int(run_config.get("s3_restore_run_limit", 26))
                 )
+                if run_config.get("require_s3_restore", False) and int(learning_context["s3_runs_restored"]) <= 0:
+                    raise RuntimeError("S3 restore required but no runs were restored")
         except Exception as e:
             logger.warning("Pre-run learning restore failed", error=str(e))
 
@@ -299,6 +302,18 @@ class TradingPipeline:
 
         # 4. Run active agents
         logger.info("Running agent analysis")
+        max_llm_calls = int(run_config.get("max_llm_calls", 0) or 0)
+        self._llm_budget = {"remaining": max_llm_calls} if max_llm_calls > 0 else {"remaining": 10**9}
+        if max_llm_calls > 0:
+            per_lane: Dict[str, int] = {}
+            for ak in active_agent_keys:
+                lane = getattr(self.registry.get(ak), "hybrid_lane", "") or "other"
+                per_lane[lane] = per_lane.get(lane, 0) + 1
+            floors: Dict[str, int] = {}
+            for lane, count in per_lane.items():
+                floors[lane] = max(1, int(max_llm_calls * 0.1 * (count / max(1, len(active_agent_keys)))))
+            self._llm_budget["per_lane"] = dict(floors)
+            self._llm_budget["used"] = 0
         try:
             agent_signals = self._run_agents(
                 tickers, start_date, end_date, active_agent_keys=active_agent_keys
@@ -309,6 +324,45 @@ class TradingPipeline:
                     reset_intraweek_stock_context(intraweek_token)
                 except Exception:
                     pass
+        self._llm_budget_summary = {
+            "remaining": int(self._llm_budget.get("remaining", 0)),
+            "used": int(self._llm_budget.get("used", 0)),
+            "per_lane_remaining": dict(self._llm_budget.get("per_lane") or {}),
+        }
+
+        # Optional second-pass fundamentals on focused names (held + top conviction).
+        focused_limit = int(run_config.get("focused_financial_limit", 5) or 5)
+        if focused_limit > financial_limit:
+            from src.portfolio.sectors import get_sector
+            regime_mode = (run_config.get("regime") or {}).get("mode")
+            all_weights = self.registry.get_weights(regime_mode=regime_mode)
+            agent_weights = {k: all_weights[k] for k in active_agent_keys if k in all_weights}
+            held = [t for t, p in (portfolio.positions or {}).items() if int(getattr(p, "long", 0) or 0) > 0]
+            focus_scores: List[tuple[str, int]] = []
+            for t in tickers:
+                agg = self.portfolio_manager._aggregate_signals(t, agent_signals, agent_weights)
+                if agg.get("signal") == "bullish":
+                    focus_scores.append((t, int(agg.get("confidence") or 0)))
+            focus_scores.sort(key=lambda x: x[1], reverse=True)
+            sector_cap = int(run_config.get("focused_sector_cap", 6) or 6)
+            picked_by_sector: Dict[str, int] = {}
+            ranked = []
+            for t, _ in focus_scores:
+                sec = str(get_sector(t) or "Unknown")
+                if picked_by_sector.get(sec, 0) >= sector_cap:
+                    continue
+                picked_by_sector[sec] = picked_by_sector.get(sec, 0) + 1
+                ranked.append(t)
+                if len(ranked) >= 50:
+                    break
+            focused_tickers = list(dict.fromkeys(held + ranked))
+            if focused_tickers:
+                self._refresh_data(
+                    focused_tickers,
+                    start_date,
+                    end_date,
+                    financial_limit=focused_limit,
+                )
 
         # 5. Calculate risk limits
         logger.info("Calculating risk limits")
@@ -445,6 +499,20 @@ class TradingPipeline:
                 agent_weights=agent_weights,
                 pending_orders_by_symbol=pending_orders_by_symbol,
             )
+        pretrade = {}
+        try:
+            from src.risk.pretrade import simulate_pretrade
+
+            pretrade = simulate_pretrade(
+                decisions,
+                risk_analysis,
+                max_sector_pct=float(run_config.get("max_sector_pct", 0.35)),
+            )
+            if bool(pretrade.get("hard_block")) and execute:
+                logger.warning("Pre-trade simulation blocked execution", reason=pretrade.get("block_reason"))
+                execute = False
+        except Exception as e:
+            logger.warning("Pre-trade simulation failed", error=str(e))
 
         cc_lot_tickers = getattr(self.portfolio_manager, "_last_cc_lot_tickers", [])
         decision_diagnostics = (
@@ -491,9 +559,28 @@ class TradingPipeline:
 
         if execute and self.broker:
             try:
+                open_orders = self.broker.get_open_orders(limit=50)
                 recent_orders = self.broker.get_recent_orders(limit=50)
             except Exception as e:
-                logger.warning("Could not refresh recent orders after execute", error=str(e))
+                logger.warning("Could not refresh orders after execute", error=str(e))
+
+        latest_price_map = {
+            t: float(risk_analysis[t]["current_price"])
+            for t in risk_analysis
+            if isinstance(risk_analysis.get(t), dict)
+            and risk_analysis[t].get("current_price") is not None
+        }
+        try:
+            for t in latest_price_map.keys():
+                px = self.data_provider.get_prices(
+                    t,
+                    (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                    datetime.now().strftime("%Y-%m-%d"),
+                )
+                if px:
+                    latest_price_map[t] = float(px[-1].close)
+        except Exception:
+            pass
 
         # 8b. Covered call execution (after equity trades settle)
         cc_results: List[Dict] = []
@@ -504,6 +591,7 @@ class TradingPipeline:
             "cc_lot_ticker_count": len(cc_lot_tickers),
             "step_ran": False,
             "reason_not_run": "",
+            "order_state": {},
         }
         csp_results: List[Dict] = []
         if enable_cc and execute and self.broker and cc_lot_tickers:
@@ -518,12 +606,24 @@ class TradingPipeline:
                     t: self.portfolio_manager._score_covered_call(t, agent_signals, agent_weights)
                     for t in cc_lot_tickers
                 }
+                open_syms = {str(o.get("symbol") or ""): str(o.get("status") or "") for o in (open_orders or [])}
+                recent_syms = {str(o.get("symbol") or ""): str(o.get("status") or "") for o in (recent_orders or [])}
+                recon = {"open": 0, "partial": 0, "filled": 0}
+                for sym in cc_lot_tickers:
+                    st = (open_syms.get(sym) or recent_syms.get(sym) or "").lower()
+                    if "partial" in st:
+                        recon["partial"] += 1
+                    elif st in ("filled",):
+                        recon["filled"] += 1
+                    elif st:
+                        recon["open"] += 1
+                cc_diagnostics["order_state"] = recon
                 cc_results = cc_manager.execute_covered_calls(
                     broker=self.broker,
                     portfolio=cc_portfolio,
                     cc_lot_tickers=cc_lot_tickers,
                     cc_scores=cc_scores,
-                    current_prices={t: risk_analysis[t]["current_price"] for t in risk_analysis},
+                    current_prices=latest_price_map,
                 )
             except Exception as e:
                 logger.error("Covered call step failed (non-fatal)", error=str(e))
@@ -566,7 +666,7 @@ class TradingPipeline:
                     broker=self.broker,
                     csp_tickers=csp_lot_tickers,
                     csp_scores=csp_scores_map,
-                    current_prices={t: risk_analysis[t]["current_price"] for t in risk_analysis},
+                    current_prices=latest_price_map,
                 )
             except Exception as e:
                 logger.error("CSP step failed (non-fatal)", error=str(e))
@@ -661,14 +761,31 @@ class TradingPipeline:
             learning_context["promotion"] = (weight_meta or {}).get("promotion", {})
 
             try:
+                from pathlib import Path
+                import json
                 from src.performance.policy_calibration import apply_learned_policy, save_policy, compute_policy, load_policy
 
                 proposed = compute_policy(run_config, saved_policy=load_policy())
                 promo = (weight_meta or {}).get("promotion") or {}
+                exp = run_config.get("experiment") or {}
+                if str(exp.get("variant") or "").lower() == "canary":
+                    promo["promote"] = False
+                    promo["reason"] = "canary_variant_no_promotion"
+                policy_dir = Path("data/performance")
+                policy_dir.mkdir(parents=True, exist_ok=True)
+                candidate_path = policy_dir / "policy_calibration.candidate.json"
+                with open(candidate_path, "w", encoding="utf-8") as f:
+                    json.dump(proposed, f, indent=2)
+                learning_context["policy_candidate_path"] = str(candidate_path)
                 if promo.get("promote", True):
+                    prev = load_policy() or {}
+                    backup_path = policy_dir / f"policy_calibration.prev.{run_id}.json"
+                    with open(backup_path, "w", encoding="utf-8") as f:
+                        json.dump(prev, f, indent=2)
                     save_policy(proposed)
                     apply_learned_policy(run_config, recompute=False, save=False)
                     learning_context["policy_calibration"] = proposed
+                    learning_context["policy_backup_path"] = str(backup_path)
                 else:
                     learning_context["policy_promotion_skipped"] = promo.get("reason")
             except Exception as e:
@@ -727,9 +844,24 @@ class TradingPipeline:
                 return obj
             return str(obj)
 
+        ts_iso = datetime.now().isoformat()
+        execution_status: Dict[str, Any] = {}
+        if execute and execution_results:
+            try:
+                from src.trading.execution_status import build_execution_status
+
+                execution_status = build_execution_status(
+                    execution_results,
+                    open_orders,
+                    recent_orders,
+                    run_timestamp=ts_iso,
+                )
+            except Exception as e:
+                logger.warning("Execution status summary failed", error=str(e))
+
         results = {
             "run_id": run_id,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": ts_iso,
             "tickers": tickers,
             "intraweek_stock_summary": run_config.get("intraweek_stock_summary") or "",
             "portfolio": port_dict,
@@ -745,13 +877,46 @@ class TradingPipeline:
             "risk_analysis": risk_analysis,
             "decisions": {ticker: _safe_dump(decision) for ticker, decision in decisions.items()},
             "execution_results": execution_results,
+            "execution_status": execution_status,
             "covered_call_results": cc_results,
             "covered_call_diagnostics": cc_diagnostics,
             "decision_diagnostics": decision_diagnostics,
+            "pretrade_simulation": pretrade,
+            "agent_errors": getattr(self, "_agent_errors", {}),
+            "llm_budget": getattr(self, "_llm_budget_summary", {}),
             "learning_context": learning_context,
             "csp_results": csp_results,
             "regime": run_config.get("regime") or {},
         }
+        try:
+            from src.trading.provenance import build_provenance
+
+            agg = {t: self.portfolio_manager._aggregate_signals(t, agent_signals, agent_weights) for t in tickers}
+            prov = {}
+            for t in tickers:
+                prov[t] = build_provenance(
+                    ticker=t,
+                    aggregated_signal=agg.get(t) or {},
+                    decision=results.get("decisions", {}).get(t) or {},
+                    risk=(risk_analysis or {}).get(t) or {},
+                )
+            results["decision_provenance"] = prov
+        except Exception:
+            pass
+        try:
+            if hasattr(self.data_provider, "data_quality_score"):
+                results["data_quality"] = self.data_provider.data_quality_score()
+        except Exception:
+            pass
+        try:
+            from src.ops.slo import evaluate_slos
+            from src.utils.alerts import send_alert
+
+            results["slo"] = evaluate_slos(results)
+            if not results["slo"].get("ok"):
+                send_alert("Weekly SLO breach", "One or more SLO checks failed", results["slo"])
+        except Exception:
+            pass
 
         logger.info("Weekly trading cycle complete", decision_count=len(decisions))
         return results
@@ -821,19 +986,28 @@ class TradingPipeline:
         def refresh_ticker(ticker: str):
             """Refresh data for a single ticker"""
             try:
-                # Fetch prices (will be cached)
-                self.data_provider.get_prices(ticker, start_date, end_date)
-                # Fetch financial metrics
-                self.data_provider.get_financial_metrics(
-                    ticker, end_date, limit=financial_limit
-                )
-                # Fetch line items
-                self.data_provider.get_line_items(
-                    ticker,
-                    ["revenue", "net_income", "free_cash_flow", "total_debt"],
-                    end_date,
-                    limit=financial_limit,
-                )
+                attempts = 0
+                while True:
+                    attempts += 1
+                    try:
+                        # Fetch prices (will be cached)
+                        self.data_provider.get_prices(ticker, start_date, end_date)
+                        # Fetch financial metrics
+                        self.data_provider.get_financial_metrics(
+                            ticker, end_date, limit=financial_limit
+                        )
+                        # Fetch line items
+                        self.data_provider.get_line_items(
+                            ticker,
+                            ["revenue", "net_income", "free_cash_flow", "total_debt"],
+                            end_date,
+                            limit=financial_limit,
+                        )
+                        break
+                    except Exception:
+                        if attempts >= 3:
+                            raise
+                        time.sleep(0.2 * attempts)
                 return ticker, True, None
             except Exception as e:
                 logger.warning("Data refresh failed", ticker=ticker, error=str(e))
@@ -875,6 +1049,7 @@ class TradingPipeline:
         """
         agents = self.registry.get_active(active_agent_keys)
         agent_signals = {}
+        self._agent_errors = {}
 
         # For large universes, process in batches
         use_batching = len(tickers) > batch_size
@@ -918,6 +1093,7 @@ class TradingPipeline:
                             )
                     except Exception as e:
                         logger.error("Agent execution failed", agent=agent_key, error=str(e))
+                        self._agent_errors[agent_key] = str(e)
                         # Default to neutral signals on error
                         agent_signals[agent_key] = {
                             ticker: AgentSignal(
@@ -953,6 +1129,7 @@ class TradingPipeline:
             "dossiers": dossiers,
             "agent_key": agent_key,
             "llm_cache": True,
+            "llm_budget": getattr(self, "_llm_budget", {"remaining": 10**9}),
         }
         try:
             use_batching = len(tickers) > batch_size

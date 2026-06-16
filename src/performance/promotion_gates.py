@@ -52,7 +52,13 @@ def _pairs_from_scan_cache(scan_cache: Any, limit: int = 12) -> List[Tuple[Dict,
         return []
 
 
-def _pair_accuracy(run_left: Dict, run_right: Dict) -> Tuple[float, float, int]:
+def _pair_accuracy(
+    run_left: Dict,
+    run_right: Dict,
+    *,
+    weights: Optional[Dict[str, float]] = None,
+    min_confidence: int = 0,
+) -> Tuple[float, float, int]:
     left_risk = run_left.get("risk") or {}
     right_risk = run_right.get("risk") or {}
     signals = run_left.get("signals") or {}
@@ -66,7 +72,10 @@ def _pair_accuracy(run_left: Dict, run_right: Dict) -> Tuple[float, float, int]:
                 continue
             sig_val = sig.get("signal")
             conf = int(sig.get("confidence") or 50)
+            conf = int(conf * float((weights or {}).get(agent_key, 1.0)))
             if sig_val not in ("bullish", "bearish"):
+                continue
+            if conf < int(min_confidence):
                 continue
             p0 = float((left_risk.get(ticker) or {}).get("current_price") or 0)
             p1 = float((right_risk.get(ticker) or {}).get("current_price") or 0)
@@ -117,7 +126,7 @@ def evaluate_proposal(
     pairs = _pairs_from_scan_cache(scan_cache, limit=total_pairs)
     if len(pairs) < holdout_pairs + 1:
         return {
-            "promote": True,
+            "promote": False,
             "reason": "insufficient_pairs_for_holdout",
             "in_sample": {},
             "holdout": {},
@@ -127,31 +136,54 @@ def evaluate_proposal(
     train_pairs = pairs[: -(holdout_pairs)]
     holdout = pairs[-holdout_pairs:]
 
-    def _agg(ps: List[Tuple[Dict, Dict]]) -> Dict[str, Any]:
+    proposed_min_conf = int(proposed_policy.get("min_buy_confidence") or 0)
+    baseline_min_conf = int((proposed_policy.get("baseline_min_buy_confidence") or 0))
+
+    def _agg(
+        ps: List[Tuple[Dict, Dict]],
+        *,
+        weights: Optional[Dict[str, float]] = None,
+        min_conf: int = 0,
+    ) -> Dict[str, Any]:
         accs, cws, ns = [], [], 0
+        tickers: set[str] = set()
         for left, right in ps:
-            a, c, n = _pair_accuracy(left, right)
+            a, c, n = _pair_accuracy(left, right, weights=weights, min_confidence=min_conf)
             if n:
                 accs.append(a)
                 cws.append(c)
                 ns += n
+            left_risk = left.get("risk") or {}
+            right_risk = right.get("risk") or {}
+            for tk in set(left_risk).intersection(set(right_risk)):
+                tickers.add(str(tk))
         return {
             "directional_accuracy": round(sum(accs) / len(accs), 4) if accs else 0.0,
             "confidence_weighted_return": round(sum(cws), 4),
             "observations": ns,
+            "unique_tickers": len(tickers),
         }
 
-    in_sample = _agg(train_pairs)
-    holdout_m = _agg(holdout)
+    in_sample = _agg(train_pairs, weights=proposed_weights, min_conf=proposed_min_conf)
+    holdout_m = _agg(holdout, weights=proposed_weights, min_conf=proposed_min_conf)
+    baseline_holdout = _agg(holdout, weights=baseline_weights, min_conf=baseline_min_conf)
 
     promote = True
     reason = "holdout_ok"
-    if holdout_m["observations"] >= 5:
-        base_acc = in_sample.get("directional_accuracy") or 0.0
+    min_obs = int(proposed_policy.get("min_holdout_observations") or 5)
+    min_tickers = int(proposed_policy.get("min_holdout_tickers") or 3)
+    if holdout_m.get("observations", 0) < min_obs:
+        promote = False
+        reason = "holdout_insufficient_observations"
+    elif holdout_m.get("unique_tickers", 0) < min_tickers:
+        promote = False
+        reason = "holdout_insufficient_tickers"
+    if holdout_m["observations"] >= 5 and baseline_holdout["observations"] >= 5:
+        base_acc = baseline_holdout.get("directional_accuracy") or 0.0
         if holdout_m["directional_accuracy"] < base_acc - acc_tolerance:
             promote = False
             reason = "holdout_accuracy_regression"
-        elif holdout_m["confidence_weighted_return"] < (in_sample.get("confidence_weighted_return") or 0) - cw_tolerance:
+        elif holdout_m["confidence_weighted_return"] < (baseline_holdout.get("confidence_weighted_return") or 0) - cw_tolerance:
             promote = False
             reason = "holdout_cw_return_regression"
 
@@ -160,7 +192,7 @@ def evaluate_proposal(
         "reason": reason,
         "in_sample": in_sample,
         "holdout": holdout_m,
-        "baseline_holdout": holdout_m,
+        "baseline_holdout": baseline_holdout,
         "proposed_weight_count": len(proposed_weights),
         "proposed_policy_keys": list((proposed_policy or {}).keys()),
     }

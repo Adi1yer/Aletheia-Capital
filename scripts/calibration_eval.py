@@ -159,6 +159,22 @@ def _eval_pairs(
 
     off_acc = (off_hits / off_n) if off_n else 0.0
     on_acc = (on_hits / on_n) if on_n else 0.0
+    lane_drift: Dict[str, float] = {}
+    for key, evs in (cal_data.get("pairs") or {}).items():
+        if "|" not in key:
+            continue
+        agent_key = key.split("|", 1)[0]
+        lane = "other"
+        low = agent_key.lower()
+        if "growth" in low:
+            lane = "growth"
+        elif "value" in low or "valuation" in low:
+            lane = "value"
+        vals = [e for e in evs if e.get("directionally_correct") is not None]
+        if vals:
+            lane_drift[lane] = lane_drift.get(lane, 0.0) + (
+                sum(1 for v in vals if v.get("directionally_correct")) / len(vals)
+            )
     return {
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "source": source,
@@ -175,6 +191,7 @@ def _eval_pairs(
         },
         "delta_accuracy_pp": round((on_acc - off_acc) * 100, 2),
         "alert": (on_acc - off_acc) < -0.02,
+        "agent_lane_drift": lane_drift,
     }
 
 
@@ -208,6 +225,20 @@ def _eval_from_scan_cache(max_pairs: int = 8) -> Dict[str, Any]:
 
 
 def run_eval(source: str = "scan_cache", max_pairs: int = 8) -> Dict[str, Any]:
+    if source == "production_replay":
+        from src.backtesting.engine import BacktestingEngine
+
+        replay = BacktestingEngine().run_weekly_replay(max_runs=max_pairs)
+        return {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "source": "production_replay",
+            "pairs_used": int(replay.get("runs_used") or 0),
+            "off_calibration": {"directional_accuracy": 0.0, "observations": 0, "confidence_weighted_return": 0.0},
+            "on_calibration": {"directional_accuracy": 0.0, "observations": 0, "confidence_weighted_return": 0.0},
+            "delta_accuracy_pp": 0.0,
+            "alert": False,
+            "replay_summary": replay,
+        }
     if source == "ledger":
         return _eval_from_ledger(max_pairs=max_pairs)
     payload = _eval_from_scan_cache(max_pairs=max_pairs)
@@ -217,6 +248,17 @@ def run_eval(source: str = "scan_cache", max_pairs: int = 8) -> Dict[str, Any]:
             fallback["fallback_from"] = payload.get("error")
             return fallback
     return payload
+
+
+def compare_payloads(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+    b = float((baseline.get("on_calibration") or {}).get("directional_accuracy") or 0.0)
+    c = float((candidate.get("on_calibration") or {}).get("directional_accuracy") or 0.0)
+    return {
+        "baseline_accuracy": b,
+        "candidate_accuracy": c,
+        "delta_pp": round((c - b) * 100, 2),
+        "winner": "candidate" if c > b else "baseline",
+    }
 
 
 def _write_outputs(payload: Dict[str, Any]) -> None:
@@ -229,6 +271,15 @@ def _write_outputs(payload: Dict[str, Any]) -> None:
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    try:
+        from src.performance.confidence_calibration import rebuild_calibration_files, reliability_metrics
+
+        rm = reliability_metrics(rebuild_calibration_files())
+        payload["reliability"] = rm
+        with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except Exception:
+        pass
     lines = [
         "# Calibration A/B eval",
         "",
@@ -272,7 +323,7 @@ def main() -> int:
     parser.add_argument("--max-pairs", type=int, default=8)
     parser.add_argument(
         "--source",
-        choices=("scan_cache", "ledger"),
+        choices=("scan_cache", "ledger", "production_replay"),
         default="scan_cache",
         help="Primary data source (scan_cache falls back to ledger on error)",
     )
