@@ -26,7 +26,12 @@ def test_finalize_binds_signal_without_override():
 
 def test_finalize_allows_override():
     stub = _Stub()
-    rule = RuleScore("neutral", 50, checks=[], lane="value")
+    rule = RuleScore(
+        "neutral",
+        50,
+        checks=[{"name": "fraud", "pass": True}],
+        lane="value",
+    )
     resp = HybridExplainOutput(
         signal="bearish",
         confidence=55,
