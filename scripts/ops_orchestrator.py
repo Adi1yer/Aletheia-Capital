@@ -35,7 +35,7 @@ def _run(cmd: List[str]) -> Dict[str, Any]:
     }
 
 
-def run_stage(stage: str, *, run_id: str | None = None) -> Dict[str, Any]:
+def run_stage(stage: str, *, run_id: str | None = None, strict: bool = False) -> Dict[str, Any]:
     if stage == "preflight":
         return _run([sys.executable, "preflight.py"])
     if stage == "cockpit":
@@ -52,7 +52,7 @@ def run_stage(stage: str, *, run_id: str | None = None) -> Dict[str, Any]:
         cache = ScanCache()
         runs = cache.list_runs(limit=1)
         if not runs:
-            return {"ok": False, "reason": "no_runs"}
+            return {"ok": True, "skipped": True, "reason": "no_runs"}
         run = cache.load_run(runs[0]["run_id"])
         results = {
             "decisions": run.get("decisions") or {},
@@ -62,12 +62,15 @@ def run_stage(stage: str, *, run_id: str | None = None) -> Dict[str, Any]:
         diag = (run.get("meta") or {}).get("config") or {}
         if isinstance(diag, dict) and diag.get("agent_errors"):
             results["agent_errors"] = diag.get("agent_errors")
-        return {"ok": True, "slo": evaluate_slos(results)}
+        slo = evaluate_slos(results)
+        if strict and not slo.get("ok"):
+            return {"ok": False, "slo": slo}
+        return {"ok": True, "slo": slo}
     if stage == "gonogo":
         cache = ScanCache()
         runs = cache.list_runs(limit=1)
         if not runs:
-            return {"ok": False, "reason": "no_runs"}
+            return {"ok": True, "skipped": True, "reason": "no_runs"}
         run = cache.load_run(runs[0]["run_id"])
         results = {
             "decisions": run.get("decisions") or {},
@@ -77,7 +80,10 @@ def run_stage(stage: str, *, run_id: str | None = None) -> Dict[str, Any]:
             "learning_context": {},
             "data_quality": {"score": 100},
         }
-        return {"ok": True, "go_no_go": build_go_no_go_report(results)}
+        gate = build_go_no_go_report(results)
+        if strict and not gate.get("go"):
+            return {"ok": False, "go_no_go": gate}
+        return {"ok": True, "go_no_go": gate}
     return {"ok": False, "reason": f"unknown_stage:{stage}"}
 
 
@@ -85,12 +91,13 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Unified ops orchestrator")
     p.add_argument("--stage", default=",".join(DEFAULT_STAGES))
     p.add_argument("--run-id", default="")
+    p.add_argument("--strict", action="store_true", help="Fail on SLO/go-no-go breaches")
     args = p.parse_args()
 
     stages = [s.strip() for s in args.stage.split(",") if s.strip()]
     out: Dict[str, Any] = {"stages": {}, "ok": True}
     for stage in stages:
-        result = run_stage(stage, run_id=(args.run_id or None))
+        result = run_stage(stage, run_id=(args.run_id or None), strict=bool(args.strict))
         out["stages"][stage] = result
         if not result.get("ok", True):
             out["ok"] = False

@@ -120,7 +120,7 @@ jobs:
 
       - name: Post-run ops orchestrator
         if: always()
-        run: poetry run python scripts/ops_orchestrator.py --stage cockpit,slo,gonogo
+        run: poetry run python scripts/ops_orchestrator.py --stage cockpit,slo,gonogo --strict
 
       - name: Upload weekly run summary artifact
         if: always()
