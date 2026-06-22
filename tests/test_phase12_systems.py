@@ -61,14 +61,29 @@ def test_go_no_go_and_slo():
         "decisions": {"AAPL": {"action": "buy"}},
         "agent_errors": {},
         "data_quality": {"score": 90},
-        "execution_status": {"pending_count": 0, "filled_count": 1},
+        "execution_status": {"submitted": 10, "filled": 3, "pending": 7},
         "pretrade_simulation": {},
         "learning_context": {},
     }
     slo = evaluate_slos(results)
     gate = build_go_no_go_report({**results, "slo": slo})
     assert slo["ok"] is True
+    assert slo["execution_pending"] == 7
     assert gate["go"] is True
+    assert "pending_orders_after_run" in gate["warnings"]
+
+
+def test_slo_hard_fail_blocks_go():
+    results = {
+        "decisions": {},
+        "agent_errors": {},
+        "data_quality": {"score": 90},
+        "execution_status": {},
+    }
+    slo = evaluate_slos(results)
+    gate = build_go_no_go_report({**results, "slo": slo})
+    assert slo["hard_ok"] is False
+    assert gate["go"] is False
 
 
 def test_champion_challenger_and_attestation():

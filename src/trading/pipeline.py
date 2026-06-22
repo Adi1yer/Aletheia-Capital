@@ -574,6 +574,20 @@ class TradingPipeline:
             except Exception as e:
                 logger.warning("Execution reconciliation failed", error=str(e))
 
+        execution_status: Dict[str, Any] = {}
+        if execute and execution_results:
+            try:
+                from src.trading.execution_status import build_execution_status
+
+                execution_status = build_execution_status(
+                    execution_results,
+                    open_orders,
+                    recent_orders,
+                    run_timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.warning("Execution status summary failed", error=str(e))
+
         latest_price_map = {
             t: float(risk_analysis[t]["current_price"])
             for t in risk_analysis
@@ -734,6 +748,7 @@ class TradingPipeline:
                     diagnostics_artifacts={
                         "pretrade_simulation": pretrade,
                         "reconciliation": reconciliation,
+                        "execution_status": execution_status,
                     },
                 )
             except Exception as e:
@@ -880,8 +895,7 @@ class TradingPipeline:
             return str(obj)
 
         ts_iso = datetime.now().isoformat()
-        execution_status: Dict[str, Any] = {}
-        if execute and execution_results:
+        if execute and execution_results and not execution_status:
             try:
                 from src.trading.execution_status import build_execution_status
 
