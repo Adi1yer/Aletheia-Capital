@@ -50,7 +50,10 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-        run: poetry run python scripts/calibration_eval.py --max-pairs 8
+        run: |
+          echo "Scan cache runs: $(find data/scan_cache -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+          echo "Ledger lines: $(wc -l < data/performance/weekly_ledger.jsonl 2>/dev/null || echo 0)"
+          poetry run python scripts/calibration_eval.py --max-pairs 8
 
       - name: Upload calibration eval artifact
         if: always()

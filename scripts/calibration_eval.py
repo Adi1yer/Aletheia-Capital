@@ -75,6 +75,39 @@ def _eligible_tickers_from_scan_run(run: Dict[str, Any]) -> Set[str]:
     return symbols
 
 
+SKIP_REASONS = frozenset(
+    {
+        "insufficient_scan_cache_runs",
+        "insufficient_ledger_rows",
+        "could_not_load_scan_runs",
+    }
+)
+
+
+def _skip_payload(reason: str, *, fallback_from: Optional[str] = None) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "status": "skipped",
+        "skip_reason": reason,
+        "pairs_used": 0,
+        "off_calibration": {
+            "directional_accuracy": 0.0,
+            "observations": 0,
+            "confidence_weighted_return": 0.0,
+        },
+        "on_calibration": {
+            "directional_accuracy": 0.0,
+            "observations": 0,
+            "confidence_weighted_return": 0.0,
+        },
+        "delta_accuracy_pp": 0.0,
+        "alert": False,
+    }
+    if fallback_from:
+        out["fallback_from"] = fallback_from
+    return out
+
+
 def _eval_pairs(
     pairs: List[Tuple[Dict[str, Any], Dict[str, Any]]],
     source: str,
@@ -177,6 +210,7 @@ def _eval_pairs(
             )
     return {
         "generated_at": datetime.utcnow().isoformat() + "Z",
+        "status": "ok",
         "source": source,
         "pairs_used": len(pairs),
         "off_calibration": {
@@ -231,6 +265,7 @@ def run_eval(source: str = "scan_cache", max_pairs: int = 8) -> Dict[str, Any]:
         replay = BacktestingEngine().run_weekly_replay(max_runs=max_pairs)
         return {
             "generated_at": datetime.utcnow().isoformat() + "Z",
+            "status": "ok",
             "source": "production_replay",
             "pairs_used": int(replay.get("runs_used") or 0),
             "off_calibration": {"directional_accuracy": 0.0, "observations": 0, "confidence_weighted_return": 0.0},
@@ -240,13 +275,26 @@ def run_eval(source: str = "scan_cache", max_pairs: int = 8) -> Dict[str, Any]:
             "replay_summary": replay,
         }
     if source == "ledger":
-        return _eval_from_ledger(max_pairs=max_pairs)
-    payload = _eval_from_scan_cache(max_pairs=max_pairs)
+        payload = _eval_from_ledger(max_pairs=max_pairs)
+        scan_error = None
+    else:
+        payload = _eval_from_scan_cache(max_pairs=max_pairs)
+        scan_error = payload.get("error")
+        if scan_error:
+            fallback = _eval_from_ledger(max_pairs=max_pairs)
+            if not fallback.get("error"):
+                fallback["fallback_from"] = scan_error
+                fallback["status"] = "ok"
+                return fallback
+            payload = fallback
+    if payload.get("error") in SKIP_REASONS:
+        return _skip_payload(
+            str(payload["error"]),
+            fallback_from=scan_error if scan_error and scan_error != payload.get("error") else None,
+        )
     if payload.get("error"):
-        fallback = _eval_from_ledger(max_pairs=max_pairs)
-        if not fallback.get("error"):
-            fallback["fallback_from"] = payload.get("error")
-            return fallback
+        return payload
+    payload["status"] = "ok"
     return payload
 
 
@@ -264,9 +312,11 @@ def compare_payloads(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dic
 def _write_outputs(payload: Dict[str, Any]) -> None:
     from src.performance.promotion_gates import set_calibration_hold
 
-    if payload.get("alert"):
+    if payload.get("status") == "skipped":
+        pass
+    elif payload.get("alert"):
         set_calibration_hold(True, reason="calibration_eval_regression")
-    else:
+    elif payload.get("status") == "ok":
         set_calibration_hold(False, reason="calibration_eval_ok")
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
@@ -284,16 +334,30 @@ def _write_outputs(payload: Dict[str, Any]) -> None:
         "# Calibration A/B eval",
         "",
         f"Generated: {payload.get('generated_at')}",
-        f"Source: {payload.get('source')}",
-        f"Pairs used: {payload.get('pairs_used', 0)}",
-        "",
-        f"- Off accuracy: {payload.get('off_calibration', {}).get('directional_accuracy', 0):.1%}",
-        f"- On accuracy: {payload.get('on_calibration', {}).get('directional_accuracy', 0):.1%}",
-        f"- Delta: {payload.get('delta_accuracy_pp', 0):+.2f} pp",
-        "",
     ]
-    if payload.get("alert"):
-        lines.append("**ALERT:** Calibration appears to hurt accuracy by >2pp.")
+    if payload.get("status") == "skipped":
+        lines.extend(
+            [
+                f"Status: skipped ({payload.get('skip_reason', 'unknown')})",
+                "",
+                "Not enough weekly history yet for on/off calibration comparison.",
+                "This is expected on early runs; the job will evaluate once scan cache or ledger has 2+ runs.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"Source: {payload.get('source')}",
+                f"Pairs used: {payload.get('pairs_used', 0)}",
+                "",
+                f"- Off accuracy: {payload.get('off_calibration', {}).get('directional_accuracy', 0):.1%}",
+                f"- On accuracy: {payload.get('on_calibration', {}).get('directional_accuracy', 0):.1%}",
+                f"- Delta: {payload.get('delta_accuracy_pp', 0):+.2f} pp",
+                "",
+            ]
+        )
+        if payload.get("alert"):
+            lines.append("**ALERT:** Calibration appears to hurt accuracy by >2pp.")
     SUMMARY_MD_PATH.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -332,6 +396,8 @@ def main() -> int:
     _write_outputs(payload)
     _maybe_email_alert(payload)
     print(json.dumps(payload, indent=2))
+    if payload.get("status") == "skipped":
+        return 0
     return 0 if "error" not in payload else 1
 
 

@@ -90,3 +90,12 @@ def test_eval_from_ledger_produces_delta(tmp_path, monkeypatch):
     payload = ce._eval_from_ledger(max_pairs=4)
     assert payload.get("pairs_used", 0) >= 1
     assert "off_calibration" in payload
+
+
+def test_run_eval_skips_when_insufficient_history(monkeypatch):
+    monkeypatch.setattr(ce, "_eval_from_scan_cache", lambda max_pairs=8: {"error": "insufficient_scan_cache_runs", "pairs": 0})
+    monkeypatch.setattr(ce, "_eval_from_ledger", lambda max_pairs=8: {"error": "insufficient_ledger_rows", "pairs": 0})
+    payload = ce.run_eval(source="scan_cache", max_pairs=8)
+    assert payload.get("status") == "skipped"
+    assert payload.get("skip_reason") == "insufficient_ledger_rows"
+    assert payload.get("fallback_from") == "insufficient_scan_cache_runs"
