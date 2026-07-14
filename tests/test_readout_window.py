@@ -56,11 +56,20 @@ def test_trial_outside_future_horizon():
 
 def test_trial_grace_past_completion():
     today = date(2025, 6, 1)
-    t = TrialSummary(
+    # Past completion with no results posted = ghost catalyst → excluded (Phase 13)
+    ghost = TrialSummary(
         nct_id="NCT1",
         primary_completion_date="2025-05-15",
     )
-    assert trial_in_readout_window(t, today, forward_days=120, past_grace_days=45) is True
+    assert trial_in_readout_window(ghost, today, forward_days=120, past_grace_days=45) is False
+    # Past completion with results posted remains in graceful window
+    posted = TrialSummary(
+        nct_id="NCT2",
+        primary_completion_date="2025-05-15",
+        has_results=True,
+        results_first_posted="2025-05-20",
+    )
+    assert trial_in_readout_window(posted, today, forward_days=120, past_grace_days=45) is True
 
 
 def test_best_readout_prefers_primary():

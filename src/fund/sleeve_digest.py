@@ -61,6 +61,13 @@ def build_sleeve_digest(*, run_date: str | None = None) -> Dict[str, Any]:
     run_date = run_date or date.today().isoformat()
     equity = collect_workflow_equity()
     sections: List[Dict[str, Any]] = []
+    try:
+        from src.fund.orchestrator import load_allocation, load_sleeve_budget_targets
+
+        targets = dict(load_sleeve_budget_targets())
+        targets.update((load_allocation() or {}).get("targets") or {})
+    except Exception:
+        targets = {}
 
     for wf in list_workflows(enabled_only=True):
         if wf.workflow_id not in SATELLITE_WORKFLOWS:
@@ -84,6 +91,7 @@ def build_sleeve_digest(*, run_date: str | None = None) -> Dict[str, Any]:
                 "action": action,
                 "reason": reason,
                 "latest_ledger": latest,
+                "target_budget_pct": targets.get(wf.workflow_id),
             }
         )
 
@@ -98,6 +106,7 @@ def build_sleeve_digest(*, run_date: str | None = None) -> Dict[str, Any]:
         "run_date": run_date,
         "sections": sections,
         "total_satellite_equity": round(sum(equity_by_subdir.values()), 2),
+        "sleeve_budget_targets": targets,
     }
 
 
@@ -109,12 +118,20 @@ def format_digest_markdown(digest: Dict[str, Any]) -> str:
         f"Total satellite equity (snapshots): ${digest.get('total_satellite_equity', 0):,.2f}",
         "",
     ]
+    targets = digest.get("sleeve_budget_targets") or {}
+    if targets:
+        bits = [f"{k}={float(v)*100:.1f}%" for k, v in sorted(targets.items())]
+        lines.append("Target budgets: " + ", ".join(bits))
+        lines.append("")
     for s in digest.get("sections") or []:
         lines.append(f"{s.get('label')} ({s.get('workflow_id')})")
         cred = "ok" if s.get("credentials_ok") else "MISSING"
         lines.append(f"  Credentials: {cred}")
         eq = s.get("equity")
         lines.append(f"  Equity: ${eq:,.2f}" if eq is not None else "  Equity: n/a")
+        tb = s.get("target_budget_pct")
+        if tb is not None:
+            lines.append(f"  Target budget: {float(tb)*100:.1f}% of fund")
         d1 = s.get("equity_delta_pct_1d")
         if d1 is not None:
             lines.append(f"  1d delta: {d1:+.2f}%")

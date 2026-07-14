@@ -400,9 +400,11 @@ def main() -> None:
         run_config = merge_run_profile(run_config, profile_name)
         run_config["run_profile"] = profile_name
     try:
-        from src.trading.run_config import apply_phase12_defaults
+        from src.trading.run_config import apply_phase12_defaults, apply_phase13_defaults, apply_beat_spy_defaults
 
         run_config = apply_phase12_defaults(run_config)
+        run_config = apply_phase13_defaults(run_config)
+        run_config = apply_beat_spy_defaults(run_config)
     except Exception:
         pass
     if (args.agents or "").strip():

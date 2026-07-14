@@ -17,6 +17,8 @@ class TrialSummary(BaseModel):
     # ISO YYYY-MM-DD from ClinicalTrials.gov statusModule (best-effort).
     primary_completion_date: str = ""
     completion_date: str = ""
+    results_first_posted: str = ""
+    has_results: bool = False
     raw: Dict[str, Any] = Field(default_factory=dict)
 
 

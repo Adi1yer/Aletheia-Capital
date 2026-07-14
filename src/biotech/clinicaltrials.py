@@ -52,6 +52,11 @@ def _study_to_trial(s: dict) -> Optional[TrialSummary]:
             primary_completion_date = str(pcd.get("date", "")).replace("Z", "")[:10]
         if isinstance(ccd, dict) and ccd.get("date"):
             completion_date = str(ccd.get("date", "")).replace("Z", "")[:10]
+        rfp = status_mod.get("resultsFirstPostDateStruct") or {}
+        results_first_posted = ""
+        if isinstance(rfp, dict) and rfp.get("date"):
+            results_first_posted = str(rfp.get("date", "")).replace("Z", "")[:10]
+        has_results = bool(s.get("hasResults")) or bool(results_first_posted)
         # ClinicalTrials.gov API v2 exposes phases under designModule (not identificationModule).
         phases = design_mod.get("phases") or id_block.get("phases") or []
         phase = ",".join(phases) if isinstance(phases, list) else str(phases)
@@ -67,6 +72,8 @@ def _study_to_trial(s: dict) -> Optional[TrialSummary]:
             sponsor=sp_name,
             primary_completion_date=primary_completion_date,
             completion_date=completion_date,
+            results_first_posted=results_first_posted,
+            has_results=has_results,
             raw={},
         )
     except Exception:

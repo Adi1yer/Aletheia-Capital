@@ -1,6 +1,6 @@
 """Alpaca broker integration for paper trading"""
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import date, timedelta
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
@@ -119,7 +119,42 @@ class AlpacaBroker:
             logger.error("Error fetching open orders", error=str(e))
             return []
 
-    def get_recent_orders(self, limit: int = 20) -> List[Dict]:
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel a single order by id. Returns True on success."""
+        try:
+            self.client.cancel_order_by_id(str(order_id))
+            logger.info("Cancelled order", order_id=str(order_id))
+            return True
+        except Exception as e:
+            logger.warning("Cancel order failed", order_id=str(order_id), error=str(e))
+            return False
+
+    def cancel_stale_orders(self, *, max_age_hours: float = 48.0, limit: int = 50) -> Dict[str, Any]:
+        """Cancel open orders older than max_age_hours (pending hygiene)."""
+        from datetime import datetime, timezone
+
+        open_orders = self.get_open_orders(limit=limit)
+        cancelled = []
+        skipped = []
+        now = datetime.now(timezone.utc)
+        for o in open_orders:
+            submitted = o.get("submitted_at")
+            age_h = None
+            if submitted:
+                try:
+                    raw = str(submitted).replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(raw)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    age_h = (now - dt).total_seconds() / 3600.0
+                except Exception:
+                    age_h = None
+            if age_h is None or age_h < float(max_age_hours):
+                skipped.append({"id": o.get("id"), "symbol": o.get("symbol"), "age_h": age_h})
+                continue
+            if self.cancel_order(str(o.get("id"))):
+                cancelled.append({"id": o.get("id"), "symbol": o.get("symbol"), "age_h": age_h})
+        return {"cancelled": cancelled, "skipped": skipped, "max_age_hours": max_age_hours}
         """Get recently closed/filled orders from Alpaca."""
         try:
             req = GetOrdersRequest(status="closed", limit=limit)

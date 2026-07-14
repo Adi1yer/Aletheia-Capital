@@ -251,6 +251,8 @@ To set up:
 
 The biotech scanner runs **dual paper arms** (mechanical straddle on every catalyst pass + LLM-gated straddle when gates pass), logs outcomes to `data/biotech/thesis_ledger.jsonl`, and emails a **thesis scorecard** (win rate, PnL vs premium, A/B comparison). See [docs/BIOTECH_THESIS.md](docs/BIOTECH_THESIS.md).
 
+**Phase 13** hardens profitability controls (cash floors, risk-off gates, 1000-name universe, SPY benchmarks, biotech mechanical freeze). See [docs/PHASE13.md](docs/PHASE13.md).
+
 ```bash
 poetry run python biotech_catalyst_scan.py --discover-candidates
 poetry run python daily_health_check.py --account biotech

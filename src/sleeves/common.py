@@ -48,6 +48,17 @@ def init_workflow_broker(workflow_id: str, *, require_broker: bool = False):
     return broker
 
 
+def append_skip(workflow_id: str, reason: str, **extra: Any) -> None:
+    """Always write a ledger row on skip so digests never show no_ledger_file."""
+    row: Dict[str, Any] = {
+        "run_date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "action": "skip",
+        "reason": reason,
+    }
+    row.update(extra)
+    append_ledger(workflow_id, row)
+
+
 def append_ledger(workflow_id: str, row: Dict[str, Any]) -> None:
     wf = get_workflow(workflow_id)
     if wf is None:

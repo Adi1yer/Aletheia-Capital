@@ -1,14 +1,60 @@
 {
-  "ci-full": {
-    "max_stocks": 500,
+  "beat-spy-10k": {
+    "max_stocks": 400,
     "agent_tier_mode": "tiered",
     "execute": true,
     "llm_cache": true,
     "financial_limit": 1,
     "dossier_financial_limit": 5,
+    "focused_financial_limit": 5,
     "save_to_cache": true,
     "broker_required": true,
-    "use_portfolio_optimizer": true
+    "use_portfolio_optimizer": false,
+    "beat_spy_mode": true,
+    "phase13_enabled": true,
+    "phase13_universe_triage": true,
+    "phase13_net_edge": true,
+    "phase13_threshold_rebalance": true,
+    "phase13_book_stops": true,
+    "phase13_hard_risk_off": false,
+    "max_llm_calls": 2500,
+    "min_buy_confidence": 62,
+    "min_sell_confidence": 55,
+    "cash_buffer_pct": 0.04,
+    "cash_floor_pct": 0.03,
+    "max_buy_tickers": 12,
+    "max_position_pct": 0.10,
+    "max_sector_pct": 0.30,
+    "max_cash_rotation_sells": 1,
+    "cash_rotation_min_edge": 12,
+    "beat_spy_factor_top_n": 100,
+    "rebalance_interval_weeks": 2,
+    "enable_covered_calls": true,
+    "enable_cash_rotation": true,
+    "enable_cash_secured_puts": false
+  },
+  "ci-full": {
+    "max_stocks": 1000,
+    "agent_tier_mode": "tiered",
+    "execute": true,
+    "llm_cache": true,
+    "financial_limit": 1,
+    "dossier_financial_limit": 5,
+    "focused_financial_limit": 5,
+    "save_to_cache": true,
+    "broker_required": true,
+    "use_portfolio_optimizer": true,
+    "phase13_enabled": true,
+    "phase13_universe_triage": true,
+    "max_llm_calls": 4500,
+    "min_buy_confidence": 65,
+    "min_sell_confidence": 55,
+    "cash_buffer_pct": 0.12,
+    "max_buy_tickers": 8,
+    "max_position_pct": 0.07,
+    "max_sector_pct": 0.25,
+    "max_cash_rotation_sells": 1,
+    "cash_rotation_min_edge": 15
   },
   "dev-smoke": {
     "max_stocks": 10,
@@ -18,7 +64,8 @@
     "financial_limit": 1,
     "dossier_financial_limit": 5,
     "save_to_cache": false,
-    "broker_required": false
+    "broker_required": false,
+    "phase13_enabled": true
   },
   "research": {
     "max_stocks": 100,
@@ -28,6 +75,7 @@
     "financial_limit": 1,
     "dossier_financial_limit": 5,
     "save_to_cache": false,
-    "broker_required": false
+    "broker_required": false,
+    "phase13_enabled": true
   }
 }

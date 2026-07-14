@@ -65,3 +65,16 @@ def apply_phase12_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("reconcile_polls", 3)
     out.setdefault("canary_min_consecutive", 3)
     return out
+
+
+def apply_phase13_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
+    from src.portfolio.phase13_policy import apply_phase13_defaults as _p13
+
+    return _p13(run_config)
+
+
+def apply_beat_spy_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
+    from src.portfolio.beat_spy_policy import apply_beat_spy_defaults as _bs
+
+    return _bs(run_config)
+

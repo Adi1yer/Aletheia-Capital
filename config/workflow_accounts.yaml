@@ -1,69 +1,68 @@
-# One GitHub workflow → one logical sleeve. Multiple sleeves may share one physical paper account
-# (Alpaca limit: 3 paper accounts per email). See account_group + env_prefix.
+# Single paper account (Beat SPY). All Alpaca workflows share ALPACA_* env vars.
+# Satellite sleeves disabled until separate accounts are provisioned again.
 workflows:
   weekly-scan:
     broker: alpaca
     env_prefix: ALPACA
     snapshot_subdir: stock
     data_dir: data/performance
-    account_group: equity
+    account_group: primary
     enabled: true
-    label: Equity multi-agent
+    label: Beat SPY equity book
 
   biotech-catalyst:
     broker: alpaca
-    env_prefix: BIOTECH_ALPACA
+    env_prefix: ALPACA
     snapshot_subdir: biotech
     data_dir: data/biotech
-    account_group: biotech
-    enabled: true
-    label: Biotech catalyst
+    account_group: primary
+    enabled: false
+    label: Biotech catalyst (disabled — single account)
 
-  # --- Shared multi-sleeve paper account (hedge + options + congressional + macro + crypto) ---
   hedge-weekly:
     broker: alpaca
-    env_prefix: MULTI_SLEEVE_ALPACA
+    env_prefix: ALPACA
     snapshot_subdir: multi_sleeve
     data_dir: data/hedge
-    account_group: multi_sleeve
-    enabled: true
-    label: Beta hedge overlay
+    account_group: primary
+    enabled: false
+    label: Beta hedge overlay (disabled)
 
   options-income:
     broker: alpaca
-    env_prefix: MULTI_SLEEVE_ALPACA
+    env_prefix: ALPACA
     snapshot_subdir: multi_sleeve
     data_dir: data/options_income
-    account_group: multi_sleeve
-    enabled: true
-    label: Options vol income
+    account_group: primary
+    enabled: false
+    label: Options vol income (disabled)
 
   congressional:
     broker: alpaca
-    env_prefix: MULTI_SLEEVE_ALPACA
+    env_prefix: ALPACA
     snapshot_subdir: multi_sleeve
     data_dir: data/congressional
-    account_group: multi_sleeve
-    enabled: true
-    label: Congressional trades
+    account_group: primary
+    enabled: false
+    label: Congressional trades (disabled)
 
   macro-etf:
     broker: alpaca
-    env_prefix: MULTI_SLEEVE_ALPACA
+    env_prefix: ALPACA
     snapshot_subdir: multi_sleeve
     data_dir: data/macro_etf
-    account_group: multi_sleeve
-    enabled: true
-    label: Macro ETF rotation
+    account_group: primary
+    enabled: false
+    label: Macro ETF rotation (disabled)
 
   crypto-weekly:
     broker: alpaca
-    env_prefix: MULTI_SLEEVE_ALPACA
+    env_prefix: ALPACA
     snapshot_subdir: multi_sleeve
     data_dir: data/crypto
-    account_group: multi_sleeve
-    enabled: true
-    label: Crypto momentum
+    account_group: primary
+    enabled: false
+    label: Crypto momentum (disabled)
 
   forex-weekly:
     broker: ibkr

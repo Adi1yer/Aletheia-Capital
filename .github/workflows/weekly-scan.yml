@@ -9,7 +9,7 @@ on:
 jobs:
   weekly-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 480
+    timeout-minutes: 600
 
     steps:
       - name: Checkout code
@@ -39,7 +39,9 @@ jobs:
         uses: actions/cache/restore@v4
         id: perf_cache_restore
         with:
-          path: data/performance
+          path: |
+            data/performance
+            data/cache
           key: perf-${{ github.repository }}-main
           restore-keys: |
             perf-${{ github.repository }}-
@@ -104,19 +106,18 @@ jobs:
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: |
           poetry run python weekly_scan_rebalancing.py \
-            --run-profile ci-full \
+            --run-profile beat-spy-10k \
             --agent-tier-mode tiered \
-            --max-stocks 500 \
+            --max-stocks 400 \
             --stop-loss-pct 0.08 \
-            --enable-covered-calls \
             --execute \
+            --enable-covered-calls \
             --enable-cash-rotation --cash-rotation-min-edge 12 \
-            --max-cash-rotation-sells 3 \
-            --enable-cash-secured-puts --min-csp-score 45 --max-csp-tickers 2 --max-csp-collateral-pct 0.10 \
-            --min-csp-premium-usd 75 --min-csp-annualized-yield-pct 3.0 \
-            --max-position-pct 0.20 --max-sector-pct 0.35 \
-            --regime-mode auto \
-            --use-portfolio-optimizer
+            --max-cash-rotation-sells 1 \
+            --max-position-pct 0.10 --max-sector-pct 0.30 \
+            --min-buy-confidence 62 --min-sell-confidence 55 \
+            --cash-buffer-pct 0.04 --max-buy-tickers 12 \
+            --regime-mode auto
 
       - name: Post-run ops orchestrator
         if: always()
@@ -142,7 +143,9 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: data/performance
+          path: |
+            data/performance
+            data/cache
           key: perf-${{ github.repository }}-main
 
       - name: Save scan run cache

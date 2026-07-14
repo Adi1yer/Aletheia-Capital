@@ -13,11 +13,16 @@ def build_go_no_go_report(results: Dict[str, Any]) -> Dict[str, Any]:
 
     slo = results.get("slo") or {}
     checks = slo.get("checks") or {}
-    hard_fail = any(not checks.get(k, True) for k in HARD_SLO_CHECKS)
+    hard_names = set(slo.get("hard_checks") or HARD_SLO_CHECKS)
+    hard_fail = any(not checks.get(k, True) for k in hard_names)
     if hard_fail:
         blockers.append("slo_hard_breach")
     elif not slo.get("ok", True):
         warnings.append("slo_soft_breach")
+    if checks.get("cash_floor_ok") is False:
+        warnings.append("cash_floor_breach")
+    if checks.get("concentration_ok") is False:
+        warnings.append("concentration_breach")
 
     pretrade = results.get("pretrade_simulation") or {}
     if bool(pretrade.get("hard_block")):

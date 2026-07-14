@@ -1,8 +1,7 @@
 name: Congressional Trades Weekly
 
 on:
-  schedule:
-    - cron: "0 17 * * 5"
+  # Disabled while running a single shared paper account (Beat SPY). Manual only.
   workflow_dispatch:
 
 jobs:

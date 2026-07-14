@@ -145,14 +145,33 @@ class StockUniverse:
         tickers: List[str],
         as_of: Optional[str] = None,
         max_workers: int = 24,
+        *,
+        fetch_limit: Optional[int] = None,
     ) -> List[str]:
         """
-        Rank tickers by market cap (desc) using our data provider's financial metrics.
+        Rank tickers by market cap (desc) using cached + live financial metrics.
         Skips tickers with missing market cap.
         """
         if not tickers:
             return []
         as_of = as_of or datetime.now().strftime("%Y-%m-%d")
+        from src.data.market_cap_cache import bulk_record, lookup_cached_market_cap
+
+        scored: List[Tuple[str, float]] = []
+        need_fetch: List[str] = []
+        for t in tickers:
+            cached = lookup_cached_market_cap(t)
+            if cached is not None:
+                scored.append((t, float(cached)))
+            else:
+                need_fetch.append(t)
+
+        # Progressive fetch: only resolve enough uncached names for a large ranked pool.
+        # Avoids re-pricing the entire US tape every week (timeout mitigation for N=1000).
+        if fetch_limit is not None and fetch_limit > 0:
+            # Prefer names not yet scored; cap live fetches.
+            remaining_slots = max(0, int(fetch_limit) - len(scored))
+            need_fetch = need_fetch[: max(remaining_slots, int(fetch_limit))]
 
         def fetch_mc(t: str) -> Tuple[str, float]:
             try:
@@ -164,14 +183,20 @@ class StockUniverse:
             except Exception:
                 return (t, 0.0)
 
-        scored: List[Tuple[str, float]] = []
-        # Use parallel calls; provider is cached, so this becomes cheaper over time.
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(fetch_mc, t): t for t in tickers}
-            for fut in as_completed(futures):
-                t, mc = fut.result()
-                if mc > 0:
-                    scored.append((t, mc))
+        fetched: Dict[str, float] = {}
+        if need_fetch:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(fetch_mc, t): t for t in need_fetch}
+                for fut in as_completed(futures):
+                    t, mc = fut.result()
+                    if mc > 0:
+                        scored.append((t, mc))
+                        fetched[t] = mc
+            if fetched:
+                try:
+                    bulk_record(fetched)
+                except Exception:
+                    pass
 
         scored.sort(key=lambda x: x[1], reverse=True)
         return [t for t, _ in scored]
@@ -290,16 +315,23 @@ class StockUniverse:
         """
         Get the trading universe (stable sources only).
 
-        For weekly scans, this defaults to **top N by market cap** (N=max_stocks) using S&P 500
-        as the candidate set for speed/stability, then applies liquidity checks only on that ranked subset.
+        For weekly scans, this defaults to **top N by market cap** (N=max_stocks) from the
+        broad US tradable list (full market when requested), then liquidity-filters that ranked subset.
+        Market-cap lookups are cached (~7d) so scaling to ~1000 names does not re-fetch the full tape.
         """
         if max_stocks is not None and max_stocks > 0 and rank_by_market_cap:
-            candidates = self._get_sp500_candidates()
+            # Prefer full US list so N can exceed S&P 500 (~505). Fall back to S&P if empty.
+            if full_market:
+                candidates = self.get_full_us_market() or self.get_all_us_stocks()
+            else:
+                candidates = self.get_all_us_stocks()
             if not candidates:
-                # As a last resort, fall back to the full list (still no hardcoded tickers).
-                candidates = self.get_full_us_market() if full_market else self.get_all_us_stocks()
+                candidates = self._get_sp500_candidates()
 
-            ranked = self._rank_by_market_cap(candidates)
+            # Fetch enough MC samples to cover top-N after liquidity attrition (~1.5–2x headroom).
+            desired = int(max_stocks)
+            fetch_limit = max(desired * 3, desired + 500)
+            ranked = self._rank_by_market_cap(candidates, fetch_limit=fetch_limit)
             if not ranked:
                 tickers = []
             else:

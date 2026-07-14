@@ -17,7 +17,7 @@ import structlog
 import yfinance as yf
 
 from src.fund.orchestrator import run_orchestrator
-from src.sleeves.common import append_ledger, init_workflow_broker
+from src.sleeves.common import append_ledger, append_skip, init_workflow_broker
 
 logger = structlog.get_logger()
 
@@ -45,11 +45,16 @@ def main() -> int:
     args = p.parse_args()
 
     run_orchestrator()
+    broker = None
     try:
         broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
     except RuntimeError as e:
         logger.error(str(e))
+        append_skip(WORKFLOW_ID, "broker_init_failed", error=str(e))
         return 1
+    if broker is None and args.execute:
+        append_skip(WORKFLOW_ID, "broker_unavailable")
+        return 0
     candidates: List[Dict[str, Any]] = []
     for t in WATCHLIST:
         iv = _iv_rank(t)

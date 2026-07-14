@@ -1,0 +1,13 @@
+{
+  "notes": "Phase 13 sleeve capital targets (paper). Core weekly book is separate from satellites; targets guide risk budgets / digests.",
+  "cash_buffer_core": 0.12,
+  "targets": {
+    "weekly-scan": 0.70,
+    "options-income": 0.10,
+    "hedge-weekly": 0.10,
+    "biotech-catalyst": 0.05,
+    "crypto-weekly": 0.025,
+    "macro-etf": 0.015,
+    "congressional": 0.01
+  }
+}

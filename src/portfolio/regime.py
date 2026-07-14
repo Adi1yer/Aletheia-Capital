@@ -67,7 +67,7 @@ def detect_regime(
 
 
 def apply_regime_to_run_config(run_config: Dict[str, Any], regime: Dict[str, Any]) -> Dict[str, Any]:
-    """Adjust rebalance knobs when regime_mode is auto."""
+    """Adjust rebalance knobs when regime_mode is auto. Phase 13 adds hard risk-off cash targets."""
     try:
         from src.portfolio.regime_intelligence import apply_hysteresis, route_policy_by_regime
 
@@ -85,6 +85,30 @@ def apply_regime_to_run_config(run_config: Dict[str, Any], regime: Dict[str, Any
     base_sell = int(run_config.get("min_sell_confidence", 60))
     base_max_buy = int(run_config.get("max_buy_tickers", 30))
     base_buffer = float(run_config.get("cash_buffer_pct", 0.03))
+
+    if bool(run_config.get("phase13_enabled", False)):
+        try:
+            from src.portfolio.phase13_policy import (
+                CASH_BUFFER_RISK_OFF,
+                resolve_cash_buffer_pct,
+            )
+
+            run_config["cash_buffer_pct"] = resolve_cash_buffer_pct(
+                regime_mode=str(mode),
+                base_buffer=base_buffer,
+                risk_off_buffer=float(run_config.get("cash_buffer_risk_off_pct", CASH_BUFFER_RISK_OFF)),
+            )
+            if mode == "harvest":
+                # Soft knob nudge on top of hard gate in manager
+                run_config["min_buy_confidence"] = min(100, base_buy + 5)
+                run_config["min_sell_confidence"] = max(0, base_sell - 3)
+                run_config["max_buy_tickers"] = max(2, min(base_max_buy, 3))
+            elif mode == "accumulate":
+                # Do NOT lower cash below Phase 13 operating buffer
+                run_config["min_buy_confidence"] = max(0, base_buy - 1)
+            return run_config
+        except Exception:
+            pass
 
     if mode == "harvest":
         run_config["min_buy_confidence"] = min(100, base_buy + 3)

@@ -48,6 +48,17 @@ def best_readout_date(trial: TrialSummary) -> Optional[date]:
     return None
 
 
+def is_ghost_catalyst(trial: TrialSummary, today: date) -> bool:
+    """Past primary completion with no results posted = ghost / information-asymmetry trap."""
+    d = best_readout_date(trial)
+    if d is None or d >= today:
+        return False
+    if bool(getattr(trial, "has_results", False)):
+        return False
+    posted = parse_iso_date(getattr(trial, "results_first_posted", None) or "")
+    return posted is None
+
+
 def trial_in_readout_window(
     trial: TrialSummary,
     today: date,
@@ -62,9 +73,13 @@ def trial_in_readout_window(
     This captures "results expected soon" and "recently passed primary completion
     but data may not be public yet" without going back years.
 
+    Ghost catalysts (past completion, no results posted) are excluded.
+
     If forward_days_cap is set, the upper bound is today + min(forward_days, forward_days_cap)
     (tighter near-term horizon for discovery).
     """
+    if is_ghost_catalyst(trial, today):
+        return False
     d = best_readout_date(trial)
     if d is None:
         return False

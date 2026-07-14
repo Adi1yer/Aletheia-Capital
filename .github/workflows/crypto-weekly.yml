@@ -1,8 +1,7 @@
 name: Crypto Weekly
 
 on:
-  schedule:
-    - cron: "30 17 * * 1"
+  # Disabled while running a single shared paper account (Beat SPY). Manual only.
   workflow_dispatch:
 
 jobs:

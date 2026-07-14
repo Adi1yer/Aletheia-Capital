@@ -1,7 +1,7 @@
 """Weekly trading pipeline"""
 
 import os
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Set
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dateutil.relativedelta import relativedelta
@@ -108,6 +108,12 @@ class TradingPipeline:
         """
         run_config = run_config or {}
         run_config.setdefault("execute", execute)
+        try:
+            from src.trading.run_config import apply_phase13_defaults
+
+            run_config = apply_phase13_defaults(run_config)
+        except Exception:
+            pass
         run_start = time.time()
         logger.info("Starting weekly trading cycle", ticker_count=len(tickers), execute=execute)
 
@@ -133,6 +139,21 @@ class TradingPipeline:
                 recent_orders = self.broker.get_recent_orders(limit=20)
             except Exception as e:
                 logger.warning("Could not fetch orders from broker", error=str(e))
+            if (
+                execute
+                and bool(run_config.get("phase13_cancel_stale_orders", False))
+                and self.broker is not None
+                and hasattr(self.broker, "cancel_stale_orders")
+            ):
+                try:
+                    hygiene = self.broker.cancel_stale_orders(
+                        max_age_hours=float(run_config.get("stale_order_max_age_hours", 48) or 48)
+                    )
+                    run_config["stale_order_hygiene"] = hygiene
+                    if hygiene.get("cancelled"):
+                        open_orders = self.broker.get_open_orders(limit=50)
+                except Exception as e:
+                    logger.warning("Stale order hygiene failed", error=str(e))
         else:
             portfolio = Portfolio(cash=0.0, positions={})
             open_orders = []
@@ -229,7 +250,18 @@ class TradingPipeline:
             "cache_restore_hit_scan": os.getenv("CACHE_HIT_SCAN") == "true",
             "s3_runs_restored": 0,
             "existing_feedback_on_disk": False,
+            "prev_equity": None,
+            "prev_run_id": None,
+            "do_nothing_return_pct": None,
         }
+        try:
+            from src.performance.prior_run import load_previous_run_context
+
+            prior = load_previous_run_context(scan_cache, current_run_id=None)
+            learning_context["prev_equity"] = prior.get("prev_equity")
+            learning_context["prev_run_id"] = prior.get("prev_run_id")
+        except Exception as e:
+            logger.warning("Prior-run context load failed", error=str(e))
         try:
             from src.backtesting.feedback import existing_feedback_loaded
             from src.scan_cache.remote_store import is_configured, restore_recent_runs
@@ -314,6 +346,65 @@ class TradingPipeline:
                 floors[lane] = max(1, int(max_llm_calls * 0.1 * (count / max(1, len(active_agent_keys)))))
             self._llm_budget["per_lane"] = dict(floors)
             self._llm_budget["used"] = 0
+        # Phase 13 timeout mitigation: extended agents only scan top MC slice + holdings;
+        # core agents still cover the full 1000-name universe.
+        self._triage_deep_tickers = None
+        self._triage_core_keys = None
+        self._beat_spy_ranked = None
+        if bool(run_config.get("beat_spy_agent_triage")):
+            try:
+                from src.alpha.candidate_set import build_candidate_set
+
+                held = [
+                    t
+                    for t, p in (portfolio.positions or {}).items()
+                    if int(getattr(p, "long", 0) or 0) > 0
+                ]
+                deep, ranked = build_candidate_set(
+                    tickers,
+                    getattr(self, "_ticker_dossiers", {}) or {},
+                    top_n=int(run_config.get("beat_spy_factor_top_n", 100)),
+                    held=set(held),
+                )
+                self._triage_deep_tickers = set(deep)
+                self._beat_spy_ranked = ranked
+                import json
+                from pathlib import Path
+
+                tiers = json.loads(Path("config/agents_tiers.json").read_text(encoding="utf-8"))
+                self._triage_core_keys = set(tiers.get("core") or [])
+                logger.info(
+                    "Beat SPY factor triage enabled",
+                    deep=len(deep),
+                    full=len(tickers),
+                )
+            except Exception as e:
+                logger.warning("Beat SPY triage setup failed", error=str(e))
+        elif bool(run_config.get("phase13_universe_triage", False)) and len(tickers) > 600:
+            try:
+                import json
+                from pathlib import Path
+
+                tiers = json.loads(Path("config/agents_tiers.json").read_text(encoding="utf-8"))
+                self._triage_core_keys = set(tiers.get("core") or [])
+                held = [
+                    t
+                    for t, p in (portfolio.positions or {}).items()
+                    if int(getattr(p, "long", 0) or 0) > 0
+                ]
+                deep = list(dict.fromkeys(list(held) + list(tickers[:500])))
+                self._triage_deep_tickers = set(deep)
+                logger.info(
+                    "Universe triage enabled",
+                    deep=len(deep),
+                    full=len(tickers),
+                    core_agents=len(self._triage_core_keys),
+                )
+            except Exception as e:
+                logger.warning("Universe triage setup failed", error=str(e))
+                self._triage_deep_tickers = None
+                self._triage_core_keys = None
+
         try:
             agent_signals = self._run_agents(
                 tickers, start_date, end_date, active_agent_keys=active_agent_keys
@@ -420,10 +511,41 @@ class TradingPipeline:
         except Exception as e:
             logger.warning("Learned policy apply failed", error=str(e))
 
+        try:
+            from src.trading.run_config import apply_phase13_defaults, apply_beat_spy_defaults
+            from src.performance.auto_throttle import apply_throttle_to_run_config
+
+            run_config = apply_phase13_defaults(run_config)
+            run_config = apply_beat_spy_defaults(run_config)
+            run_config = apply_throttle_to_run_config(run_config)
+        except Exception as e:
+            logger.warning("Phase 13/Beat SPY defaults/throttle failed", error=str(e))
+
         # 6. Get agent weights (active agents only for aggregation)
         regime_mode = (run_config.get("regime") or {}).get("mode")
         all_weights = self.registry.get_weights(regime_mode=regime_mode)
         agent_weights = {k: all_weights[k] for k in active_agent_keys if k in all_weights}
+
+        beat_spy_mu: Dict[str, float] = {}
+        beat_spy_veto: Set[str] = set()
+        if bool(run_config.get("beat_spy_mode")):
+            try:
+                from src.alpha.agent_overlay import apply_agent_overlay
+                from src.alpha.factors import rank_universe
+
+                dossiers = getattr(self, "_ticker_dossiers", {}) or {}
+                ranked = getattr(self, "_beat_spy_ranked", None) or rank_universe(tickers, dossiers)
+                agg_by_ticker = {
+                    t: self.portfolio_manager._aggregate_signals(t, agent_signals, agent_weights)
+                    for t in tickers
+                }
+                beat_spy_mu, beat_spy_veto, overlay_diag = apply_agent_overlay(
+                    ranked,
+                    agg_by_ticker,
+                )
+                run_config["beat_spy_overlay"] = overlay_diag
+            except Exception as e:
+                logger.warning("Beat SPY agent overlay failed", error=str(e))
 
         # 7. Generate portfolio decisions
         enable_cc = bool(run_config.get("enable_covered_calls", False))
@@ -490,6 +612,19 @@ class TradingPipeline:
                 ),
                 max_short_tickers=int(run_config.get("max_short_tickers", 5)),
                 use_portfolio_optimizer=bool(run_config.get("use_portfolio_optimizer", False)),
+                phase13_hard_risk_off=bool(run_config.get("phase13_hard_risk_off", False)),
+                phase13_special_opportunity=bool(run_config.get("phase13_special_opportunity", False)),
+                phase13_book_stops=bool(run_config.get("phase13_book_stops", False)),
+                phase13_threshold_rebalance=bool(run_config.get("phase13_threshold_rebalance", False)),
+                phase13_force_cc_lots=bool(run_config.get("phase13_force_cc_lots", False)),
+                phase13_net_edge=bool(run_config.get("phase13_net_edge", False)),
+                beat_spy_mu=beat_spy_mu or None,
+                beat_spy_veto=beat_spy_veto or None,
+                book_stop_loss_pct=float(run_config.get("book_stop_loss_pct", 0.08)),
+                dead_money_weeks=int(run_config.get("dead_money_weeks", 4)),
+                rebalance_weight_drift=float(run_config.get("rebalance_weight_drift", 0.04)),
+                cash_floor_pct=float(run_config.get("cash_floor_pct", 0.05)),
+                regime=dict(run_config.get("regime") or {}),
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(
@@ -937,7 +1072,76 @@ class TradingPipeline:
             "csp_results": csp_results,
             "regime": run_config.get("regime") or {},
             "reconciliation": reconciliation,
+            "phase13": {
+                "enabled": bool(run_config.get("phase13_enabled")),
+                "auto_throttle": run_config.get("auto_throttle") or {},
+                "special_opportunity_tickers": (decision_diagnostics or {}).get(
+                    "special_opportunity_tickers"
+                )
+                or [],
+                "stale_order_hygiene": run_config.get("stale_order_hygiene") or {},
+            },
         }
+        try:
+            from src.performance.benchmark_report import enrich_results_benchmark
+
+            cur_prices = {
+                t: float((risk_analysis.get(t) or {}).get("current_price") or 0)
+                for t in tickers
+            }
+            # Refresh do-nothing with current marks before save completes
+            try:
+                from src.performance.prior_run import load_previous_run_context
+
+                prior2 = load_previous_run_context(
+                    scan_cache,
+                    current_run_id=run_id,
+                    current_prices=cur_prices,
+                )
+                learning_context["do_nothing_return_pct"] = prior2.get("do_nothing_return_pct")
+                if prior2.get("prev_equity") is not None:
+                    learning_context["prev_equity"] = prior2.get("prev_equity")
+                if prior2.get("prev_run_id"):
+                    learning_context["prev_run_id"] = prior2.get("prev_run_id")
+                results["learning_context"] = learning_context
+            except Exception:
+                pass
+            enrich_results_benchmark(
+                results,
+                data_provider=self.data_provider,
+                scan_cache=scan_cache,
+                current_prices=cur_prices,
+            )
+            if bool(run_config.get("beat_spy_mode")):
+                from src.performance.attribution import build_attribution_report
+                from src.performance.beat_spy_scorecard import build_beat_spy_scorecard
+
+                port = results.get("portfolio") or {}
+                equity = float(port.get("total_equity") or port.get("equity") or 0.0)
+                prev_eq = (results.get("learning_context") or {}).get("prev_equity")
+                attr = build_attribution_report(
+                    equity_now=equity,
+                    equity_prev=float(prev_eq) if prev_eq is not None else None,
+                    data_provider=self.data_provider,
+                )
+                bench = (results.get("learning_context") or {}).get("benchmark") or {}
+                scorecard = build_beat_spy_scorecard(
+                    run_date=end_date,
+                    equity=equity,
+                    benchmark=bench,
+                    attribution=attr,
+                )
+                results["beat_spy"] = {"attribution": attr, "scorecard": scorecard}
+                if results.get("learning_context") is not None:
+                    results["learning_context"]["beat_spy_scorecard"] = scorecard
+        except Exception as e:
+            logger.warning("Benchmark/auto-throttle failed", error=str(e))
+        try:
+            from src.ops.phase13_slo_warmup import ensure_warmup_started
+
+            ensure_warmup_started()
+        except Exception:
+            pass
         try:
             from src.trading.provenance import build_provenance
 
@@ -1246,6 +1450,10 @@ class TradingPipeline:
     ) -> Dict[str, AgentSignal]:
         """Run a single agent on tickers"""
         dossiers = getattr(self, "_ticker_dossiers", {}) or {}
+        deep = getattr(self, "_triage_deep_tickers", None)
+        core_keys = getattr(self, "_triage_core_keys", None)
+        if deep and core_keys and agent_key not in core_keys:
+            tickers = [t for t in tickers if t in deep] or list(tickers)[:50]
         analyze_kw = {
             "dossiers": dossiers,
             "agent_key": agent_key,

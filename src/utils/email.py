@@ -906,6 +906,42 @@ class EmailNotifier:
                 text.append(f"Executed orders: this run={curr_exec}, previous={prev_exec}")
             text.append("")
 
+        bench = results.get("benchmark") or {}
+        if bench:
+            text.append("BENCHMARK (ACTIVE RETURN)")
+            text.append("-" * 80)
+            if bench.get("equity_delta_pct") is not None:
+                text.append(f"Book Δ: {float(bench['equity_delta_pct']):+.2f}%")
+            if bench.get("spy_return_pct") is not None:
+                text.append(f"SPY Δ: {float(bench['spy_return_pct']):+.2f}%")
+            if bench.get("do_nothing_return_pct") is not None:
+                text.append(f"Do-nothing (prior book) Δ: {float(bench['do_nothing_return_pct']):+.2f}%")
+            if bench.get("active_vs_spy_pct") is not None:
+                text.append(f"Active vs SPY: {float(bench['active_vs_spy_pct']):+.2f} pp")
+            if bench.get("active_vs_do_nothing_pct") is not None:
+                text.append(f"Active vs do-nothing: {float(bench['active_vs_do_nothing_pct']):+.2f} pp")
+            thr = results.get("auto_throttle") or (results.get("phase13") or {}).get("auto_throttle") or {}
+            if thr:
+                text.append(
+                    f"Auto-throttle: {'ON' if thr.get('throttled') else 'off'} "
+                    f"(neg weeks {thr.get('negative_weeks', 0)}/{thr.get('threshold_weeks', 8)})"
+                )
+            text.append("")
+
+        p13 = results.get("phase13") or {}
+        if p13.get("enabled") or p13.get("special_opportunity_tickers"):
+            text.append("PHASE 13 CONTROLS")
+            text.append("-" * 80)
+            specs = p13.get("special_opportunity_tickers") or []
+            if specs:
+                text.append(f"Special opportunities: {', '.join(str(x) for x in specs)}")
+            dd = results.get("decision_diagnostics") or {}
+            if dd.get("risk_off_active"):
+                text.append("Hard risk-off: active (ordinary buys blocked)")
+            if dd.get("book_stop_sells"):
+                text.append(f"Book-stop sells: {dd.get('book_stop_sells')}")
+            text.append("")
+
         # AI-generated weekly outlook
         if outlook:
             text.append("WEEKLY OUTLOOK")
@@ -1525,6 +1561,56 @@ class EmailNotifier:
             </div>
             """
 
+        bench = results.get("benchmark") or {}
+        if bench:
+            html += """
+            <div class="section">
+                <h2>Benchmark (active return)</h2>
+                <table>
+                    <tr><th>Metric</th><th>Value</th></tr>
+            """
+            if bench.get("equity_delta_pct") is not None:
+                html += f"<tr><td>Book Δ</td><td>{float(bench['equity_delta_pct']):+.2f}%</td></tr>"
+            if bench.get("spy_return_pct") is not None:
+                html += f"<tr><td>SPY Δ</td><td>{float(bench['spy_return_pct']):+.2f}%</td></tr>"
+            if bench.get("do_nothing_return_pct") is not None:
+                html += (
+                    f"<tr><td>Do-nothing (prior book) Δ</td>"
+                    f"<td>{float(bench['do_nothing_return_pct']):+.2f}%</td></tr>"
+                )
+            if bench.get("active_vs_spy_pct") is not None:
+                html += f"<tr><td>Active vs SPY</td><td>{float(bench['active_vs_spy_pct']):+.2f} pp</td></tr>"
+            if bench.get("active_vs_do_nothing_pct") is not None:
+                html += (
+                    f"<tr><td>Active vs do-nothing</td>"
+                    f"<td>{float(bench['active_vs_do_nothing_pct']):+.2f} pp</td></tr>"
+                )
+            thr = results.get("auto_throttle") or (results.get("phase13") or {}).get("auto_throttle") or {}
+            if thr:
+                html += (
+                    f"<tr><td>Auto-throttle</td><td>"
+                    f"{'ON' if thr.get('throttled') else 'off'} "
+                    f"(neg weeks {thr.get('negative_weeks', 0)}/{thr.get('threshold_weeks', 8)})"
+                    f"</td></tr>"
+                )
+            html += "</table></div>"
+
+        p13 = results.get("phase13") or {}
+        dd = results.get("decision_diagnostics") or {}
+        if p13.get("enabled") or dd.get("risk_off_active") or p13.get("special_opportunity_tickers"):
+            specs = ", ".join(str(x) for x in (p13.get("special_opportunity_tickers") or [])) or "none"
+            html += f"""
+            <div class="section">
+                <h2>Phase 13 controls</h2>
+                <p>
+                    <strong>Risk-off:</strong> {"active" if dd.get("risk_off_active") else "inactive"}<br/>
+                    <strong>Special opportunities:</strong> {html_escape(specs)}<br/>
+                    <strong>Book-stop sells:</strong> {int(dd.get("book_stop_sells") or 0)}<br/>
+                    <strong>Dead-money sells:</strong> {int(dd.get("dead_money_sells") or 0)}
+                </p>
+            </div>
+            """
+
         # AI-generated weekly outlook
         if outlook:
             html += f"""
@@ -1686,6 +1772,12 @@ class EmailNotifier:
             delta = past_perf["curr_equity"] - past_perf["prev_equity"]
             pct = (delta / past_perf["prev_equity"] * 100) if past_perf["prev_equity"] else 0.0
             lines.append(f"- Week-over-week equity change: {delta:+.2f} ({pct:+.2f}%)")
+
+        bench = results.get("benchmark") or {}
+        if bench.get("active_vs_spy_pct") is not None:
+            lines.append(f"- Active return vs SPY: {float(bench['active_vs_spy_pct']):+.2f} pp")
+        if bench.get("do_nothing_return_pct") is not None:
+            lines.append(f"- Do-nothing prior book: {float(bench['do_nothing_return_pct']):+.2f}%")
 
         prompt = "\n".join(lines)
 

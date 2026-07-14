@@ -15,7 +15,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 import structlog
 
 from src.fund.orchestrator import run_orchestrator
-from src.sleeves.common import append_ledger, init_workflow_broker
+from src.sleeves.common import append_ledger, append_skip, init_workflow_broker
 from src.trading.crypto_pipeline import CryptoTradingPipeline, DEFAULT_CRYPTO_TICKERS
 
 logger = structlog.get_logger()
@@ -33,7 +33,11 @@ def main() -> int:
         broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
     except RuntimeError as e:
         logger.error(str(e))
+        append_skip(WORKFLOW_ID, "broker_init_failed", error=str(e))
         return 1
+    if broker is None and args.execute:
+        append_skip(WORKFLOW_ID, "broker_unavailable")
+        return 0
 
     pipeline = CryptoTradingPipeline()
     results = pipeline.run(tickers=DEFAULT_CRYPTO_TICKERS, execute=args.execute)

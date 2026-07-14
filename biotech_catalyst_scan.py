@@ -546,6 +546,39 @@ def main() -> int:
         bool(active_policy.get("llm_gated_arm_enabled", True))
         and not args.no_llm_gated_arm
     )
+    # Phase 13: freeze mechanical until enough closed trades for learning.
+    try:
+        from src.biotech.policy_learning import DISCOVERY_MIN_CLOSED_TRADES, closed_rows
+        from src.performance.auto_throttle import apply_throttle_to_run_config
+
+        n_closed = len(closed_rows(weeks=24))
+        thr = apply_throttle_to_run_config({})
+        force_off = bool((thr.get("auto_throttle") or {}).get("throttled")) or bool(
+            thr.get("biotech_mechanical_force_off")
+        )
+        if force_off or n_closed < int(DISCOVERY_MIN_CLOSED_TRADES):
+            if mech_enabled:
+                logger.info(
+                    "Mechanical arm hard-off (Phase 13)",
+                    closed=n_closed,
+                    need=int(DISCOVERY_MIN_CLOSED_TRADES),
+                    auto_throttle=force_off,
+                )
+            mech_enabled = False
+    except Exception as e:
+        logger.warning("Mechanical arm sample gate failed", error=str(e))
+        mech_enabled = False
+
+    # One-time / ongoing ghost prune of open straddles with past no-topline catalysts
+    if paper_execute and broker:
+        try:
+            from src.biotech.ghost_prune import prune_ghost_open_straddles
+
+            pruned = prune_ghost_open_straddles(broker, close_legs=True)
+            if pruned:
+                logger.info("Ghost straddles pruned", count=len(pruned))
+        except Exception as e:
+            logger.warning("Ghost prune failed", error=str(e))
 
     past_trades_ctx = format_past_trades_context(weeks=12)
     policy_prompt = policy_summary_for_prompt(policy_result)
@@ -707,36 +740,55 @@ def main() -> int:
 
         exec_arms: Dict[str, Any] = {}
         if paper_execute and broker:
-            if mech_enabled:
-                mech_res, _ = _execute_arm(
-                    "mechanical",
-                    broker,
-                    snap,
-                    analysis,
-                    arm_budget,
-                    gates_ok=True,
-                    gate_reasons=[],
-                    run_id=run_id,
-                    run_date=run_date,
-                    catalyst=catalyst,
+            from src.biotech.thesis_ledger import open_entries
+
+            max_open = int(active_policy.get("max_open_straddles", 5) or 5)
+            open_n = len(open_entries())
+            if open_n >= max_open:
+                logger.info(
+                    "Skip new straddles: open cap reached",
+                    open=open_n,
+                    max_open=max_open,
+                    ticker=t,
                 )
-                if mech_res:
-                    exec_arms["mechanical"] = mech_res
-            if llm_arm_enabled:
-                llm_res, _ = _execute_arm(
-                    "llm_gated",
-                    broker,
-                    snap,
-                    analysis,
-                    arm_budget,
-                    gates_ok=gates_ok,
-                    gate_reasons=gate_reasons,
-                    run_id=run_id,
-                    run_date=run_date,
-                    catalyst=catalyst,
-                )
-                if llm_res:
-                    exec_arms["llm_gated"] = llm_res
+            else:
+                # Prefer LLM-gated live fill when both arms enabled (avoid double same structure).
+                run_mech = mech_enabled
+                run_llm = llm_arm_enabled
+                if run_mech and run_llm and gates_ok:
+                    run_mech = False
+                if run_mech:
+                    mech_res, _ = _execute_arm(
+                        "mechanical",
+                        broker,
+                        snap,
+                        analysis,
+                        arm_budget,
+                        gates_ok=True,
+                        gate_reasons=[],
+                        run_id=run_id,
+                        run_date=run_date,
+                        catalyst=catalyst,
+                    )
+                    if mech_res:
+                        exec_arms["mechanical"] = mech_res
+                        open_n += 1
+                if run_llm and open_n < max_open:
+                    llm_res, _ = _execute_arm(
+                        "llm_gated",
+                        broker,
+                        snap,
+                        analysis,
+                        arm_budget,
+                        gates_ok=gates_ok,
+                        gate_reasons=gate_reasons,
+                        run_id=run_id,
+                        run_date=run_date,
+                        catalyst=catalyst,
+                    )
+                    if llm_res:
+                        exec_arms["llm_gated"] = llm_res
+                        open_n += 1
 
         exec_result = exec_arms if exec_arms else None
 

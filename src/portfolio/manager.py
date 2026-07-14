@@ -149,6 +149,19 @@ class PortfolioManager:
         max_short_position_pct: float = 0.05,
         max_short_tickers: int = 5,
         use_portfolio_optimizer: bool = False,
+        phase13_hard_risk_off: bool = False,
+        phase13_special_opportunity: bool = False,
+        phase13_book_stops: bool = False,
+        phase13_threshold_rebalance: bool = False,
+        phase13_force_cc_lots: bool = False,
+        phase13_net_edge: bool = False,
+        beat_spy_mu: Optional[Dict[str, float]] = None,
+        beat_spy_veto: Optional[Set[str]] = None,
+        book_stop_loss_pct: float = 0.08,
+        dead_money_weeks: int = 4,
+        rebalance_weight_drift: float = 0.04,
+        cash_floor_pct: float = 0.05,
+        regime: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -162,6 +175,7 @@ class PortfolioManager:
         pending_orders_by_symbol = pending_orders_by_symbol or {}
         decisions: Dict[str, PortfolioDecision] = {}
         next_earnings_by_ticker = next_earnings_by_ticker or {}
+        regime = regime or {}
         diagnostics: Dict[str, Any] = {
             "ticker_count": len(tickers),
             "min_buy_confidence": int(min_buy_confidence),
@@ -190,6 +204,11 @@ class PortfolioManager:
             "buy_disagreement_flags": 0,
             "rotation_sell_tickers": [],
             "csp_skipped_economics": 0,
+            "book_stop_sells": 0,
+            "dead_money_sells": 0,
+            "risk_off_active": False,
+            "special_opportunity_tickers": [],
+            "threshold_skips": 0,
         }
         self._cash_rotation_reasons: Dict[str, str] = {}
         self._rotation_sell_details: List[Dict[str, Any]] = []
@@ -197,7 +216,15 @@ class PortfolioManager:
         from src.portfolio.wash_sale import blocked_tickers, record_sell
         from src.portfolio.sectors import get_sector
         from src.performance.weekly_ledger import position_open_dates
+        from src.portfolio.phase13_policy import (
+            filter_buys_for_risk_off,
+            hard_risk_off_active,
+            position_stop_triggered,
+            special_opp_budget_pct,
+        )
+        from src.portfolio.net_edge import load_scorecard_safe, net_edge_score
 
+        scorecard = load_scorecard_safe() if phase13_net_edge else {}
         position_open_dates_map = position_open_dates()
         wash_blocked = blocked_tickers(int(wash_sale_days))
         sector_value: Dict[str, float] = {}
@@ -213,6 +240,11 @@ class PortfolioManager:
                 sector_value[sec] = sector_value.get(sec, 0.0) + pos.long * px
         max_csp_collateral = float(equity) * float(max_csp_collateral_pct)
         csp_collateral_used = 0.0
+        risk_off = hard_risk_off_active(regime, {
+            "phase13_hard_risk_off": phase13_hard_risk_off,
+            "regime": regime,
+        })
+        diagnostics["risk_off_active"] = bool(risk_off)
 
         def _earnings_blocks_buy(t: str) -> bool:
             if earnings_blackout_days <= 0:
@@ -300,8 +332,50 @@ class PortfolioManager:
                     sell_quantities[ticker] = qty
                     proceeds += qty * price
 
-        # 2) Compute budget for buys + CC lot builds
+        # Phase 13: book-level stops and dead-money time exits (existing positions)
+        if phase13_book_stops:
+            for ticker in tickers:
+                if ticker in sell_quantities:
+                    continue
+                position = portfolio.get_position(ticker)
+                price = float(current_prices.get(ticker) or 0.0)
+                if not position or position.long <= 0 or price <= 0:
+                    continue
+                pending = pending_orders_by_symbol.get(ticker) or {}
+                pending_sell = int(pending.get("sell_qty", 0) or 0)
+                qty = max(0, int(position.long) - pending_sell)
+                if qty <= 0:
+                    continue
+                cost = float(getattr(position, "long_cost_basis", 0.0) or 0.0)
+                if position_stop_triggered(
+                    qty=qty, price=price, cost_basis=cost, stop_pct=book_stop_loss_pct
+                ):
+                    sell_quantities[ticker] = qty
+                    proceeds += qty * price
+                    diagnostics["book_stop_sells"] += 1
+                    self._cash_rotation_reasons[ticker] = (
+                        f"Book stop: price {price:.2f} vs cost {cost:.2f} "
+                        f"(<= -{float(book_stop_loss_pct)*100:.0f}%)"
+                    )
+                    continue
+                if not self._rotation_hold_elapsed(
+                    ticker, position_open_dates_map, int(dead_money_weeks)
+                ):
+                    continue
+                # Dead money: held through dead_money_weeks with no bullish edge and underwater
+                agg = aggregated_by_ticker.get(ticker) or {}
+                if cost > 0 and price < cost and int(agg.get("confidence") or 0) < int(min_buy_confidence):
+                    sell_quantities[ticker] = qty
+                    proceeds += qty * price
+                    diagnostics["dead_money_sells"] += 1
+                    self._cash_rotation_reasons[ticker] = (
+                        f"Dead money: held >={dead_money_weeks}w underwater without buy-grade conviction"
+                    )
+
+        # 2) Compute budget for buys + CC lot builds (respect absolute cash floor)
         buffer = max(0.0, float(equity) * float(cash_buffer_pct))
+        floor = max(0.0, float(equity) * float(cash_floor_pct))
+        buffer = max(buffer, floor)
         budget = max(0.0, float(portfolio.cash) + float(proceeds) - buffer)
 
         # 3) Score every ticker as buy OR covered-call OR CSP candidate
@@ -330,8 +404,12 @@ class PortfolioManager:
                 if ticker in wash_blocked:
                     diagnostics["wash_sale_blocks"] += 1
                 elif int(aggregated["confidence"]) >= eff_min:
-                    buy_candidates.append((ticker, int(aggregated["confidence"])))
-                    slotted = True
+                    if beat_spy_veto and ticker in beat_spy_veto:
+                        diagnostics["beat_spy_veto_blocks"] = diagnostics.get("beat_spy_veto_blocks", 0) + 1
+                        slotted = True
+                    else:
+                        buy_candidates.append((ticker, int(aggregated["confidence"])))
+                        slotted = True
             if not slotted and enable_covered_calls:
                 diagnostics["cc_scored_count"] += 1
                 cc_score = self._score_covered_call(ticker, agent_signals, agent_weights)
@@ -353,8 +431,68 @@ class PortfolioManager:
                     diagnostics["csp_skipped_economics"] += 1
 
         diagnostics["buy_candidates_pre_rank"] = len(buy_candidates)
-        buy_candidates.sort(key=lambda x: x[1], reverse=True)
+        # Rank by net-edge when enabled, else Beat SPY μ̂, else raw confidence
+        net_edges: Dict[str, float] = {}
+        if phase13_net_edge:
+            for t, conf in buy_candidates:
+                agg = aggregated_by_ticker.get(t) or {}
+                net_edges[t] = net_edge_score(
+                    confidence=int(conf),
+                    agent_details=list(agg.get("details") or []),
+                    scorecard=scorecard,
+                )
+            buy_candidates.sort(
+                key=lambda x: (float(net_edges.get(x[0], 0.0)), int(x[1])),
+                reverse=True,
+            )
+        elif beat_spy_mu:
+            buy_candidates.sort(
+                key=lambda x: (float(beat_spy_mu.get(x[0], -999.0)), int(x[1])),
+                reverse=True,
+            )
+        else:
+            buy_candidates.sort(key=lambda x: x[1], reverse=True)
         buy_candidates = buy_candidates[: max(0, int(max_buy_tickers))]
+
+        # Hard risk-off: only special opportunities may buy
+        if phase13_hard_risk_off and risk_off:
+            buy_candidates, specials = filter_buys_for_risk_off(
+                buy_candidates,
+                net_edges=net_edges if net_edges else {t: float(c) for t, c in buy_candidates},
+                risk_off=True,
+                allow_special=bool(phase13_special_opportunity),
+            )
+            diagnostics["special_opportunity_tickers"] = list(specials)
+            # Cap special-opp capital via tighter budget
+            cap_pct = special_opp_budget_pct(True)
+            budget = min(budget, float(equity) * float(cap_pct))
+        elif phase13_special_opportunity and not risk_off and buy_candidates:
+            # Tag specials for logging; they may dip operating buffer later via budget headroom
+            edges = net_edges if net_edges else {t: float(c) for t, c in buy_candidates}
+            top_edge = max(edges.values()) if edges else 0.0
+            from src.portfolio.phase13_policy import is_special_opportunity
+
+            specials = [
+                t
+                for t, c in buy_candidates
+                if is_special_opportunity(c, net_edge=float(edges.get(t, 0.0)), top_edge=top_edge)
+            ][:2]
+            diagnostics["special_opportunity_tickers"] = specials
+
+        # Threshold rebalance: skip topping up names already near max weight
+        if phase13_threshold_rebalance and buy_candidates:
+            kept: List[Tuple[str, int]] = []
+            for t, c in buy_candidates:
+                pos = portfolio.get_position(t)
+                px = float(current_prices.get(t) or 0.0)
+                if pos and pos.long > 0 and px > 0 and equity > 0:
+                    w = (pos.long * px) / float(equity)
+                    if w >= max(0.0, float(max_position_pct) - float(rebalance_weight_drift)):
+                        diagnostics["threshold_skips"] += 1
+                        continue
+                kept.append((t, c))
+            buy_candidates = kept
+
         buy_candidate_set = {t for t, _ in buy_candidates}
         diagnostics["buy_candidates_post_rank"] = len(buy_candidates)
 
@@ -650,6 +788,9 @@ class PortfolioManager:
                 if not pos or pos.long < 100:
                     continue
                 if t in cc_lot_tickers:
+                    continue
+                if phase13_force_cc_lots:
+                    cc_lot_tickers.append(t)
                     continue
                 cc_score = self._score_covered_call(t, agent_signals, agent_weights)
                 if cc_score >= min_cc_score:

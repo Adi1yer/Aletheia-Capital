@@ -70,16 +70,47 @@ def compute_weekly_metrics() -> Dict[str, Any]:
     }
 
 
+def load_sleeve_budget_targets() -> Dict[str, float]:
+    path = Path("config/sleeve_budgets.json")
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = data.get("targets") or {}
+        return {str(k): float(v) for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
 def default_allocation() -> Dict[str, Any]:
     reg = load_workflow_registry()
-    n = max(1, len(reg))
-    equal = round(1.0 / n, 4)
-    targets = {wid: equal for wid in reg}
+    budget_targets = load_sleeve_budget_targets()
+    targets: Dict[str, float] = {}
+    if budget_targets:
+        for wid in reg:
+            if wid in budget_targets:
+                targets[wid] = float(budget_targets[wid])
+        # Any registered workflow missing from config gets a small residual share
+        missing = [wid for wid in reg if wid not in targets]
+        used = sum(targets.values())
+        residual = max(0.0, 1.0 - used)
+        if missing:
+            each = residual / len(missing) if residual > 0 else 0.02
+            for wid in missing:
+                targets[wid] = round(each, 4)
+        total = sum(targets.values()) or 1.0
+        targets = {k: round(v / total, 4) for k, v in targets.items()}
+        notes = "Phase 13 sleeve_budgets.json targets (normalized)."
+    else:
+        n = max(1, len(reg))
+        equal = round(1.0 / n, 4)
+        targets = {wid: equal for wid in reg}
+        notes = "Equal-weight default until promotion gates adjust targets."
     return {
         "generated_at": date.today().isoformat(),
         "targets": targets,
         "kill_switches": {},
-        "notes": "Equal-weight default until promotion gates adjust targets.",
+        "notes": notes,
     }
 
 
@@ -141,4 +172,11 @@ def workflow_risk_budget_pct(workflow_id: str) -> float:
     alloc = load_allocation()
     if alloc.get("kill_switches", {}).get(workflow_id):
         return 0.0
-    return float((alloc.get("targets") or {}).get(workflow_id, 0.1))
+    targets = alloc.get("targets") or {}
+    if workflow_id in targets:
+        return float(targets[workflow_id])
+    # Fall back to Phase 13 sleeve budget config
+    budget = load_sleeve_budget_targets()
+    if workflow_id in budget:
+        return float(budget[workflow_id])
+    return 0.1

@@ -16,7 +16,7 @@ import structlog
 
 from src.data.macro_signals import spy_regime_harvest
 from src.fund.orchestrator import run_orchestrator
-from src.sleeves.common import append_ledger, init_workflow_broker
+from src.sleeves.common import append_ledger, append_skip, init_workflow_broker
 
 logger = structlog.get_logger()
 
@@ -40,8 +40,10 @@ def main() -> int:
         broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
     except RuntimeError as e:
         logger.error(str(e))
+        append_skip(WORKFLOW_ID, "broker_init_failed", error=str(e))
         return 1
     if broker is None:
+        append_skip(WORKFLOW_ID, "broker_unavailable")
         return 0
 
     acct = broker.get_account()

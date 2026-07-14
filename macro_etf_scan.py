@@ -18,7 +18,7 @@ import yfinance as yf
 
 from src.data.macro_signals import spy_regime_harvest
 from src.fund.orchestrator import run_orchestrator
-from src.sleeves.common import append_ledger, init_workflow_broker
+from src.sleeves.common import append_ledger, append_skip, init_workflow_broker
 
 logger = structlog.get_logger()
 
@@ -45,11 +45,16 @@ def main() -> int:
     pick = ranked[0] if ranked else "SHY"
 
     row = {"run_date": date.today().isoformat(), "regime": regime, "pick": pick, "executed": False}
+    broker = None
     try:
         broker = init_workflow_broker(WORKFLOW_ID, require_broker=args.execute)
     except RuntimeError as e:
         logger.error(str(e))
+        append_skip(WORKFLOW_ID, "broker_init_failed", error=str(e), regime=regime, pick=pick)
         return 1
+    if broker is None and args.execute:
+        append_skip(WORKFLOW_ID, "broker_unavailable", regime=regime, pick=pick)
+        return 0
 
     if args.execute and broker:
         from src.portfolio.manager import PortfolioDecision
