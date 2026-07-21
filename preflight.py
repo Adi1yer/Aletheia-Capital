@@ -72,17 +72,39 @@ def _check_workflow_account_alpaca(workflow_id: str) -> None:
     _check_workflow_alpaca(workflow_id, key, sec)
 
 
+_SATELLITE_WORKFLOW_IDS = (
+    "hedge-weekly",
+    "options-income",
+    "congressional",
+    "macro-etf",
+    "crypto-weekly",
+)
+
+
 def _check_satellite_alpaca() -> None:
-    wf = get_workflow("hedge-weekly")
-    if wf is None:
-        raise RuntimeError("hedge-weekly not in registry")
+    """Ping shared satellite book when any satellite sleeve is enabled."""
+    from src.broker.registry import list_workflows
+
+    enabled = [
+        w
+        for w in list_workflows(enabled_only=True)
+        if w.workflow_id in _SATELLITE_WORKFLOW_IDS and w.broker == "alpaca"
+    ]
+    if not enabled:
+        logger.info(
+            "SATELLITE SKIP: no enabled satellite workflows "
+            "(single-account mode — fund digest is a no-op)"
+        )
+        return
+
+    wf = enabled[0]
     if not workflow_credentials_configured(wf):
         raise RuntimeError(
             "Satellite Alpaca credentials not configured "
-            "(set MULTI_SLEEVE_ALPACA_* or HEDGE_ALPACA_*)"
+            f"(set {wf.env_prefix}_* or MULTI_SLEEVE_ALPACA_* / HEDGE_ALPACA_*)"
         )
     key, sec = get_alpaca_credentials(wf)
-    _check_workflow_alpaca("multi_sleeve", key, sec)
+    _check_workflow_alpaca(wf.workflow_id, key, sec)
 
 
 def _check_main_alpaca() -> None:

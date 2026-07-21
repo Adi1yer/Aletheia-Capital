@@ -107,6 +107,28 @@ def test_satellite_only_flag(monkeypatch):
     assert calls == ["satellite"]
 
 
+def test_satellite_only_skips_when_sleeves_disabled(monkeypatch):
+    """Single-account mode: no enabled satellite workflows → soft skip."""
+    from src.broker.registry import WorkflowAccount
+
+    monkeypatch.setattr(
+        "src.broker.registry.list_workflows",
+        lambda enabled_only=True: [
+            WorkflowAccount(
+                "weekly-scan",
+                "alpaca",
+                "ALPACA",
+                "stock",
+                "data/performance",
+                account_group="primary",
+                enabled=True,
+            )
+        ],
+    )
+    # Should not raise
+    preflight._check_satellite_alpaca()
+
+
 def test_all_workflows_uses_api_secret_key_env(monkeypatch):
     """Satellite workflows store secrets as {PREFIX}_API_SECRET_KEY in GitHub."""
     from src.broker.registry import WorkflowAccount

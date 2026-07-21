@@ -1,8 +1,8 @@
 name: Fund Weekly Digest
 
 on:
-  schedule:
-    - cron: "0 18 * * 1"
+  # Disabled while running a single shared paper account (Beat SPY). Manual only.
+  # Satellite sleeves are off in config/workflow_accounts.yaml; digest is a no-op.
   workflow_dispatch:
 
 jobs:
@@ -43,6 +43,10 @@ jobs:
 
       - name: Preflight checks
         env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
           MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
           MULTI_SLEEVE_ALPACA_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
@@ -57,6 +61,10 @@ jobs:
 
       - name: Send fund weekly digest
         env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
           MULTI_SLEEVE_ALPACA_API_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_KEY }}
           MULTI_SLEEVE_ALPACA_API_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}
           MULTI_SLEEVE_ALPACA_SECRET_KEY: ${{ secrets.MULTI_SLEEVE_ALPACA_API_SECRET_KEY }}

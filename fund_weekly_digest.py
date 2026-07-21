@@ -29,15 +29,30 @@ def main() -> int:
 
     run_orchestrator()
 
+    digest = build_sleeve_digest()
+    # Single-account Beat SPY mode: all satellite sleeves disabled → no-op success
+    if not digest.get("sections"):
+        msg = (
+            "Satellite sleeve digest skipped: no enabled satellite workflows "
+            "(single paper account). Equity weekly email comes from weekly-scan."
+        )
+        logger.info(msg)
+        print(msg)
+        return 0
+
     from src.ops.account_snapshot import snapshot_physical_account
 
     snap_path = snapshot_physical_account("multi_sleeve")
     if snap_path:
         logger.info("Refreshed multi_sleeve snapshot before digest", path=str(snap_path))
     else:
-        logger.warning("Could not refresh multi_sleeve snapshot; using cached data if any")
+        # Primary account group after consolidation
+        snap_path = snapshot_physical_account("primary")
+        if snap_path:
+            logger.info("Refreshed primary snapshot before digest", path=str(snap_path))
+        else:
+            logger.warning("Could not refresh account snapshot; using cached data if any")
 
-    digest = build_sleeve_digest()
     body = format_digest_markdown(digest)
     print(body)
 
