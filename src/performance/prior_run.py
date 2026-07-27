@@ -107,3 +107,23 @@ def load_previous_run_context(
         }
     )
     return out
+
+
+def load_previous_run_context_safe(
+    scan_cache,
+    *,
+    current_run_id: Optional[str] = None,
+    current_prices: Optional[Dict[str, float]] = None,
+    equity_now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Like load_previous_run_context, but drop prior equity from a different account scale."""
+    from src.performance.equity_continuity import sanitize_prior_context
+
+    prior = load_previous_run_context(
+        scan_cache,
+        current_run_id=current_run_id,
+        current_prices=current_prices,
+    )
+    if equity_now is None:
+        return prior
+    return sanitize_prior_context(prior, equity_now=equity_now)

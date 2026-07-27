@@ -255,9 +255,10 @@ class TradingPipeline:
             "do_nothing_return_pct": None,
         }
         try:
-            from src.performance.prior_run import load_previous_run_context
+            from src.performance.prior_run import load_previous_run_context_safe
 
-            prior = load_previous_run_context(scan_cache, current_run_id=None)
+            # Equity unknown this early — raw load; sanitize later in benchmark enrich.
+            prior = load_previous_run_context_safe(scan_cache, current_run_id=None)
             learning_context["prev_equity"] = prior.get("prev_equity")
             learning_context["prev_run_id"] = prior.get("prev_run_id")
         except Exception as e:
@@ -1091,12 +1092,14 @@ class TradingPipeline:
             }
             # Refresh do-nothing with current marks before save completes
             try:
-                from src.performance.prior_run import load_previous_run_context
+                from src.performance.prior_run import load_previous_run_context_safe
 
-                prior2 = load_previous_run_context(
+                port_eq = float((results.get("portfolio") or {}).get("equity") or 0.0) or None
+                prior2 = load_previous_run_context_safe(
                     scan_cache,
                     current_run_id=run_id,
                     current_prices=cur_prices,
+                    equity_now=port_eq,
                 )
                 learning_context["do_nothing_return_pct"] = prior2.get("do_nothing_return_pct")
                 if prior2.get("prev_equity") is not None:

@@ -77,21 +77,25 @@ def enrich_results_benchmark(
     current_prices: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Attach benchmark + refresh auto-throttle from results portfolio."""
-    from src.performance.prior_run import load_previous_run_context
+    from src.performance.prior_run import load_previous_run_context_safe
     from src.performance.auto_throttle import record_active_return
+    from src.performance.equity_continuity import compatible_prior_equity, sanitize_prior_context
 
     port = results.get("portfolio") or {}
     equity_now = float(port.get("equity") or 0.0)
     learning = results.get("learning_context") or {}
-    prior = load_previous_run_context(
+    prior = load_previous_run_context_safe(
         scan_cache,
         current_run_id=results.get("run_id"),
         current_prices=current_prices,
+        equity_now=equity_now,
     )
     if learning.get("prev_equity") is not None and prior.get("prev_equity") is None:
-        prior["prev_equity"] = learning.get("prev_equity")
+        prior["prev_equity"] = compatible_prior_equity(equity_now, learning.get("prev_equity"))
     if learning.get("do_nothing_return_pct") is not None and prior.get("do_nothing_return_pct") is None:
-        prior["do_nothing_return_pct"] = learning.get("do_nothing_return_pct")
+        if prior.get("prev_equity") is not None:
+            prior["do_nothing_return_pct"] = learning.get("do_nothing_return_pct")
+    prior = sanitize_prior_context(prior, equity_now=equity_now)
 
     bench = build_benchmark_report(
         equity_now=equity_now,

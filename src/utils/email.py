@@ -1714,6 +1714,22 @@ class EmailNotifier:
 
         prev_port = prev.get("portfolio_after") or prev.get("portfolio_before")
         prev_eq = compute_equity(prev_port, prev.get("risk"))
+        try:
+            from src.performance.equity_continuity import compatible_prior_equity
+
+            prev_eq = compatible_prior_equity(curr_eq, prev_eq)
+        except Exception:
+            pass
+
+        if prev_eq is None:
+            return {
+                "prev_run_id": prev_meta["run_id"],
+                "prev_equity": None,
+                "curr_equity": curr_eq,
+                "prev_executed_count": None,
+                "curr_executed_count": None,
+                "prior_equity_rejected": True,
+            }
 
         prev_exec_res = prev.get("execution_results") or {}
         curr_exec_res = results.get("execution_results") or {}
