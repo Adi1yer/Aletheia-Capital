@@ -626,6 +626,7 @@ class TradingPipeline:
                 rebalance_weight_drift=float(run_config.get("rebalance_weight_drift", 0.04)),
                 cash_floor_pct=float(run_config.get("cash_floor_pct", 0.05)),
                 regime=dict(run_config.get("regime") or {}),
+                ticker_dossiers=getattr(self, "_ticker_dossiers", None) or {},
             )
         else:
             decisions = self.portfolio_manager.generate_decisions(

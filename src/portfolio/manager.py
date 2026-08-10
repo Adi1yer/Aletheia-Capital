@@ -162,6 +162,7 @@ class PortfolioManager:
         rebalance_weight_drift: float = 0.04,
         cash_floor_pct: float = 0.05,
         regime: Optional[Dict[str, Any]] = None,
+        ticker_dossiers: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, PortfolioDecision]:
         """
         Deterministic portfolio-level rebalance with unified buy / covered-call ranking.
@@ -214,7 +215,7 @@ class PortfolioManager:
         self._rotation_sell_details: List[Dict[str, Any]] = []
 
         from src.portfolio.wash_sale import blocked_tickers, record_sell
-        from src.portfolio.sectors import get_sector
+        from src.portfolio.sectors import prefetch_sectors, resolve_sector
         from src.performance.weekly_ledger import position_open_dates
         from src.portfolio.phase13_policy import (
             filter_buys_for_risk_off,
@@ -227,6 +228,14 @@ class PortfolioManager:
         scorecard = load_scorecard_safe() if phase13_net_edge else {}
         position_open_dates_map = position_open_dates()
         wash_blocked = blocked_tickers(int(wash_sale_days))
+        ticker_dossiers = ticker_dossiers or {}
+        sector_by_ticker = prefetch_sectors(tickers, dossiers=ticker_dossiers)
+        # Also resolve sectors for current holdings not in this week's universe list
+        for t in (portfolio.positions or {}):
+            if t not in sector_by_ticker:
+                sector_by_ticker[t] = resolve_sector(
+                    t, dossier=ticker_dossiers.get(t), risk=risk_analysis.get(t)
+                )
         sector_value: Dict[str, float] = {}
 
         current_prices = {
@@ -236,8 +245,14 @@ class PortfolioManager:
         for t, pos in (portfolio.positions or {}).items():
             px = float(current_prices.get(t) or 0.0)
             if pos and pos.long > 0 and px > 0:
-                sec = get_sector(t)
+                sec = sector_by_ticker.get(t) or resolve_sector(t)
                 sector_value[sec] = sector_value.get(sec, 0.0) + pos.long * px
+        diagnostics["sector_exposure"] = {
+            k: round(v, 2) for k, v in sorted(sector_value.items(), key=lambda x: -x[1])
+        }
+        diagnostics["sector_unknown_count"] = sum(
+            1 for s in sector_by_ticker.values() if s == "Unknown"
+        )
         max_csp_collateral = float(equity) * float(max_csp_collateral_pct)
         csp_collateral_used = 0.0
         risk_off = hard_risk_off_active(regime, {
@@ -776,12 +791,18 @@ class PortfolioManager:
                         if qty <= 0:
                             diagnostics["concentration_blocks"] += 1
                             continue
-                    sec = get_sector(ticker)
-                    if sec != "Unknown":
-                        sec_cap = float(equity) * float(max_sector_pct)
-                        if sector_value.get(sec, 0.0) + qty * price > sec_cap:
-                            diagnostics["sector_blocks"] += 1
-                            continue
+                    sec = sector_by_ticker.get(ticker) or resolve_sector(
+                        ticker,
+                        dossier=ticker_dossiers.get(ticker),
+                        risk=risk_analysis.get(ticker),
+                    )
+                    # Cap every known sector. Unknown is also capped so unresolved
+                    # names cannot silently become a dumping ground.
+                    sec_cap = float(equity) * float(max_sector_pct)
+                    if sector_value.get(sec, 0.0) + qty * price > sec_cap:
+                        diagnostics["sector_blocks"] += 1
+                        blocker_counts["sector_cap"] = blocker_counts.get("sector_cap", 0) + 1
+                        continue
                     if qty <= 0:
                         blocker_counts["allocation_rounding"] = (
                             blocker_counts.get("allocation_rounding", 0) + 1
@@ -794,8 +815,7 @@ class PortfolioManager:
                         reasoning=f"Rebalance: bullish {score}",
                     )
                     budget -= qty * price
-                    if sec != "Unknown":
-                        sector_value[sec] = sector_value.get(sec, 0.0) + qty * price
+                    sector_value[sec] = sector_value.get(sec, 0.0) + qty * price
             diagnostics["buy_blocked_by_risk_or_sizing_count"] = int(sum(blocker_counts.values()))
             diagnostics["buy_blockers"] = blocker_counts
 

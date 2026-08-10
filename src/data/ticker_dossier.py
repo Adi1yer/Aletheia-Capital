@@ -163,7 +163,7 @@ def build_ticker_dossier(
         except Exception:
             market_cap = None
 
-    sector = latest.get("sector") or get_sector(ticker)
+    sector = get_sector(ticker, hint=latest.get("sector"))
     dossier["context"] = {
         "market_cap": market_cap,
         "cap_bucket": cap_bucket(market_cap),
