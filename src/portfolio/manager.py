@@ -796,13 +796,15 @@ class PortfolioManager:
                         dossier=ticker_dossiers.get(ticker),
                         risk=risk_analysis.get(ticker),
                     )
-                    # Cap every known sector. Unknown is also capped so unresolved
-                    # names cannot silently become a dumping ground.
-                    sec_cap = float(equity) * float(max_sector_pct)
-                    if sector_value.get(sec, 0.0) + qty * price > sec_cap:
-                        diagnostics["sector_blocks"] += 1
-                        blocker_counts["sector_cap"] = blocker_counts.get("sector_cap", 0) + 1
-                        continue
+                    # Cap known GICS sectors only. Do not lump all "Unknown" names
+                    # into one bucket (that blocks valid diversification / tests).
+                    # Unresolved tickers still hit max_position_pct.
+                    if sec != "Unknown":
+                        sec_cap = float(equity) * float(max_sector_pct)
+                        if sector_value.get(sec, 0.0) + qty * price > sec_cap:
+                            diagnostics["sector_blocks"] += 1
+                            blocker_counts["sector_cap"] = blocker_counts.get("sector_cap", 0) + 1
+                            continue
                     if qty <= 0:
                         blocker_counts["allocation_rounding"] = (
                             blocker_counts.get("allocation_rounding", 0) + 1
@@ -815,7 +817,8 @@ class PortfolioManager:
                         reasoning=f"Rebalance: bullish {score}",
                     )
                     budget -= qty * price
-                    sector_value[sec] = sector_value.get(sec, 0.0) + qty * price
+                    if sec != "Unknown":
+                        sector_value[sec] = sector_value.get(sec, 0.0) + qty * price
             diagnostics["buy_blocked_by_risk_or_sizing_count"] = int(sum(blocker_counts.values()))
             diagnostics["buy_blockers"] = blocker_counts
 
