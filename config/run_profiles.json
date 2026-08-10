@@ -17,6 +17,7 @@
     "phase13_threshold_rebalance": true,
     "phase13_book_stops": true,
     "phase13_hard_risk_off": false,
+    "beat_spy_agent_triage": true,
     "max_llm_calls": 2500,
     "min_buy_confidence": 62,
     "min_sell_confidence": 55,

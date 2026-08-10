@@ -431,7 +431,8 @@ class PortfolioManager:
                     diagnostics["csp_skipped_economics"] += 1
 
         diagnostics["buy_candidates_pre_rank"] = len(buy_candidates)
-        # Rank by net-edge when enabled, else Beat SPY μ̂, else raw confidence
+        # Rank after the full universe has been scored. Beat SPY μ̂ is primary when
+        # present so list order / alphabet never decides among near-tied confidences.
         net_edges: Dict[str, float] = {}
         if phase13_net_edge:
             for t, conf in buy_candidates:
@@ -441,17 +442,34 @@ class PortfolioManager:
                     agent_details=list(agg.get("details") or []),
                     scorecard=scorecard,
                 )
+        if beat_spy_mu:
+            # Factor residual first, then net-edge / confidence. Explicit anti-alpha tiebreak.
             buy_candidates.sort(
-                key=lambda x: (float(net_edges.get(x[0], 0.0)), int(x[1])),
+                key=lambda x: (
+                    float(beat_spy_mu.get(x[0], -999.0)),
+                    float(net_edges.get(x[0], 0.0)) if net_edges else 0.0,
+                    int(x[1]),
+                    # Reverse ticker so A… does not win ties over Z…
+                    x[0],
+                ),
                 reverse=True,
             )
-        elif beat_spy_mu:
+            # With reverse=True, ticker Z sorts before A on the last key — good.
+            # But we want higher μ first; ticker string reverse means 'ZZZ' > 'AAA'.
+            diagnostics["buy_rank_mode"] = "beat_spy_mu"
+        elif net_edges:
             buy_candidates.sort(
-                key=lambda x: (float(beat_spy_mu.get(x[0], -999.0)), int(x[1])),
+                key=lambda x: (float(net_edges.get(x[0], 0.0)), int(x[1]), x[0]),
                 reverse=True,
             )
+            diagnostics["buy_rank_mode"] = "net_edge"
         else:
-            buy_candidates.sort(key=lambda x: x[1], reverse=True)
+            buy_candidates.sort(key=lambda x: (int(x[1]), x[0]), reverse=True)
+            diagnostics["buy_rank_mode"] = "confidence"
+        diagnostics["buy_rank_top"] = [
+            {"ticker": t, "confidence": c, "mu": beat_spy_mu.get(t) if beat_spy_mu else None}
+            for t, c in buy_candidates[:12]
+        ]
         buy_candidates = buy_candidates[: max(0, int(max_buy_tickers))]
 
         # Hard risk-off: only special opportunities may buy

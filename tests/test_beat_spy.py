@@ -31,6 +31,21 @@ def test_candidate_set_includes_holdings():
     assert ranked[0][0] == "AAA"
 
 
+def test_candidate_set_preserves_factor_order_not_alphabet():
+    """Deep list must follow factor rank, not alphabetical order."""
+    dossiers = {
+        "ZZZ": {"trends": {"return_3m_pct": 30.0}, "metrics": [{}]},
+        "AAA": {"trends": {"return_3m_pct": -10.0}, "metrics": [{}]},
+        "MMM": {"trends": {"return_3m_pct": 5.0}, "metrics": [{}]},
+    }
+    deep, ranked = build_candidate_set(
+        ["AAA", "MMM", "ZZZ"], dossiers, top_n=1, held={"MMM"}
+    )
+    assert ranked[0][0] == "ZZZ"
+    assert deep[0] == "ZZZ"
+    assert deep == ["ZZZ", "MMM"]  # not alphabetical ["MMM", "ZZZ"]
+
+
 def test_agent_overlay_veto_and_boost():
     ranked = [
         ("AAA", 0.5, {}),
