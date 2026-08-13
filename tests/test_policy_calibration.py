@@ -48,8 +48,12 @@ def test_apply_learned_policy_bounded(tmp_path, monkeypatch):
 
 
 def test_policy_persists_from_saved_baseline(monkeypatch):
+    from datetime import datetime, timedelta
+
+    # Keep saved policy inside the 12-week freshness window (absolute dates age out).
+    fresh_ts = (datetime.utcnow() - timedelta(weeks=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     saved = {
-        "generated_at": "2026-05-20T00:00:00Z",
+        "generated_at": fresh_ts,
         "min_buy_confidence": 68,
         "min_sell_confidence": 72,
         "cash_rotation_min_edge": 14,
@@ -66,3 +70,19 @@ def test_policy_persists_from_saved_baseline(monkeypatch):
     policy = pc.compute_policy({"min_buy_confidence": 60}, saved_policy=saved)
     assert policy["min_buy_confidence"] == 68
     assert policy["baseline_source"] == "saved"
+
+
+def test_stale_saved_policy_falls_back_to_cli():
+    saved = {
+        "generated_at": "2020-01-01T00:00:00Z",
+        "min_buy_confidence": 68,
+        "min_sell_confidence": 72,
+        "cash_rotation_min_edge": 14,
+        "min_csp_premium_usd": 90.0,
+    }
+    base = pc.load_baseline(
+        {"min_buy_confidence": 60, "min_sell_confidence": 60, "cash_rotation_min_edge": 12},
+        saved,
+    )
+    assert base["min_buy_confidence"] == 60
+    assert base["_baseline_source"] == "cli"
