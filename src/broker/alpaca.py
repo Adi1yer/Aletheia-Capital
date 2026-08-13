@@ -1,7 +1,8 @@
 """Alpaca broker integration for paper trading"""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 from datetime import date, timedelta
+import time
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
@@ -17,6 +18,55 @@ from src.portfolio.manager import PortfolioDecision
 import structlog
 
 logger = structlog.get_logger()
+
+T = TypeVar("T")
+
+
+def _is_transient_alpaca_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    needles = (
+        "timed out",
+        "timeout",
+        "50410000",
+        "503",
+        "502",
+        "connection reset",
+        "temporarily unavailable",
+        "gateway",
+        "429",
+        "too many requests",
+    )
+    return any(n in text for n in needles)
+
+
+def alpaca_call_with_retry(
+    fn: Callable[[], T],
+    *,
+    op: str = "alpaca_call",
+    attempts: int = 4,
+    base_delay_sec: float = 3.0,
+) -> T:
+    """Retry transient Alpaca/network failures (timeouts, 5xx, rate limits)."""
+    last: Optional[BaseException] = None
+    for i in range(max(1, int(attempts))):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            if i >= attempts - 1 or not _is_transient_alpaca_error(e):
+                raise
+            delay = base_delay_sec * (2**i)
+            logger.warning(
+                "Transient Alpaca error; retrying",
+                op=op,
+                attempt=i + 1,
+                attempts=attempts,
+                delay_sec=delay,
+                error=str(e),
+            )
+            time.sleep(delay)
+    assert last is not None
+    raise last
 
 
 class AlpacaBroker:
@@ -54,9 +104,12 @@ class AlpacaBroker:
         )
 
     def get_account(self) -> Dict:
-        """Get account information"""
+        """Get account information (retries on transient Alpaca timeouts)."""
         try:
-            account = self.client.get_account()
+            account = alpaca_call_with_retry(
+                lambda: self.client.get_account(),
+                op="get_account",
+            )
             return {
                 "cash": float(account.cash),
                 "buying_power": float(account.buying_power),
@@ -68,9 +121,12 @@ class AlpacaBroker:
             raise
 
     def get_positions(self) -> Dict[str, Dict]:
-        """Get current positions"""
+        """Get current positions (retries on transient Alpaca timeouts)."""
         try:
-            positions = self.client.get_all_positions()
+            positions = alpaca_call_with_retry(
+                lambda: self.client.get_all_positions(),
+                op="get_positions",
+            )
             position_dict = {}
 
             for pos in positions:

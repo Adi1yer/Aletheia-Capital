@@ -77,6 +77,31 @@ def test_main_returns_one_when_all_accounts_fail(monkeypatch):
     assert rc == 1
 
 
+def test_ci_soft_pass_on_alpaca_timeout(monkeypatch):
+    wf = SimpleNamespace(
+        workflow_id="weekly-scan",
+        snapshot_subdir="stock",
+        label="Equity",
+        broker="alpaca",
+        physical_account_key="equity",
+    )
+
+    class TimeoutBroker:
+        def get_account(self):
+            raise RuntimeError('{"code":50410000,"message":"request timed out"}')
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(dhc, "_resolve_accounts_arg", lambda arg: [wf])
+    monkeypatch.setattr(dhc, "workflow_credentials_configured", lambda wf: True)
+    monkeypatch.setattr(dhc, "try_get_broker", lambda wid: TimeoutBroker())
+    monkeypatch.setattr(dhc, "enrich_payload_with_prior_day_lifecycle", lambda *a, **k: None)
+
+    assert dhc.main(["--account", "all", "--ci"]) == 0
+    assert dhc.main(["--account", "all"]) == 1
+
+
 def test_ci_mode_does_not_fail_on_concentration_alerts(monkeypatch):
     wf = SimpleNamespace(
         workflow_id="weekly-scan",

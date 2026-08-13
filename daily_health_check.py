@@ -164,12 +164,40 @@ def main(argv: list[str] | None = None) -> int:
             errors=errors,
         )
         print("DAILY HEALTH CHECK FAILED: no snapshots saved.", file=sys.stderr)
+        # In CI, do not fail the whole schedule on Alpaca blips (504 timeout / gateway).
+        # Auth/config errors still fail hard.
+        if args.ci and errors and all(_looks_transient(e) for e in errors):
+            print(
+                "CI soft-pass: Alpaca transient timeout/unavailable after retries. "
+                "Will retry on next scheduled health check.",
+                file=sys.stderr,
+            )
+            logger.warning("CI soft-pass on transient Alpaca errors", errors=errors)
+            return 0
         return 1
     if errors:
         logger.warning("Partial daily health check", saved=saved, failed=len(errors))
     if fail_on_alerts and worst == 2:
         return 2
     return 0
+
+
+def _looks_transient(msg: str) -> bool:
+    text = str(msg).lower()
+    return any(
+        n in text
+        for n in (
+            "timed out",
+            "timeout",
+            "50410000",
+            "502",
+            "503",
+            "connection reset",
+            "temporarily unavailable",
+            "gateway",
+            "429",
+        )
+    )
 
 
 if __name__ == "__main__":
