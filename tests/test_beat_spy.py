@@ -65,9 +65,12 @@ def test_agent_overlay_veto_and_boost():
 
 
 def test_beat_spy_defaults():
-    out = apply_beat_spy_defaults({"beat_spy_mode": True, "cash_buffer_pct": 0.12})
+    out = apply_beat_spy_defaults(
+        {"beat_spy_mode": True, "cash_buffer_pct": 0.12, "max_stocks": 600, "beat_spy_factor_top_n": 150}
+    )
     assert out["cash_buffer_pct"] <= 0.05
-    assert out["max_stocks"] == 400
+    assert out["max_stocks"] == 600
+    assert out["beat_spy_factor_top_n"] == 150
 
 
 def test_scorecard_append(tmp_path, monkeypatch):

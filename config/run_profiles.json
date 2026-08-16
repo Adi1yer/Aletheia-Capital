@@ -1,6 +1,6 @@
 {
   "beat-spy-10k": {
-    "max_stocks": 400,
+    "max_stocks": 600,
     "agent_tier_mode": "tiered",
     "execute": true,
     "llm_cache": true,
@@ -18,7 +18,7 @@
     "phase13_book_stops": true,
     "phase13_hard_risk_off": false,
     "beat_spy_agent_triage": true,
-    "max_llm_calls": 2500,
+    "max_llm_calls": 3200,
     "min_buy_confidence": 62,
     "min_sell_confidence": 55,
     "cash_buffer_pct": 0.04,
@@ -28,7 +28,7 @@
     "max_sector_pct": 0.30,
     "max_cash_rotation_sells": 1,
     "cash_rotation_min_edge": 12,
-    "beat_spy_factor_top_n": 100,
+    "beat_spy_factor_top_n": 150,
     "rebalance_interval_weeks": 2,
     "enable_covered_calls": true,
     "enable_cash_rotation": true,

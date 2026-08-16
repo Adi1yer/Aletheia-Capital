@@ -7,7 +7,7 @@ LOG="logs/weekly_run_$(date +%Y%m%d_%H%M%S).log"
 exec poetry run python weekly_scan_rebalancing.py \
   --run-profile beat-spy-10k \
   --agent-tier-mode tiered \
-  --max-stocks 400 \
+  --max-stocks 600 \
   --stop-loss-pct 0.08 \
   --execute \
   --enable-covered-calls \

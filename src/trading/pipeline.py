@@ -364,7 +364,7 @@ class TradingPipeline:
                 deep, ranked = build_candidate_set(
                     tickers,
                     getattr(self, "_ticker_dossiers", {}) or {},
-                    top_n=int(run_config.get("beat_spy_factor_top_n", 100)),
+                    top_n=int(run_config.get("beat_spy_factor_top_n", 150)),
                     held=set(held),
                 )
                 self._triage_deep_tickers = set(deep)

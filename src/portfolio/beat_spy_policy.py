@@ -17,9 +17,11 @@ def apply_beat_spy_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out["max_buy_tickers"] = min(int(out.get("max_buy_tickers", 12)), 12)
     out["max_position_pct"] = min(float(out.get("max_position_pct", 0.10)), 0.10)
     out["max_sector_pct"] = min(float(out.get("max_sector_pct", 0.30)), 0.30)
-    out["max_stocks"] = min(int(out.get("max_stocks", 400)), 400)
+    # Allow up to 600 liquid names; do not silently clamp a larger profile down.
+    out["max_stocks"] = min(int(out.get("max_stocks", 600)), 600)
     out["beat_spy_agent_triage"] = True
-    out["beat_spy_factor_top_n"] = int(out.get("beat_spy_factor_top_n", 100))
+    out["beat_spy_factor_top_n"] = int(out.get("beat_spy_factor_top_n", 150))
+    out.setdefault("max_llm_calls", 3200)
     out["rebalance_interval_weeks"] = int(out.get("rebalance_interval_weeks", 2))
     out.setdefault("min_buy_confidence", 62)
     out.setdefault("min_sell_confidence", 55)
