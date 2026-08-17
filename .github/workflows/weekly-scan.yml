@@ -42,9 +42,11 @@ jobs:
           path: |
             data/performance
             data/cache
-          # beatspy-v2: fresh paper $10k track — do not fall back to pre-reset caches
-          key: perf-${{ github.repository }}-beatspy-v2
+          # Unique save key: GitHub cache keys are immutable, so a fixed key
+          # fails to save after the first week and next runs restore stale data.
+          key: perf-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
           restore-keys: |
+            perf-${{ github.repository }}-beatspy-v2-
             perf-${{ github.repository }}-beatspy-v2
 
       - name: Restore scan run cache
@@ -52,8 +54,9 @@ jobs:
         id: scan_cache_restore
         with:
           path: data/scan_cache
-          key: scan-${{ github.repository }}-beatspy-v2
+          key: scan-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
           restore-keys: |
+            scan-${{ github.repository }}-beatspy-v2-
             scan-${{ github.repository }}-beatspy-v2
 
       - name: Cache restore diagnostics
@@ -147,11 +150,11 @@ jobs:
           path: |
             data/performance
             data/cache
-          key: perf-${{ github.repository }}-beatspy-v2
+          key: perf-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
 
       - name: Save scan run cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: data/scan_cache
-          key: scan-${{ github.repository }}-beatspy-v2
+          key: scan-${{ github.repository }}-beatspy-v2-${{ github.run_id }}

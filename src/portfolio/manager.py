@@ -485,7 +485,33 @@ class PortfolioManager:
             {"ticker": t, "confidence": c, "mu": beat_spy_mu.get(t) if beat_spy_mu else None}
             for t, c in buy_candidates[:12]
         ]
-        buy_candidates = buy_candidates[: max(0, int(max_buy_tickers))]
+        # Walk the full ranked list: skip names already at/over the sector cap so
+        # non-capped sectors can still fill max_buy_tickers (skip-ahead).
+        ranked_all = list(buy_candidates)
+        cap_dollars = float(equity) * float(max_sector_pct) if equity > 0 else 0.0
+        pos_dollars = float(equity) * float(max_position_pct) if equity > 0 else 0.0
+        projected = dict(sector_value)
+        kept: List[Tuple[str, int]] = []
+        skipped_sector: List[str] = []
+        for t, c in ranked_all:
+            if len(kept) >= max(0, int(max_buy_tickers)):
+                break
+            sec = sector_by_ticker.get(t) or resolve_sector(
+                t,
+                dossier=ticker_dossiers.get(t),
+                risk=risk_analysis.get(t),
+            )
+            if sec != "Unknown" and cap_dollars > 0:
+                used = float(projected.get(sec, 0.0))
+                if used >= cap_dollars:
+                    skipped_sector.append(t)
+                    diagnostics["sector_blocks"] += 1
+                    continue
+                projected[sec] = used + min(pos_dollars, cap_dollars - used)
+            kept.append((t, c))
+        diagnostics["sector_skip_ahead"] = skipped_sector
+        diagnostics["sector_skip_ahead_count"] = len(skipped_sector)
+        buy_candidates = kept
 
         # Hard risk-off: only special opportunities may buy
         if phase13_hard_risk_off and risk_off:

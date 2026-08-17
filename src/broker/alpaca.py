@@ -205,12 +205,14 @@ class AlpacaBroker:
                     age_h = (now - dt).total_seconds() / 3600.0
                 except Exception:
                     age_h = None
-            if age_h is None or age_h < float(max_age_hours):
+            if float(max_age_hours) > 0 and (age_h is None or age_h < float(max_age_hours)):
                 skipped.append({"id": o.get("id"), "symbol": o.get("symbol"), "age_h": age_h})
                 continue
             if self.cancel_order(str(o.get("id"))):
                 cancelled.append({"id": o.get("id"), "symbol": o.get("symbol"), "age_h": age_h})
         return {"cancelled": cancelled, "skipped": skipped, "max_age_hours": max_age_hours}
+
+    def get_recent_orders(self, limit: int = 20) -> List[Dict]:
         """Get recently closed/filled orders from Alpaca."""
         try:
             req = GetOrdersRequest(status="closed", limit=limit)

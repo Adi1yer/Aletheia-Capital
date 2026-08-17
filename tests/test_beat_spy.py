@@ -71,6 +71,9 @@ def test_beat_spy_defaults():
     assert out["cash_buffer_pct"] <= 0.05
     assert out["max_stocks"] == 600
     assert out["beat_spy_factor_top_n"] == 150
+    assert out["prefer_market_orders"] is True
+    assert out["phase13_cancel_stale_orders"] is True
+    assert out["stale_order_max_age_hours"] == 0
 
 
 def test_scorecard_append(tmp_path, monkeypatch):

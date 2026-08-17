@@ -16,7 +16,28 @@ def test_execution_tactic_selector_deterministic():
     a = select_execution_tactic(ticker="AAPL", action="buy", current_price=100.0, avg_daily_volume=5_000_000)
     b = select_execution_tactic(ticker="AAPL", action="buy", current_price=100.0, avg_daily_volume=5_000_000)
     assert a == b
-    assert a["tactic"] in ("limit_improve", "market_standard", "limit_passive")
+    assert a["tactic"] == "limit_marketable"
+    assert a["use_limit_order"] is True
+
+
+def test_execution_tactic_unknown_adv_uses_market():
+    out = select_execution_tactic(ticker="AR", action="buy", current_price=30.0)
+    assert out["liquidity_bucket"] == "unknown"
+    assert out["tactic"] == "market_fill"
+    assert out["use_limit_order"] is False
+
+
+def test_execution_tactic_prefer_market_orders():
+    out = select_execution_tactic(
+        ticker="AAPL",
+        action="buy",
+        current_price=100.0,
+        avg_daily_volume=5_000_000,
+        run_config={"prefer_market_orders": True},
+    )
+    assert out["tactic"] == "market_fill"
+    assert out["use_limit_order"] is False
+    assert out["reason"] == "prefer_market_orders"
 
 
 def test_portfolio_optimizer_constraints():

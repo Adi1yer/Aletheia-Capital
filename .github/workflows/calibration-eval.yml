@@ -30,8 +30,9 @@ jobs:
         id: perf_cache_restore
         with:
           path: data/performance
-          key: perf-${{ github.repository }}-beatspy-v2
+          key: perf-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
           restore-keys: |
+            perf-${{ github.repository }}-beatspy-v2-
             perf-${{ github.repository }}-beatspy-v2
 
       - name: Restore scan run cache
@@ -39,8 +40,9 @@ jobs:
         id: scan_cache_restore
         with:
           path: data/scan_cache
-          key: scan-${{ github.repository }}-beatspy-v2
+          key: scan-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
           restore-keys: |
+            scan-${{ github.repository }}-beatspy-v2-
             scan-${{ github.repository }}-beatspy-v2
 
       - name: Run calibration A/B eval
@@ -71,4 +73,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: data/performance
-          key: perf-${{ github.repository }}-beatspy-v2
+          key: perf-${{ github.repository }}-beatspy-v2-${{ github.run_id }}

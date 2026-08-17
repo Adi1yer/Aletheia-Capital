@@ -32,7 +32,10 @@
     "rebalance_interval_weeks": 2,
     "enable_covered_calls": true,
     "enable_cash_rotation": true,
-    "enable_cash_secured_puts": false
+    "enable_cash_secured_puts": false,
+    "prefer_market_orders": true,
+    "phase13_cancel_stale_orders": true,
+    "stale_order_max_age_hours": 0
   },
   "ci-full": {
     "max_stocks": 1000,

@@ -109,9 +109,10 @@ class TradingPipeline:
         run_config = run_config or {}
         run_config.setdefault("execute", execute)
         try:
-            from src.trading.run_config import apply_phase13_defaults
+            from src.trading.run_config import apply_phase13_defaults, apply_beat_spy_defaults
 
             run_config = apply_phase13_defaults(run_config)
+            run_config = apply_beat_spy_defaults(run_config)
         except Exception:
             pass
         run_start = time.time()
@@ -147,7 +148,11 @@ class TradingPipeline:
             ):
                 try:
                     hygiene = self.broker.cancel_stale_orders(
-                        max_age_hours=float(run_config.get("stale_order_max_age_hours", 48) or 48)
+                        max_age_hours=float(
+                            48
+                            if run_config.get("stale_order_max_age_hours") is None
+                            else run_config.get("stale_order_max_age_hours")
+                        )
                     )
                     run_config["stale_order_hygiene"] = hygiene
                     if hygiene.get("cancelled"):

@@ -25,4 +25,7 @@ def apply_beat_spy_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out["rebalance_interval_weeks"] = int(out.get("rebalance_interval_weeks", 2))
     out.setdefault("min_buy_confidence", 62)
     out.setdefault("min_sell_confidence", 55)
+    out["prefer_market_orders"] = True
+    out["phase13_cancel_stale_orders"] = True
+    out["stale_order_max_age_hours"] = 0
     return out
