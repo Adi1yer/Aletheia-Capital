@@ -116,6 +116,10 @@ def apply_phase13_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("phase13_enabled", True)
     if not out.get("phase13_enabled", True):
         return out
+    # Beat SPY concentrated book: do not clamp cash / size / rotation.
+    # apply_beat_spy_defaults overwrites these after this function.
+    if out.get("beat_spy_mode"):
+        return out
 
     out["min_buy_confidence"] = max(int(out.get("min_buy_confidence", MIN_BUY_CONFIDENCE)), MIN_BUY_CONFIDENCE)
     # Sell bar should not sit above buy bar

@@ -65,6 +65,9 @@ def apply_throttle_to_run_config(run_config: Dict[str, Any]) -> Dict[str, Any]:
     }
     if not state.get("throttled"):
         return out
+    if out.get("beat_spy_mode"):
+        # Do not shrink the concentrated 10–12 book; IR gates handle defense.
+        return out
     out["max_buy_tickers"] = min(int(out.get("max_buy_tickers", 8)), 3)
     out["cash_buffer_pct"] = max(float(out.get("cash_buffer_pct", 0.12)), 0.20)
     out["phase13_special_opportunity"] = False  # defensive: no stretching cash

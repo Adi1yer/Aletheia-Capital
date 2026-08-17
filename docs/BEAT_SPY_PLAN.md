@@ -71,4 +71,8 @@ Universe (~400 liquid)
 2. $1k live matches paper within costs for 6 months.  
 3. Then friends & family with evidence, not architecture slides.
 
-When approved to implement: follow **[PHASE14_IMPLEMENTATION.md](PHASE14_IMPLEMENTATION.md)** (PR batches P14-A…G, dual-book ops, gates). Strategy intent stays in this file.
+## Feature freeze (after concentrated book ships)
+
+Do not add agents, crypto, congressional, covered calls, or new sleeves until the 10–12 name book has **6 months of IR** on the scorecard. Month 3: if IR &lt; 0, redesign factors/universe, not knobs. Month 6: pass → $1k live + paper twin; fail → redesign sprint (core-satellite is then in play).
+
+When implementing: concentrated allocator + Beat SPY knob overwrite in `src/portfolio/beat_spy_policy.py`. Strategy intent stays in this file.

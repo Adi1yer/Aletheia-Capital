@@ -10,9 +10,8 @@ exec poetry run python weekly_scan_rebalancing.py \
   --max-stocks 600 \
   --stop-loss-pct 0.08 \
   --execute \
-  --enable-covered-calls \
   --enable-cash-rotation --cash-rotation-min-edge 12 \
-  --max-cash-rotation-sells 1 \
+  --max-cash-rotation-sells 20 \
   --max-position-pct 0.10 --max-sector-pct 0.30 \
   --min-buy-confidence 62 --min-sell-confidence 55 \
   --cash-buffer-pct 0.04 --max-buy-tickers 12 \

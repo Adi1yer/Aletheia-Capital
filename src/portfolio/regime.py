@@ -81,6 +81,9 @@ def apply_regime_to_run_config(run_config: Dict[str, Any], regime: Dict[str, Any
 
     mode = regime.get("mode", "neutral")
     run_config["regime"] = regime
+    if bool(run_config.get("beat_spy_mode")):
+        # Concentrated Beat SPY keeps 3–5% cash; do not lift buffer to 12%.
+        return run_config
     base_buy = int(run_config.get("min_buy_confidence", 50))
     base_sell = int(run_config.get("min_sell_confidence", 60))
     base_max_buy = int(run_config.get("max_buy_tickers", 30))

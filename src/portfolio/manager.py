@@ -157,6 +157,12 @@ class PortfolioManager:
         phase13_net_edge: bool = False,
         beat_spy_mu: Optional[Dict[str, float]] = None,
         beat_spy_veto: Optional[Set[str]] = None,
+        beat_spy_concentrated: bool = False,
+        beat_spy_skip_new_buys: bool = False,
+        beat_spy_vol: Optional[Dict[str, float]] = None,
+        beat_spy_min_mcap_usd: float = 10_000_000_000.0,
+        beat_spy_min_adv_usd: float = 20_000_000.0,
+        beat_spy_min_price_usd: float = 10.0,
         book_stop_loss_pct: float = 0.08,
         dead_money_weeks: int = 4,
         rebalance_weight_drift: float = 0.04,
@@ -177,6 +183,35 @@ class PortfolioManager:
         decisions: Dict[str, PortfolioDecision] = {}
         next_earnings_by_ticker = next_earnings_by_ticker or {}
         regime = regime or {}
+        if beat_spy_concentrated:
+            from src.portfolio.beat_spy_allocator import allocate_beat_spy_book
+
+            decisions, diagnostics = allocate_beat_spy_book(
+                tickers=tickers,
+                portfolio=portfolio,
+                risk_analysis=risk_analysis,
+                ticker_dossiers=ticker_dossiers or {},
+                beat_spy_mu=beat_spy_mu or {},
+                beat_spy_veto=beat_spy_veto or set(),
+                vol_by_ticker=beat_spy_vol or {},
+                pending_orders_by_symbol=pending_orders_by_symbol,
+                max_names=int(max_buy_tickers),
+                max_position_pct=float(max_position_pct),
+                max_sector_pct=float(max_sector_pct),
+                cash_buffer_pct=float(cash_buffer_pct),
+                cash_floor_pct=float(cash_floor_pct),
+                min_trade_notional=float(cash_rotation_min_buy_notional_usd),
+                skip_new_buys=bool(beat_spy_skip_new_buys),
+                book_stop_loss_pct=float(book_stop_loss_pct),
+                min_mcap_usd=float(beat_spy_min_mcap_usd),
+                min_adv_usd=float(beat_spy_min_adv_usd),
+                min_price_usd=float(beat_spy_min_price_usd),
+            )
+            self._last_rebalance_diagnostics = diagnostics
+            self._last_cc_lot_tickers = []
+            self._last_csp_tickers = []
+            self._last_csp_scores = {}
+            return decisions
         diagnostics: Dict[str, Any] = {
             "ticker_count": len(tickers),
             "min_buy_confidence": int(min_buy_confidence),

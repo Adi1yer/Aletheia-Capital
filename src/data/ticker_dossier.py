@@ -85,7 +85,9 @@ def _price_summary(prices, spy_prices=None, qqq_prices=None) -> Dict[str, Any]:
     out["rsi_14"] = _compute_rsi(closes)
     if volumes:
         avg_vol = sum(volumes[-20:]) / min(20, len(volumes))
+        out["avg_volume"] = round(avg_vol, 2)
         out["volume_ratio"] = round(volumes[-1] / avg_vol, 2) if avg_vol > 0 else 1.0
+    out["closes"] = [round(c, 4) for c in closes[-260:]]
     if spy_prices:
         rv = compute_return_vs_index(prices, spy_prices)
         out["return_vs_spy_pct"] = rv

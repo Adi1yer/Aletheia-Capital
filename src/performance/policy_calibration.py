@@ -307,6 +307,11 @@ def apply_learned_policy(
             if save:
                 save_policy(payload, policy_path)
 
+    run_config["policy_calibration"] = payload
+    if run_config.get("beat_spy_mode"):
+        # Record the policy for the email, but do not raise buy_conf / cash / rotation
+        # against the concentrated mandate.
+        return payload
     for knob in ("min_buy_confidence", "min_sell_confidence", "cash_rotation_min_edge"):
         if knob in payload:
             run_config[knob] = int(_clamp(knob, float(payload[knob])))
@@ -314,5 +319,4 @@ def apply_learned_policy(
         run_config["min_csp_premium_usd"] = float(
             _clamp("min_csp_premium_usd", float(payload["min_csp_premium_usd"]))
         )
-    run_config["policy_calibration"] = payload
     return payload

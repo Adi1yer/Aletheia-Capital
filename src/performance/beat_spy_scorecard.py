@@ -73,18 +73,50 @@ def _max_drawdown_pct(equity_series: List[float]) -> Optional[float]:
     return round(max_dd, 4)
 
 
+def _book_structure(portfolio: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    portfolio = portfolio or {}
+    equity = float(portfolio.get("equity") or portfolio.get("total_equity") or 0.0)
+    cash = float(portfolio.get("cash") or 0.0)
+    cash_pct = (cash / equity) if equity > 0 else None
+    weights = []
+    n_pos = 0
+    for pos in (portfolio.get("positions") or {}).values():
+        if not isinstance(pos, dict):
+            continue
+        qty = float(pos.get("long") or pos.get("qty") or 0)
+        px = float(pos.get("current_price") or pos.get("long_cost_basis") or 0)
+        if qty > 0 and px > 0 and equity > 0:
+            n_pos += 1
+            weights.append((qty * px) / equity)
+    hhi = round(sum(w * w for w in weights), 4) if weights else None
+    effective_n = round(1.0 / hhi, 2) if hhi and hhi > 1e-9 else None
+    return {
+        "cash_pct": round(cash_pct, 4) if cash_pct is not None else None,
+        "n_positions": n_pos,
+        "hhi": hhi,
+        "effective_n": effective_n,
+        "estimated_beta": round(max(0.0, 1.0 - float(cash_pct or 0.0)), 4) if cash_pct is not None else None,
+    }
+
+
 def build_beat_spy_scorecard(
     *,
     run_date: str,
     equity: float,
     benchmark: Optional[Dict[str, Any]] = None,
     attribution: Optional[Dict[str, Any]] = None,
+    portfolio: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     benchmark = benchmark or {}
     attribution = attribution or {}
     active_pp = benchmark.get("active_vs_spy_pct")
     fund_ret = benchmark.get("equity_delta_pct")
     spy_ret = benchmark.get("spy_return_pct")
+
+    book = _book_structure(portfolio)
+    cash_drag = None
+    if book.get("cash_pct") is not None and spy_ret is not None:
+        cash_drag = round(float(book["cash_pct"]) * float(spy_ret), 4)
 
     row = {
         "run_date": run_date,
@@ -93,6 +125,12 @@ def build_beat_spy_scorecard(
         "spy_return_pct": spy_ret,
         "active_vs_spy_pp": active_pp,
         "residual_return_pct": attribution.get("residual_return_pct"),
+        "cash_pct": book.get("cash_pct"),
+        "cash_drag_pct": cash_drag,
+        "estimated_beta": book.get("estimated_beta"),
+        "n_positions": book.get("n_positions"),
+        "effective_n": book.get("effective_n"),
+        "hhi": book.get("hhi"),
     }
     _append_history(row)
 
@@ -140,7 +178,14 @@ def build_beat_spy_scorecard(
             "dd_vs_spy_max_pp": GATE_DD_VS_SPY_PP,
         },
         "latest": row,
+        "book": book,
     }
+    try:
+        from src.performance.beat_spy_gates import evaluate_beat_spy_gates
+
+        out["capital_path_gates"] = evaluate_beat_spy_gates(out)
+    except Exception:
+        out["capital_path_gates"] = {}
     LATEST_JSON.parent.mkdir(parents=True, exist_ok=True)
     LATEST_JSON.write_text(json.dumps(out, indent=2), encoding="utf-8")
     lines = [
@@ -151,6 +196,8 @@ def build_beat_spy_scorecard(
         f"IR: {ir}",
         f"Sharpe fund / SPY: {sharpe_fund} / {sharpe_spy}",
         f"Cumulative fund / SPY: {out.get('cumulative_fund_return_pct')}% / {out.get('cumulative_spy_return_pct')}%",
+        f"Cash % / drag vs SPY week: {row.get('cash_pct')} / {row.get('cash_drag_pct')} pp",
+        f"Est. beta / positions / effective N: {row.get('estimated_beta')} / {row.get('n_positions')} / {row.get('effective_n')}",
         f"Gates all OK (need ≥8 weeks): {gates['all_ok']}",
         "",
     ]

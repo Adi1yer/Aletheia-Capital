@@ -369,7 +369,7 @@ class TradingPipeline:
                 deep, ranked = build_candidate_set(
                     tickers,
                     getattr(self, "_ticker_dossiers", {}) or {},
-                    top_n=int(run_config.get("beat_spy_factor_top_n", 150)),
+                    top_n=int(run_config.get("beat_spy_factor_top_n", 40)),
                     held=set(held),
                 )
                 self._triage_deep_tickers = set(deep)
@@ -534,13 +534,67 @@ class TradingPipeline:
 
         beat_spy_mu: Dict[str, float] = {}
         beat_spy_veto: Set[str] = set()
+        beat_spy_vol: Dict[str, float] = {}
         if bool(run_config.get("beat_spy_mode")):
             try:
                 from src.alpha.agent_overlay import apply_agent_overlay
-                from src.alpha.factors import rank_universe
+                from src.alpha.residual_mu import rank_residual_mu
+                from src.portfolio.sectors import prefetch_sectors
 
                 dossiers = getattr(self, "_ticker_dossiers", {}) or {}
-                ranked = getattr(self, "_beat_spy_ranked", None) or rank_universe(tickers, dossiers)
+                held = {
+                    t
+                    for t, p in (portfolio.positions or {}).items()
+                    if int(getattr(p, "long", 0) or 0) > 0
+                }
+                extra_closes: Dict[str, list] = {}
+                factor_start = (datetime.now() - relativedelta(months=13)).strftime("%Y-%m-%d")
+                min_mcap = float(run_config.get("beat_spy_min_mcap_usd") or 10_000_000_000.0)
+                factor_tickers = []
+                for t in tickers:
+                    d = dossiers.get(t) or {}
+                    mcap = (d.get("context") or {}).get("market_cap")
+                    try:
+                        mcap_f = float(mcap) if mcap is not None else 0.0
+                    except (TypeError, ValueError):
+                        mcap_f = 0.0
+                    if t not in held and mcap_f < min_mcap:
+                        continue
+                    factor_tickers.append(t)
+
+                def _factor_closes(sym: str):
+                    try:
+                        px_hist = self.data_provider.get_prices(sym, factor_start, end_date)
+                        return sym, [
+                            float(p.close)
+                            for p in (px_hist or [])
+                            if getattr(p, "close", None) is not None
+                        ]
+                    except Exception:
+                        return sym, []
+
+                if factor_tickers:
+                    with ThreadPoolExecutor(max_workers=min(16, len(factor_tickers))) as ex:
+                        for fut in as_completed([ex.submit(_factor_closes, t) for t in factor_tickers]):
+                            try:
+                                sym, closes = fut.result()
+                                if closes:
+                                    extra_closes[sym] = closes
+                            except Exception:
+                                continue
+                sectors = prefetch_sectors(tickers, dossiers=dossiers)
+                beat_spy_mu, beat_spy_vol, mu_diag = rank_residual_mu(
+                    tickers,
+                    dossiers,
+                    extra_closes=extra_closes,
+                    sectors=sectors,
+                )
+                run_config["beat_spy_mu_diag"] = mu_diag
+                ranked = sorted(
+                    ((t, float(beat_spy_mu.get(t, 0.0)), {}) for t in tickers),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )
                 agg_by_ticker = {
                     t: self.portfolio_manager._aggregate_signals(t, agent_signals, agent_weights)
                     for t in tickers
@@ -551,18 +605,33 @@ class TradingPipeline:
                 )
                 run_config["beat_spy_overlay"] = overlay_diag
             except Exception as e:
-                logger.warning("Beat SPY agent overlay failed", error=str(e))
+                logger.warning("Beat SPY residual μ̂ / overlay failed", error=str(e))
 
         # 7. Generate portfolio decisions
         enable_cc = bool(run_config.get("enable_covered_calls", False))
+        if bool(run_config.get("beat_spy_mode")):
+            enable_cc = False
         min_cc_score = int(run_config.get("min_cc_score", 40))
         enable_csp = bool(run_config.get("enable_cash_secured_puts", False))
+        if bool(run_config.get("beat_spy_mode")):
+            enable_csp = False
         logger.info(
             "Generating portfolio decisions",
             rebalance=bool(run_config.get("rebalance")),
             covered_calls=enable_cc,
             csp=enable_csp,
         )
+        beat_spy_skip_new_buys = False
+        if bool(run_config.get("beat_spy_mode")):
+            try:
+                from src.portfolio.beat_spy_cadence import should_skip_new_buys
+
+                beat_spy_skip_new_buys, cadence_diag = should_skip_new_buys(
+                    interval_weeks=int(run_config.get("rebalance_interval_weeks", 2) or 2)
+                )
+                run_config["beat_spy_cadence"] = cadence_diag
+            except Exception as e:
+                logger.warning("Beat SPY cadence check failed", error=str(e))
         if run_config.get("rebalance") is True:
             decisions = self.portfolio_manager.generate_rebalance_decisions(
                 tickers=tickers,
@@ -626,6 +695,12 @@ class TradingPipeline:
                 phase13_net_edge=bool(run_config.get("phase13_net_edge", False)),
                 beat_spy_mu=beat_spy_mu or None,
                 beat_spy_veto=beat_spy_veto or None,
+                beat_spy_concentrated=bool(run_config.get("beat_spy_concentrated") or run_config.get("beat_spy_mode")),
+                beat_spy_skip_new_buys=bool(beat_spy_skip_new_buys),
+                beat_spy_vol=beat_spy_vol or None,
+                beat_spy_min_mcap_usd=float(run_config.get("beat_spy_min_mcap_usd") or 10_000_000_000.0),
+                beat_spy_min_adv_usd=float(run_config.get("beat_spy_min_adv_usd") or 20_000_000.0),
+                beat_spy_min_price_usd=float(run_config.get("beat_spy_min_price_usd") or 10.0),
                 book_stop_loss_pct=float(run_config.get("book_stop_loss_pct", 0.08)),
                 dead_money_weeks=int(run_config.get("dead_money_weeks", 4)),
                 rebalance_weight_drift=float(run_config.get("rebalance_weight_drift", 0.04)),
@@ -661,6 +736,17 @@ class TradingPipeline:
         decision_diagnostics = (
             getattr(self.portfolio_manager, "_last_rebalance_diagnostics", {}) or {}
         )
+        if (
+            bool(run_config.get("beat_spy_mode"))
+            and not beat_spy_skip_new_buys
+            and decision_diagnostics.get("beat_spy_concentrated")
+        ):
+            try:
+                from src.portfolio.beat_spy_cadence import mark_full_rebalance
+
+                mark_full_rebalance()
+            except Exception:
+                pass
         if int(decision_diagnostics.get("cash_rotation_sell_count", 0) or 0) > 0:
             try:
                 from src.utils.alerts import send_alert
@@ -690,6 +776,8 @@ class TradingPipeline:
                     and risk_analysis[t].get("current_price") is not None
                 }
                 sl_pct = run_config.get("stop_loss_pct")
+                if bool(run_config.get("prefer_market_orders")):
+                    sl_pct = None
                 execution_results = self.broker.execute_decisions(
                     decisions,
                     current_prices=px_map,
@@ -921,12 +1009,22 @@ class TradingPipeline:
                     learning_context, scan_cache, run_config, phase="after"
                 )
 
-            weight_meta = self._update_agent_weights(
-                scan_cache=scan_cache,
-                run_config=run_config,
-                learning_context=learning_context,
-                run_id=run_id,
-            )
+            weight_meta: Dict[str, Any] = {
+                "weight_changes": [],
+                "weight_skips": [],
+                "promotion": {},
+            }
+            if bool(run_config.get("beat_spy_mode")):
+                weight_meta["weight_skips"] = [
+                    {"reason": "beat_spy_freeze_hit_rate_weights"}
+                ]
+            else:
+                weight_meta = self._update_agent_weights(
+                    scan_cache=scan_cache,
+                    run_config=run_config,
+                    learning_context=learning_context,
+                    run_id=run_id,
+                )
             learning_context["weight_changes"] = (weight_meta or {}).get("weight_changes", [])
             learning_context["weight_skips"] = (weight_meta or {}).get("weight_skips", [])
             learning_context["promotion"] = (weight_meta or {}).get("promotion", {})
@@ -1139,8 +1237,13 @@ class TradingPipeline:
                     equity=equity,
                     benchmark=bench,
                     attribution=attr,
+                    portfolio=port,
                 )
-                results["beat_spy"] = {"attribution": attr, "scorecard": scorecard}
+                results["beat_spy"] = {
+                    "attribution": attr,
+                    "scorecard": scorecard,
+                    "capital_path_gates": scorecard.get("capital_path_gates") or {},
+                }
                 if results.get("learning_context") is not None:
                     results["learning_context"]["beat_spy_scorecard"] = scorecard
         except Exception as e:

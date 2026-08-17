@@ -1314,6 +1314,40 @@ class EmailNotifier:
                     </table>
                 </div>
                 """
+                if dd.get("beat_spy_concentrated"):
+                    targets = ", ".join(str(x) for x in (dd.get("target_names") or [])[:12]) or "-"
+                    exited = ", ".join(str(x) for x in (dd.get("exited") or [])[:20]) or "-"
+                    liq_n = int(dd.get("liquidity_reject_count") or len(dd.get("liquidity_rejects") or []))
+                    html += f"""
+                    <div class="section">
+                        <h2>Beat SPY concentrated book</h2>
+                        <table>
+                            <tr><th>Metric</th><th>Value</th></tr>
+                            <tr><td>Target names ({int(dd.get("n_target") or 0)})</td><td>{html_escape(targets)}</td></tr>
+                            <tr><td>Exited ({int(dd.get("n_exited") or 0)})</td><td>{html_escape(exited)}</td></tr>
+                            <tr><td>Liquidity rejects</td><td>{liq_n}</td></tr>
+                            <tr><td>Agent vetoes</td><td>{html_escape(", ".join(str(x) for x in (dd.get("veto_skips") or [])[:12]) or "-")}</td></tr>
+                            <tr><td>Off-week risk-only</td><td>{"yes" if dd.get("skip_new_buys") else "no"}</td></tr>
+                        </table>
+                    </div>
+                    """
+                    bs = (results.get("beat_spy") or {}).get("scorecard") or {}
+                    cap = (results.get("beat_spy") or {}).get("capital_path_gates") or bs.get("capital_path_gates") or {}
+                    latest = bs.get("latest") or {}
+                    if bs:
+                        html += f"""
+                        <div class="section">
+                            <h2>Beat SPY scorecard</h2>
+                            <table>
+                                <tr><th>Metric</th><th>Value</th></tr>
+                                <tr><td>Weeks recorded</td><td>{int(bs.get("weeks_recorded") or 0)}</td></tr>
+                                <tr><td>IR (active vs SPY)</td><td>{bs.get("information_ratio")}</td></tr>
+                                <tr><td>Cash % / cash drag</td><td>{latest.get("cash_pct")} / {latest.get("cash_drag_pct")} pp</td></tr>
+                                <tr><td>Est. beta / positions / effective N</td><td>{latest.get("estimated_beta")} / {latest.get("n_positions")} / {latest.get("effective_n")}</td></tr>
+                                <tr><td>Month 3 / 6</td><td>{html_escape(str((cap.get("month3") or {}).get("action")))} / {html_escape(str((cap.get("month6") or {}).get("action")))}</td></tr>
+                            </table>
+                        </div>
+                        """
                 slo = results.get("slo") or {}
                 if slo:
                     html += f"""
@@ -1750,6 +1784,20 @@ class EmailNotifier:
 
     def _generate_weekly_outlook(self, results: dict, past_perf: Optional[dict]) -> Optional[str]:
         """Use an LLM to generate a short 2–3 sentence outlook."""
+        dd = results.get("decision_diagnostics") or {}
+        if dd.get("beat_spy_concentrated"):
+            port = results.get("portfolio") or {}
+            cash = port.get("cash")
+            eq = port.get("equity") or port.get("total_equity")
+            n = int(dd.get("n_target") or 0)
+            exited = int(dd.get("n_exited") or 0)
+            cash_s = f"${cash:,.0f}" if isinstance(cash, (int, float)) else str(cash)
+            eq_s = f"${eq:,.0f}" if isinstance(eq, (int, float)) else str(eq)
+            return (
+                f"Concentrated Beat SPY book: {n} target names, equity {eq_s}, cash {cash_s}. "
+                f"Exited {exited} names that were not in the 10–12 set. "
+                f"This is a ~10-name stock-picker vs SPY, not a 600-holding fund."
+            )
         try:
             llm = get_llm_for_agent("deepseek-v3", "deepseek")
         except Exception:

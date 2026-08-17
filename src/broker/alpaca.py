@@ -300,6 +300,7 @@ class AlpacaBroker:
                 and float(stop_loss_pct) > 0
                 and current_price
                 and float(current_price) > 0
+                and not (bool(execution_tactic) and not bool(execution_tactic.get("use_limit_order")))
             ):
                 stop_px = round(float(current_price) * (1.0 - float(stop_loss_pct)), 2)
                 order_data = MarketOrderRequest(
