@@ -163,6 +163,7 @@ class PortfolioManager:
         beat_spy_min_mcap_usd: float = 10_000_000_000.0,
         beat_spy_min_adv_usd: float = 20_000_000.0,
         beat_spy_min_price_usd: float = 10.0,
+        beat_spy_eligible_tickers: Optional[Set[str]] = None,
         book_stop_loss_pct: float = 0.08,
         dead_money_weeks: int = 4,
         rebalance_weight_drift: float = 0.04,
@@ -206,6 +207,7 @@ class PortfolioManager:
                 min_mcap_usd=float(beat_spy_min_mcap_usd),
                 min_adv_usd=float(beat_spy_min_adv_usd),
                 min_price_usd=float(beat_spy_min_price_usd),
+                eligible_tickers=beat_spy_eligible_tickers,
             )
             self._last_rebalance_diagnostics = diagnostics
             self._last_cc_lot_tickers = []

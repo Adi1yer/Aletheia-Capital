@@ -4,7 +4,12 @@ on:
   schedule:
     # 16:00 UTC = ~9:00 AM Pacific during PDT
     - cron: '0 16 * * 1'
-  workflow_dispatch: # Manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      force_full_rebalance:
+        description: 'Force a full Beat SPY rebuild (use after a bad book or universe change)'
+        type: boolean
+        default: false
 
 jobs:
   weekly-scan:
@@ -112,7 +117,8 @@ jobs:
           poetry run python weekly_scan_rebalancing.py \
             --run-profile beat-spy-10k \
             --agent-tier-mode tiered \
-            --max-stocks 600 \
+            --max-stocks 500 \
+            --universe-source sp500 \
             --stop-loss-pct 0.08 \
             --execute \
             --enable-cash-rotation --cash-rotation-min-edge 12 \
@@ -120,7 +126,8 @@ jobs:
             --max-position-pct 0.10 --max-sector-pct 0.30 \
             --min-buy-confidence 62 --min-sell-confidence 55 \
             --cash-buffer-pct 0.04 --max-buy-tickers 12 \
-            --regime-mode auto
+            --regime-mode auto \
+            ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_full_rebalance == 'true' && '--force-full-rebalance' || '' }}
 
       - name: Post-run ops orchestrator
         if: always()

@@ -7,7 +7,8 @@ LOG="logs/weekly_run_$(date +%Y%m%d_%H%M%S).log"
 exec poetry run python weekly_scan_rebalancing.py \
   --run-profile beat-spy-10k \
   --agent-tier-mode tiered \
-  --max-stocks 600 \
+  --max-stocks 500 \
+  --universe-source sp500 \
   --stop-loss-pct 0.08 \
   --execute \
   --enable-cash-rotation --cash-rotation-min-edge 12 \
@@ -16,4 +17,5 @@ exec poetry run python weekly_scan_rebalancing.py \
   --min-buy-confidence 62 --min-sell-confidence 55 \
   --cash-buffer-pct 0.04 --max-buy-tickers 12 \
   --regime-mode auto \
+  "$@" \
   2>&1 | tee "$LOG"

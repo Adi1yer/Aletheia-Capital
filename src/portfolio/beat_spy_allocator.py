@@ -26,6 +26,28 @@ def _price_map(tickers: List[str], risk_analysis: Dict[str, Dict]) -> Dict[str, 
     return {t: float((risk_analysis.get(t) or {}).get("current_price") or 0.0) for t in tickers}
 
 
+def _fallback_price(
+    ticker: str,
+    current_prices: Dict[str, float],
+    ticker_dossiers: Dict[str, Dict[str, Any]],
+    pos: Any,
+) -> float:
+    px = float(current_prices.get(ticker) or 0.0)
+    if px > 0:
+        return px
+    last = (ticker_dossiers.get(ticker) or {}).get("prices") or {}
+    try:
+        px = float(last.get("last_close") or 0.0)
+    except (TypeError, ValueError):
+        px = 0.0
+    if px > 0:
+        return px
+    try:
+        return float(getattr(pos, "long_cost_basis", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def allocate_beat_spy_book(
     *,
     tickers: List[str],
@@ -47,21 +69,26 @@ def allocate_beat_spy_book(
     min_mcap_usd: float = MIN_MCAP_USD,
     min_adv_usd: float = MIN_ADV_USD,
     min_price_usd: float = MIN_PRICE_USD,
+    eligible_tickers: Optional[Set[str]] = None,
 ) -> Tuple[Dict[str, PortfolioDecision], Dict[str, Any]]:
     """
-    Target weights = top N by μ̂ that pass liquidity + sector cap.
-    Sell holdings not in the set. Agents may only veto (beat_spy_veto).
+    Target weights = top N eligible names by μ̂ that pass liquidity + sector cap.
+    Held names are not grandfathered. Sell holdings not in the set. Agents veto only.
     """
     ticker_dossiers = ticker_dossiers or {}
     beat_spy_mu = beat_spy_mu or {}
     beat_spy_veto = beat_spy_veto or set()
     vol_by_ticker = vol_by_ticker or {}
     pending_orders_by_symbol = pending_orders_by_symbol or {}
+    eligible = {str(t) for t in (eligible_tickers if eligible_tickers is not None else tickers)}
 
     current_prices = _price_map(tickers, risk_analysis)
     for t, pos in (portfolio.positions or {}).items():
-        if t not in current_prices:
-            current_prices[t] = float((risk_analysis.get(t) or {}).get("current_price") or 0.0)
+        px = float((risk_analysis.get(t) or {}).get("current_price") or 0.0)
+        if px <= 0:
+            px = _fallback_price(t, current_prices, ticker_dossiers, pos)
+        if px > 0:
+            current_prices[t] = px
     equity = float(portfolio.get_equity({k: v for k, v in current_prices.items() if v > 0}))
     if equity <= 0:
         equity = max(float(portfolio.cash), 1.0)
@@ -99,6 +126,8 @@ def allocate_beat_spy_book(
         "cash_rotation_skipped_edge": 0,
         "cash_rotation_skipped_risk": 0,
         "sector_blocks": 0,
+        "eligible_count": len(eligible),
+        "outside_universe_skips": [],
     }
 
     decisions: Dict[str, PortfolioDecision] = {}
@@ -139,7 +168,7 @@ def allocate_beat_spy_book(
         return decisions, diagnostics
 
     ranked = sorted(
-        universe,
+        [t for t in universe if t in eligible],
         key=lambda t: (float(beat_spy_mu.get(t, -999.0)), t),
         reverse=True,
     )
@@ -158,7 +187,6 @@ def allocate_beat_spy_book(
         px = float(current_prices.get(t) or 0.0)
         if px <= 0:
             continue
-        is_held = _held_qty(t) > 0 and t not in {x for x in diagnostics["exited"]}
         ok, reason = passes_buy_liquidity(
             ticker_dossiers.get(t),
             px,
@@ -166,7 +194,7 @@ def allocate_beat_spy_book(
             min_adv=min_adv_usd,
             min_price=min_price_usd,
         )
-        if not ok and not is_held:
+        if not ok:
             diagnostics["liquidity_rejects"].append({"ticker": t, "reason": reason})
             continue
         sec = sector_by_ticker.get(t) or "Unknown"
@@ -205,15 +233,16 @@ def allocate_beat_spy_book(
                 weights[t] += leftover * (room[t] / room_sum)
     diagnostics["target_weights"] = {t: round(weights[t], 4) for t in target}
 
-    # Exit names not in the target set (the rebuild).
+    # Exit names not in the target set (the rebuild). Full exits do not require a quote.
     for t, pos in list((portfolio.positions or {}).items()):
         if t in decisions:
             continue
         qty = _held_qty(t)
-        px = float(current_prices.get(t) or 0.0)
-        if qty <= 0 or px <= 0:
+        if qty <= 0:
             continue
         if t not in target:
+            if t not in eligible:
+                diagnostics["outside_universe_skips"].append(t)
             decisions[t] = PortfolioDecision(
                 action="sell",
                 quantity=qty,

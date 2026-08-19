@@ -190,6 +190,23 @@ class TradingPipeline:
             )
             raise SystemExit(1)
 
+        held_for_exit = [
+            t
+            for t, p in (portfolio.positions or {}).items()
+            if int(getattr(p, "long", 0) or 0) > 0
+        ]
+        eligible_scan = list(tickers)
+        if held_for_exit:
+            tickers = list(dict.fromkeys(list(tickers) + held_for_exit))
+        if bool(run_config.get("beat_spy_mode")):
+            run_config["beat_spy_eligible_tickers"] = list(eligible_scan)
+            logger.info(
+                "Beat SPY universe",
+                eligible=len(eligible_scan),
+                with_holdings=len(tickers),
+                source=run_config.get("universe_source"),
+            )
+
         # 2. Calculate date range (last 3 months for analysis)
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - relativedelta(months=3)).strftime("%Y-%m-%d")
@@ -542,23 +559,23 @@ class TradingPipeline:
                 from src.portfolio.sectors import prefetch_sectors
 
                 dossiers = getattr(self, "_ticker_dossiers", {}) or {}
-                held = {
-                    t
-                    for t, p in (portfolio.positions or {}).items()
-                    if int(getattr(p, "long", 0) or 0) > 0
-                }
                 extra_closes: Dict[str, list] = {}
                 factor_start = (datetime.now() - relativedelta(months=13)).strftime("%Y-%m-%d")
                 min_mcap = float(run_config.get("beat_spy_min_mcap_usd") or 10_000_000_000.0)
+                eligible_set = {
+                    str(t) for t in (run_config.get("beat_spy_eligible_tickers") or tickers)
+                }
                 factor_tickers = []
                 for t in tickers:
+                    if t not in eligible_set:
+                        continue
                     d = dossiers.get(t) or {}
                     mcap = (d.get("context") or {}).get("market_cap")
                     try:
                         mcap_f = float(mcap) if mcap is not None else 0.0
                     except (TypeError, ValueError):
                         mcap_f = 0.0
-                    if t not in held and mcap_f < min_mcap:
+                    if mcap_f < min_mcap:
                         continue
                     factor_tickers.append(t)
 
@@ -582,22 +599,22 @@ class TradingPipeline:
                                     extra_closes[sym] = closes
                             except Exception:
                                 continue
-                sectors = prefetch_sectors(tickers, dossiers=dossiers)
+                sectors = prefetch_sectors(list(eligible_set), dossiers=dossiers)
                 beat_spy_mu, beat_spy_vol, mu_diag = rank_residual_mu(
-                    tickers,
+                    list(eligible_set),
                     dossiers,
                     extra_closes=extra_closes,
                     sectors=sectors,
                 )
                 run_config["beat_spy_mu_diag"] = mu_diag
                 ranked = sorted(
-                    ((t, float(beat_spy_mu.get(t, 0.0)), {}) for t in tickers),
+                    ((t, float(beat_spy_mu.get(t, 0.0)), {}) for t in eligible_set),
                     key=lambda x: x[1],
                     reverse=True,
                 )
                 agg_by_ticker = {
                     t: self.portfolio_manager._aggregate_signals(t, agent_signals, agent_weights)
-                    for t in tickers
+                    for t in eligible_set
                 }
                 beat_spy_mu, beat_spy_veto, overlay_diag = apply_agent_overlay(
                     ranked,
@@ -624,12 +641,53 @@ class TradingPipeline:
         beat_spy_skip_new_buys = False
         if bool(run_config.get("beat_spy_mode")):
             try:
-                from src.portfolio.beat_spy_cadence import should_skip_new_buys
+                from src.portfolio.beat_spy_cadence import holdings_need_rebuild, should_skip_new_buys
 
-                beat_spy_skip_new_buys, cadence_diag = should_skip_new_buys(
-                    interval_weeks=int(run_config.get("rebalance_interval_weeks", 2) or 2)
+                eligible_set = {
+                    str(t) for t in (run_config.get("beat_spy_eligible_tickers") or tickers)
+                }
+                held_now = [
+                    t
+                    for t, p in (portfolio.positions or {}).items()
+                    if int(getattr(p, "long", 0) or 0) > 0
+                ]
+                dossier_px: Dict[str, float] = {}
+                dossiers_now = getattr(self, "_ticker_dossiers", {}) or {}
+                for t in held_now:
+                    px = float(current_prices.get(t) or 0.0)
+                    if px <= 0:
+                        try:
+                            px = float(
+                                ((dossiers_now.get(t) or {}).get("prices") or {}).get("last_close")
+                                or 0.0
+                            )
+                        except (TypeError, ValueError):
+                            px = 0.0
+                    dossier_px[t] = px
+                mandate, mandate_diag = holdings_need_rebuild(
+                    held_tickers=held_now,
+                    eligible=eligible_set,
+                    dossiers=dossiers_now,
+                    prices=dossier_px,
+                    max_names=int(run_config.get("max_buy_tickers", 12) or 12),
+                    min_mcap_usd=float(run_config.get("beat_spy_min_mcap_usd") or 10_000_000_000.0),
+                    min_adv_usd=float(run_config.get("beat_spy_min_adv_usd") or 20_000_000.0),
+                    min_price_usd=float(run_config.get("beat_spy_min_price_usd") or 10.0),
                 )
+                beat_spy_skip_new_buys, cadence_diag = should_skip_new_buys(
+                    interval_weeks=int(run_config.get("rebalance_interval_weeks", 2) or 2),
+                    force=bool(run_config.get("beat_spy_force_full_rebalance")),
+                    mandate_rebuild=bool(mandate),
+                )
+                cadence_diag["mandate"] = mandate_diag
                 run_config["beat_spy_cadence"] = cadence_diag
+                if mandate or run_config.get("beat_spy_force_full_rebalance"):
+                    logger.info(
+                        "Beat SPY full rebalance forced",
+                        reason=cadence_diag.get("reason"),
+                        outside=mandate_diag.get("outside_universe"),
+                        illiquid_n=len(mandate_diag.get("illiquid") or []),
+                    )
             except Exception as e:
                 logger.warning("Beat SPY cadence check failed", error=str(e))
         if run_config.get("rebalance") is True:
@@ -701,6 +759,10 @@ class TradingPipeline:
                 beat_spy_min_mcap_usd=float(run_config.get("beat_spy_min_mcap_usd") or 10_000_000_000.0),
                 beat_spy_min_adv_usd=float(run_config.get("beat_spy_min_adv_usd") or 20_000_000.0),
                 beat_spy_min_price_usd=float(run_config.get("beat_spy_min_price_usd") or 10.0),
+                beat_spy_eligible_tickers=(
+                    {str(t) for t in (run_config.get("beat_spy_eligible_tickers") or [])}
+                    or None
+                ),
                 book_stop_loss_pct=float(run_config.get("book_stop_loss_pct", 0.08)),
                 dead_money_weeks=int(run_config.get("dead_money_weeks", 4)),
                 rebalance_weight_drift=float(run_config.get("rebalance_weight_drift", 0.04)),
@@ -736,6 +798,10 @@ class TradingPipeline:
         decision_diagnostics = (
             getattr(self.portfolio_manager, "_last_rebalance_diagnostics", {}) or {}
         )
+        cadence = run_config.get("beat_spy_cadence") or {}
+        if cadence:
+            decision_diagnostics["cadence_reason"] = cadence.get("reason")
+            decision_diagnostics["cadence"] = cadence
         if (
             bool(run_config.get("beat_spy_mode"))
             and not beat_spy_skip_new_buys

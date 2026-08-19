@@ -1,4 +1,4 @@
-"""Hard liquidity gate for Beat SPY new buys (S&P 500-like)."""
+"""Hard liquidity gate for Beat SPY target membership (S&P 500-like)."""
 
 from __future__ import annotations
 

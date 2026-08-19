@@ -12,7 +12,7 @@
 | Scorecard | Primary: Information Ratio of active return vs SPY. Secondary: fund Sharpe ≥ SPY Sharpe. Cumulative return ≥ SPY − 1pp over the gate window. Max DD ≤ SPY DD + 3pp. |
 | Live gate (your $1k) | Meet scorecard over **6 months** paper; else **redesign** (not knob cosmetics). |
 | Net beta | Target **0.9–1.05** (beat SPY as stock picker, not by under-betaing). Soften Phase 13 12–20% cash for this profile. |
-| Universe | **Top ~400** liquid US names (mcap × liquidity). Better than 1000 at $10k. |
+| Universe | **S&P 500 constituents** (plus current holdings so they can be sold). Not top-600 mixed US. |
 | Cadence | **Biweekly** rebalance + threshold; weekly risk-only. |
 | Holdings | **10–15** names; max position **8–10%**. |
 | Shorts / options / events | Allowed; shorts only if cleanly executable on paper; options selective; biotech ≤5% until proven. |
@@ -22,7 +22,7 @@
 ## Architecture
 
 ```
-Universe (~400 liquid)
+Universe (~S&P 500)
     → Cheap factor scores (mom / quality / value / revisions)
     → Top 80–120 candidates
     → Agents: screen + veto + conviction boost (cached)

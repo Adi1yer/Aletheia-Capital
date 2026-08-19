@@ -225,6 +225,17 @@ def main() -> None:
         help="Merge settings from config/run_profiles.json (e.g. ci-full, dev-smoke).",
     )
     p.add_argument(
+        "--universe-source",
+        type=str,
+        default="",
+        help="Universe: sp500 (Beat SPY) or empty for top-N US by market cap.",
+    )
+    p.add_argument(
+        "--force-full-rebalance",
+        action="store_true",
+        help="Beat SPY: ignore biweekly skip and rebuild the concentrated book.",
+    )
+    p.add_argument(
         "--no-broker",
         action="store_true",
         help="Analysis-only: skip Alpaca key check and use empty portfolio.",
@@ -333,13 +344,20 @@ def main() -> None:
     initialize_agents()
 
     max_stocks = int(profile_overrides.get("max_stocks", args.max_stocks))
-    logger.info("Loading universe", max_stocks=max_stocks)
+    universe_source = str(
+        profile_overrides.get("universe_source") or args.universe_source or ""
+    ).strip()
+    if profile_overrides.get("beat_spy_mode"):
+        universe_source = universe_source or "sp500"
+    logger.info("Loading universe", max_stocks=max_stocks, universe_source=universe_source or "us_topn")
     universe = StockUniverse()
+    spx = universe_source.lower().replace("&", "") in ("sp500", "s500", "spx")
     tickers = universe.get_trading_universe(
-        full_market=True,
+        full_market=not spx,
         max_stocks=max_stocks,
         apply_filters=True,
-        rank_by_market_cap=True,
+        rank_by_market_cap=not spx,
+        source=universe_source or None,
     )
     if not tickers:
         raise SystemExit("Universe returned no tickers")
@@ -350,8 +368,8 @@ def main() -> None:
         "universe": True,
         "weekly": True,
         "save_to_cache": True,
-        "ticker_source": "universe",
-        "max_stocks": int(args.max_stocks),
+        "ticker_source": universe_source or "universe",
+        "max_stocks": int(max_stocks),
         "rebalance": True,
         "min_buy_confidence": int(args.min_buy_confidence),
         "min_sell_confidence": int(args.min_sell_confidence),
@@ -399,6 +417,10 @@ def main() -> None:
     if profile_name:
         run_config = merge_run_profile(run_config, profile_name)
         run_config["run_profile"] = profile_name
+    if args.force_full_rebalance:
+        run_config["beat_spy_force_full_rebalance"] = True
+    if universe_source:
+        run_config["universe_source"] = universe_source
     try:
         from src.trading.run_config import apply_phase12_defaults, apply_phase13_defaults, apply_beat_spy_defaults
 

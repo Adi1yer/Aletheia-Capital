@@ -69,7 +69,8 @@ def test_beat_spy_defaults():
         {"beat_spy_mode": True, "cash_buffer_pct": 0.12, "max_stocks": 600}
     )
     assert out["cash_buffer_pct"] == 0.04
-    assert out["max_stocks"] == 600
+    assert out["max_stocks"] == 500
+    assert out["universe_source"] == "sp500"
     assert out["beat_spy_factor_top_n"] == 40
     assert out["prefer_market_orders"] is True
     assert out["phase13_cancel_stale_orders"] is True

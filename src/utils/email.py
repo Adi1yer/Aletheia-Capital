@@ -1318,6 +1318,12 @@ class EmailNotifier:
                     targets = ", ".join(str(x) for x in (dd.get("target_names") or [])[:12]) or "-"
                     exited = ", ".join(str(x) for x in (dd.get("exited") or [])[:20]) or "-"
                     liq_n = int(dd.get("liquidity_reject_count") or len(dd.get("liquidity_rejects") or []))
+                    liq_names = ", ".join(
+                        f"{r.get('ticker')}({r.get('reason')})"
+                        for r in (dd.get("liquidity_rejects") or [])[:15]
+                        if isinstance(r, dict)
+                    ) or "-"
+                    outside = ", ".join(str(x) for x in (dd.get("outside_universe_skips") or [])[:15]) or "-"
                     html += f"""
                     <div class="section">
                         <h2>Beat SPY concentrated book</h2>
@@ -1325,9 +1331,11 @@ class EmailNotifier:
                             <tr><th>Metric</th><th>Value</th></tr>
                             <tr><td>Target names ({int(dd.get("n_target") or 0)})</td><td>{html_escape(targets)}</td></tr>
                             <tr><td>Exited ({int(dd.get("n_exited") or 0)})</td><td>{html_escape(exited)}</td></tr>
-                            <tr><td>Liquidity rejects</td><td>{liq_n}</td></tr>
+                            <tr><td>Liquidity rejects ({liq_n})</td><td>{html_escape(liq_names)}</td></tr>
+                            <tr><td>Outside S&amp;P universe</td><td>{html_escape(outside)}</td></tr>
                             <tr><td>Agent vetoes</td><td>{html_escape(", ".join(str(x) for x in (dd.get("veto_skips") or [])[:12]) or "-")}</td></tr>
                             <tr><td>Off-week risk-only</td><td>{"yes" if dd.get("skip_new_buys") else "no"}</td></tr>
+                            <tr><td>Cadence</td><td>{html_escape(str(dd.get("cadence_reason") or "-"))}</td></tr>
                         </table>
                     </div>
                     """
@@ -1343,7 +1351,7 @@ class EmailNotifier:
                                 <tr><td>Weeks recorded</td><td>{int(bs.get("weeks_recorded") or 0)}</td></tr>
                                 <tr><td>IR (active vs SPY)</td><td>{bs.get("information_ratio")}</td></tr>
                                 <tr><td>Cash % / cash drag</td><td>{latest.get("cash_pct")} / {latest.get("cash_drag_pct")} pp</td></tr>
-                                <tr><td>Est. beta / positions / effective N</td><td>{latest.get("estimated_beta")} / {latest.get("n_positions")} / {latest.get("effective_n")}</td></tr>
+                                <tr><td>Invested (1−cash) / positions / effective N</td><td>{latest.get("estimated_beta")} / {latest.get("n_positions")} / {latest.get("effective_n")}</td></tr>
                                 <tr><td>Month 3 / 6</td><td>{html_escape(str((cap.get("month3") or {}).get("action")))} / {html_escape(str((cap.get("month6") or {}).get("action")))}</td></tr>
                             </table>
                         </div>
@@ -1794,7 +1802,7 @@ class EmailNotifier:
             cash_s = f"${cash:,.0f}" if isinstance(cash, (int, float)) else str(cash)
             eq_s = f"${eq:,.0f}" if isinstance(eq, (int, float)) else str(eq)
             return (
-                f"Concentrated Beat SPY book: {n} target names, equity {eq_s}, cash {cash_s}. "
+                f"Concentrated Beat SPY book: {n} S&P 500 target names, equity {eq_s}, cash {cash_s}. "
                 f"Exited {exited} names that were not in the 10–12 set. "
                 f"This is a ~10-name stock-picker vs SPY, not a 600-holding fund."
             )

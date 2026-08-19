@@ -311,14 +311,25 @@ class StockUniverse:
         max_stocks: Optional[int] = 5000,
         apply_filters: bool = True,
         rank_by_market_cap: bool = True,
+        source: Optional[str] = None,
     ) -> List[str]:
         """
         Get the trading universe (stable sources only).
 
-        For weekly scans, this defaults to **top N by market cap** (N=max_stocks) from the
-        broad US tradable list (full market when requested), then liquidity-filters that ranked subset.
-        Market-cap lookups are cached (~7d) so scaling to ~1000 names does not re-fetch the full tape.
+        source="sp500" returns S&P 500 constituents (Beat SPY). Otherwise weekly scans
+        default to **top N by market cap** (N=max_stocks) from the broad US tradable list.
         """
+        src = (source or "").strip().lower().replace("&", "")
+        if src in ("sp500", "s500", "spx"):
+            candidates = self._get_sp500_candidates()
+            if apply_filters and candidates:
+                tickers = self.filter_by_liquidity(candidates, max_tickers=len(candidates))
+            else:
+                tickers = list(candidates)
+            tickers = list(dict.fromkeys(tickers))
+            logger.info("Trading universe ready", ticker_count=len(tickers), source="sp500")
+            return tickers
+
         if max_stocks is not None and max_stocks > 0 and rank_by_market_cap:
             # Prefer full US list so N can exceed S&P 500 (~505). Fall back to S&P if empty.
             if full_market:

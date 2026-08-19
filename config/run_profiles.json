@@ -1,6 +1,7 @@
 {
   "beat-spy-10k": {
-    "max_stocks": 600,
+    "max_stocks": 500,
+    "universe_source": "sp500",
     "agent_tier_mode": "tiered",
     "execute": true,
     "llm_cache": true,

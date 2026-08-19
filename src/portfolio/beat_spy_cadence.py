@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Sequence, Set, Tuple
 
 STATE_PATH = Path("data/performance/beat_spy_rebalance.json")
 
@@ -24,15 +24,64 @@ def _save(payload: Dict[str, Any], path: Path = STATE_PATH) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def holdings_need_rebuild(
+    *,
+    held_tickers: Sequence[str],
+    eligible: Optional[Set[str]] = None,
+    dossiers: Optional[Dict[str, Any]] = None,
+    prices: Optional[Dict[str, float]] = None,
+    max_names: int = 12,
+    min_mcap_usd: float = 10_000_000_000.0,
+    min_adv_usd: float = 20_000_000.0,
+    min_price_usd: float = 10.0,
+) -> Tuple[bool, Dict[str, Any]]:
+    """True if the live book is not a valid concentrated S&P-like 10–12."""
+    from src.alpha.liquidity_gate import passes_buy_liquidity
+
+    held = [str(t) for t in held_tickers if t]
+    diag: Dict[str, Any] = {"held": len(held), "outside_universe": [], "illiquid": []}
+    if len(held) > int(max_names):
+        diag["reason"] = "too_many_names"
+        return True, diag
+    eligible = eligible or set()
+    dossiers = dossiers or {}
+    prices = prices or {}
+    for t in held:
+        if eligible and t not in eligible:
+            diag["outside_universe"].append(t)
+            continue
+        px = float(prices.get(t) or 0.0)
+        ok, reason = passes_buy_liquidity(
+            dossiers.get(t),
+            px,
+            min_mcap=min_mcap_usd,
+            min_adv=min_adv_usd,
+            min_price=min_price_usd,
+        )
+        if not ok:
+            diag["illiquid"].append({"ticker": t, "reason": reason})
+    if diag["outside_universe"] or diag["illiquid"]:
+        diag["reason"] = "book_violates_mandate"
+        return True, diag
+    diag["reason"] = "book_ok"
+    return False, diag
+
+
 def should_skip_new_buys(
     *,
     interval_weeks: int = 2,
     now: datetime | None = None,
     path: Path = STATE_PATH,
+    force: bool = False,
+    mandate_rebuild: bool = False,
 ) -> Tuple[bool, Dict[str, Any]]:
     """True → risk-only week (stops, no rebuild/adds). First run is always full."""
     now = now or datetime.utcnow()
     interval_weeks = max(1, int(interval_weeks or 1))
+    if force:
+        return False, {"reason": "forced_full_rebalance", "last_full_rebalance_at": None}
+    if mandate_rebuild:
+        return False, {"reason": "book_violates_mandate", "last_full_rebalance_at": None}
     state = _load(path)
     last_raw = state.get("last_full_rebalance_at")
     if not last_raw:

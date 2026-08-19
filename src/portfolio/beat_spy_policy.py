@@ -14,7 +14,8 @@ CASH_FLOOR_PCT = 0.03
 MAX_BUY_TICKERS = 12
 MAX_POSITION_PCT = 0.10
 MAX_SECTOR_PCT = 0.30
-MAX_STOCKS = 600
+MAX_STOCKS = 500
+UNIVERSE_SOURCE = "sp500"
 FACTOR_TOP_N = 40
 MAX_ROTATION_SELLS = 20
 MIN_BUY_NOTIONAL_USD = 250.0
@@ -39,6 +40,7 @@ def apply_beat_spy_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out["max_position_pct"] = MAX_POSITION_PCT
     out["max_sector_pct"] = MAX_SECTOR_PCT
     out["max_stocks"] = min(int(out.get("max_stocks", MAX_STOCKS)), MAX_STOCKS)
+    out["universe_source"] = UNIVERSE_SOURCE
     out["beat_spy_agent_triage"] = True
     out["beat_spy_factor_top_n"] = int(out.get("beat_spy_factor_top_n", FACTOR_TOP_N) or FACTOR_TOP_N)
     out["beat_spy_concentrated"] = True
