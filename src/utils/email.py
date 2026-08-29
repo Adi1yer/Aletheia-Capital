@@ -18,18 +18,32 @@ from src.llm.models import get_llm_for_agent
 logger = structlog.get_logger()
 
 
-def _load_scorecard_leaderboard(limit: int = 12, regime_mode: Optional[str] = None) -> list:
-    path = "data/performance/agent_scorecard.json"
+def _load_scorecard_leaderboard(
+    limit: int = 12,
+    regime_mode: Optional[str] = None,
+    *,
+    beat_spy_mode: bool = False,
+) -> list:
+    path = (
+        "data/performance/agent_horizon_scorecard.json"
+        if beat_spy_mode
+        else "data/performance/agent_scorecard.json"
+    )
     if not os.path.exists(path):
-        return []
+        # Fall back to weekly scorecard if horizon file not built yet.
+        if beat_spy_mode and os.path.exists("data/performance/agent_scorecard.json"):
+            path = "data/performance/agent_scorecard.json"
+            beat_spy_mode = False
+        else:
+            return []
     try:
         with open(path) as f:
             data = json.load(f)
     except Exception:
         return []
     agents_src = (data.get("agents") or {})
-    header_mode = "global"
-    if regime_mode:
+    header_mode = "horizon" if path.endswith("agent_horizon_scorecard.json") else "global"
+    if regime_mode and header_mode != "horizon":
         by_regime = (data.get("by_regime") or {}).get(regime_mode) or {}
         regime_agents = by_regime.get("agents") or {}
         if regime_agents:
@@ -49,6 +63,7 @@ def _load_scorecard_leaderboard(limit: int = 12, regime_mode: Optional[str] = No
                 float(row.get("confidence_weighted_return_pct") or 0),
                 obs,
                 header_mode,
+                int(row.get("eval_horizon_weeks") or 0),
             )
         )
     rows.sort(key=lambda x: x[1] * 50 + x[3], reverse=True)
@@ -360,13 +375,27 @@ class EmailNotifier:
                     text.append(f"  {line}")
                 text.append("")
 
-        lb = _load_scorecard_leaderboard(regime_mode=(results.get("regime") or {}).get("mode"))
+        beat_spy = bool(
+            (results.get("decision_diagnostics") or {}).get("beat_spy_concentrated")
+            or (results.get("beat_spy") or {})
+            or (results.get("learning_context") or {}).get("scorecard_source") == "agent_horizon"
+        )
+        lb = _load_scorecard_leaderboard(
+            regime_mode=(results.get("regime") or {}).get("mode"),
+            beat_spy_mode=beat_spy,
+        )
         if lb:
             mode_label = lb[0][4] if lb else "global"
             text.append(f"AGENT LEADERBOARD ({mode_label})")
             text.append("-" * 40)
-            for ak, acc, cw, obs, _mode in lb:
-                text.append(f"  {ak}: acc {acc:.0%}, cw-ret {cw:.2f}, n={obs}")
+            hz_note = (results.get("learning_context") or {}).get("horizon_note")
+            if beat_spy and hz_note:
+                text.append(f"  {hz_note}")
+            for row in lb:
+                ak, acc, cw, obs = row[0], row[1], row[2], row[3]
+                hz = row[5] if len(row) > 5 and row[5] else None
+                hz_s = f", hz={hz}w" if hz else ""
+                text.append(f"  {ak}: acc {acc:.0%}, cw-ret {cw:.2f}, n={obs}{hz_s}")
             text.append("")
         learning = results.get("learning_context") or {}
         if learning:
@@ -1063,18 +1092,36 @@ class EmailNotifier:
                     html += f"<li>{html_escape(line)}</li>"
                 html += "</ul></div>"
 
-        lb = _load_scorecard_leaderboard(regime_mode=(results.get("regime") or {}).get("mode"))
+        beat_spy = bool(
+            (results.get("decision_diagnostics") or {}).get("beat_spy_concentrated")
+            or (results.get("beat_spy") or {})
+            or (results.get("learning_context") or {}).get("scorecard_source") == "agent_horizon"
+        )
+        lb = _load_scorecard_leaderboard(
+            regime_mode=(results.get("regime") or {}).get("mode"),
+            beat_spy_mode=beat_spy,
+        )
         if lb:
             mode_label = lb[0][4] if lb else "global"
+            hz_note = (results.get("learning_context") or {}).get("horizon_note") or ""
+            note_html = (
+                f"<p style='margin:0 0 8px 0;font-size:12px'>{html_escape(str(hz_note))}</p>"
+                if beat_spy and hz_note
+                else ""
+            )
             html += f"""
             <div class="section">
                 <h2>Agent leaderboard ({html_escape(mode_label)})</h2>
+                {note_html}
                 <table>
-                    <tr><th>Agent</th><th>Accuracy</th><th>CW return</th><th>N</th></tr>
+                    <tr><th>Agent</th><th>Accuracy</th><th>CW return</th><th>N</th><th>Horizon</th></tr>
             """
-            for ak, acc, cw, obs, _mode in lb:
+            for row in lb:
+                ak, acc, cw, obs = row[0], row[1], row[2], row[3]
+                hz = row[5] if len(row) > 5 and row[5] else ""
+                hz_cell = f"{hz}w" if hz else "-"
                 html += f"""
-                <tr><td>{html_escape(ak)}</td><td>{acc:.0%}</td><td>{cw:.2f}</td><td>{obs}</td></tr>
+                <tr><td>{html_escape(ak)}</td><td>{acc:.0%}</td><td>{cw:.2f}</td><td>{obs}</td><td>{hz_cell}</td></tr>
                 """
             html += "</table></div>"
         learning = results.get("learning_context") or {}

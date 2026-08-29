@@ -430,6 +430,7 @@ class PerformanceTracker:
         dollar_blend: float = 0.30,
         attribution_weeks: int = 0,
         min_attribution_weeks: int = 4,
+        min_observations_by_agent: Optional[Dict[str, int]] = None,
     ) -> Tuple[Dict[str, float], Dict[str, Any]]:
         """
         Calculate new weights based on agent performance.
@@ -443,6 +444,7 @@ class PerformanceTracker:
         scorecard_metrics = scorecard_metrics or {}
         portfolio_metrics = portfolio_metrics or {}
         current_weights = current_weights or {}
+        min_observations_by_agent = min_observations_by_agent or {}
         meta: Dict[str, Any] = {"weight_changes": [], "weight_skips": []}
         use_dollar = attribution_weeks >= min_attribution_weeks and bool(portfolio_metrics)
         signal_weight = 1.0 - dollar_blend if use_dollar else 1.0
@@ -489,15 +491,23 @@ class PerformanceTracker:
         for agent_key, avg_return in agent_returns.items():
             row = scorecard_metrics.get(agent_key) or {}
             obs = int(row.get("directional_observations", 0) or 0)
-            if obs < min_observations_for_move:
+            required = int(
+                min_observations_by_agent.get(agent_key, min_observations_for_move)
+            )
+            if obs < required:
                 cw = current_weights.get(agent_key, 1.0)
                 new_weights[agent_key] = cw
+                skip_reason = (
+                    "insufficient_horizon_observations"
+                    if min_observations_by_agent
+                    else "insufficient_observations"
+                )
                 meta["weight_skips"].append(
                     {
                         "agent": agent_key,
-                        "reason": "insufficient_observations",
+                        "reason": skip_reason,
                         "observations": obs,
-                        "required": min_observations_for_move,
+                        "required": required,
                     }
                 )
                 continue

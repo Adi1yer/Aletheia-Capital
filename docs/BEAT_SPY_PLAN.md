@@ -75,4 +75,6 @@ Universe (~S&P 500)
 
 Do not add agents, crypto, congressional, covered calls, or new sleeves until the 10–12 name book has **6 months of IR** on the scorecard. Month 3: if IR &lt; 0, redesign factors/universe, not knobs. Month 6: pass → $1k live + paper twin; fail → redesign sprint (core-satellite is then in play).
 
+**Agent weights (Beat SPY):** not weekly hit-rate. Signals are scored at each agent’s intended hold horizon (`config/agent_horizons.json` → `data/performance/agent_signal_ledger.jsonl`). Weights move only after enough horizon-resolved observations. Ledger/scorecard live under `data/performance/` (GitHub perf cache); a cache miss delays resolution the same way as cadence state.
+
 When implementing: concentrated allocator + Beat SPY knob overwrite in `src/portfolio/beat_spy_policy.py`. Strategy intent stays in this file.

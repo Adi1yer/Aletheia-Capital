@@ -1,0 +1,51 @@
+{
+  "default_weeks": 4,
+  "buckets": {
+    "short": {
+      "eval_horizon_weeks": 1,
+      "min_observations_for_move": 10,
+      "agents": [
+        "technicals_analyst",
+        "sentiment_analyst",
+        "news_sentiment_analyst"
+      ]
+    },
+    "medium": {
+      "eval_horizon_weeks": 4,
+      "min_observations_for_move": 8,
+      "agents": [
+        "stanley_druckenmiller",
+        "growth_analyst",
+        "peter_lynch",
+        "cathie_wood",
+        "chamath_palihapitiya",
+        "congressional_trader",
+        "rakesh_jhunjhunwala"
+      ]
+    },
+    "long": {
+      "eval_horizon_weeks": 8,
+      "min_observations_for_move": 6,
+      "agents": [
+        "fundamentals_analyst",
+        "valuation_analyst",
+        "aswath_damodaran",
+        "bill_ackman"
+      ]
+    },
+    "very_long": {
+      "eval_horizon_weeks": 12,
+      "min_observations_for_move": 6,
+      "agents": [
+        "warren_buffett",
+        "charlie_munger",
+        "ben_graham",
+        "mohnish_pabrai",
+        "phil_fisher",
+        "ron_baron",
+        "michael_burry",
+        "aditya_iyer"
+      ]
+    }
+  }
+}

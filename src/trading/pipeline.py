@@ -1081,9 +1081,24 @@ class TradingPipeline:
                 "promotion": {},
             }
             if bool(run_config.get("beat_spy_mode")):
-                weight_meta["weight_skips"] = [
-                    {"reason": "beat_spy_freeze_hit_rate_weights"}
-                ]
+                weight_meta = self._update_agent_weights(
+                    scan_cache=scan_cache,
+                    run_config=run_config,
+                    learning_context=learning_context,
+                    run_id=run_id,
+                    use_horizon_scorecard=True,
+                )
+                if not (weight_meta or {}).get("weight_changes") and not (weight_meta or {}).get(
+                    "weight_skips"
+                ):
+                    weight_meta["weight_skips"] = [
+                        {"reason": "horizon_resolved_weights", "note": "no_scorecard_yet"}
+                    ]
+                elif (weight_meta or {}).get("weight_skips") and not (weight_meta or {}).get(
+                    "weight_changes"
+                ):
+                    # Tag the batch so changelog is honest about horizon gating.
+                    weight_meta.setdefault("horizon_mode", True)
             else:
                 weight_meta = self._update_agent_weights(
                     scan_cache=scan_cache,
@@ -1847,6 +1862,40 @@ class TradingPipeline:
         except Exception as e:
             logger.warning("Counterfactual ledger append failed", error=str(e))
 
+        if bool(run_config.get("beat_spy_mode")):
+            try:
+                from src.performance.agent_horizon import refresh_horizon_learning
+
+                prices = {
+                    t: float(r.get("current_price") or 0)
+                    for t, r in (risk_analysis or {}).items()
+                    if isinstance(r, dict) and r.get("current_price") is not None
+                }
+                deep = getattr(self, "_triage_deep_tickers", None) or set()
+                held = {
+                    t
+                    for t, p in (portfolio.positions or {}).items()
+                    if int(getattr(p, "long", 0) or 0) > 0
+                }
+                scope = set(deep) | held | set((decisions or {}).keys())
+                hz = refresh_horizon_learning(
+                    run_id=run_id,
+                    run_date=run_date,
+                    agent_signals={
+                        ak: {
+                            t: (s.model_dump() if hasattr(s, "model_dump") else s)
+                            for t, s in ts.items()
+                        }
+                        for ak, ts in agent_signals.items()
+                    },
+                    risk_analysis=risk_analysis,
+                    current_prices=prices,
+                    ticker_scope=scope,
+                )
+                learning_context.update(hz)
+            except Exception as e:
+                logger.warning("Beat SPY horizon learning refresh failed", error=str(e))
+
         try:
             from src.performance.fill_ledger import recent_fills
             from src.performance.portfolio_attribution import append_weekly_attribution
@@ -1886,6 +1935,7 @@ class TradingPipeline:
         run_config: Optional[Dict[str, Any]] = None,
         learning_context: Optional[Dict[str, Any]] = None,
         run_id: Optional[str] = None,
+        use_horizon_scorecard: bool = False,
     ) -> Dict[str, Any]:
         """Update agent weights based on performance (scan cache + cycle tracker data)."""
         run_config = run_config or {}
@@ -1893,29 +1943,45 @@ class TradingPipeline:
         meta: Dict[str, Any] = {"weight_changes": [], "weight_skips": [], "promotion": {}}
         try:
             cache_added = 0
-            if scan_cache is not None:
+            if scan_cache is not None and not use_horizon_scorecard:
                 cache_added = self.performance_tracker.load_from_scan_cache(scan_cache, limit=5)
             ledger_count = int(
                 learning_context.get("ledger_run_count_after")
                 or learning_context.get("ledger_run_count")
                 or 0
             )
-            if cache_added == 0 and ledger_count >= 2:
+            if cache_added == 0 and ledger_count >= 2 and not use_horizon_scorecard:
                 self.performance_tracker.load_from_weekly_ledger(limit_pairs=5)
             scorecard_agents = {}
             sc_full: Dict[str, Any] = {}
+            min_obs_by_agent: Dict[str, int] = {}
             try:
-                from src.backtesting.agent_evaluator import blend_scorecard_metrics, load_scorecard
+                if use_horizon_scorecard:
+                    from src.performance.agent_horizon import (
+                        load_horizon_scorecard,
+                        min_observations_by_agent,
+                    )
 
-                sc_full = load_scorecard()
-                regime_mode = (run_config.get("regime") or {}).get("mode") or "neutral"
-                scorecard_agents = blend_scorecard_metrics(sc_full, regime_mode)
+                    sc_full = load_horizon_scorecard()
+                    scorecard_agents = dict(sc_full.get("agents") or {})
+                    min_obs_by_agent = min_observations_by_agent()
+                    learning_context["scorecard_source"] = "agent_horizon"
+                    learning_context["horizon_note"] = sc_full.get("horizon_note") or learning_context.get(
+                        "horizon_note"
+                    )
+                    meta["horizon_mode"] = True
+                else:
+                    from src.backtesting.agent_evaluator import blend_scorecard_metrics, load_scorecard
+
+                    sc_full = load_scorecard()
+                    regime_mode = (run_config.get("regime") or {}).get("mode") or "neutral"
+                    scorecard_agents = blend_scorecard_metrics(sc_full, regime_mode)
             except Exception:
                 pass
 
             portfolio_metrics: Dict[str, float] = {}
             attribution_weeks = 0
-            if run_id:
+            if run_id and not use_horizon_scorecard:
                 try:
                     from src.performance.portfolio_attribution import (
                         agent_dollar_metrics,
@@ -1938,11 +2004,12 @@ class TradingPipeline:
                 scorecard_metrics=scorecard_agents,
                 decay_half_life_weeks=8.0,
                 current_weights=current_weights,
-                min_observations_for_move=15,
+                min_observations_for_move=15 if not use_horizon_scorecard else 8,
                 max_weight_delta_per_run=0.15,
                 portfolio_metrics=portfolio_metrics,
                 dollar_blend=dollar_blend,
                 attribution_weeks=attribution_weeks,
+                min_observations_by_agent=min_obs_by_agent or None,
             )
             meta["weight_changes"] = weight_meta.get("weight_changes", [])
             meta["weight_skips"] = weight_meta.get("weight_skips", [])
@@ -1963,7 +2030,11 @@ class TradingPipeline:
                 regime_mode = (run_config.get("regime") or {}).get("mode")
                 by_regime = (sc_full.get("by_regime") or {}).get(regime_mode or "") or {}
                 regime_agents = (by_regime.get("agents") or {}) if isinstance(by_regime, dict) else {}
-                use_regime = regime_mode and len(regime_agents) >= 6
+                use_regime = (
+                    (not use_horizon_scorecard)
+                    and regime_mode
+                    and len(regime_agents) >= 6
+                )
 
                 for agent_key, new_weight in new_weights.items():
                     old_weight = current_weights.get(agent_key, 1.0)
@@ -1979,6 +2050,7 @@ class TradingPipeline:
                             agent=agent_key,
                             old_weight=round(old_weight, 2),
                             new_weight=round(new_weight, 2),
+                            horizon=use_horizon_scorecard,
                         )
 
                 if updated_count > 0:
@@ -1987,6 +2059,7 @@ class TradingPipeline:
                         "Agent weights updated based on performance",
                         updated_count=updated_count,
                         total_agents=len(new_weights),
+                        horizon=use_horizon_scorecard,
                     )
             elif new_weights and not promo.get("promote", True):
                 logger.warning("Weight update skipped by promotion gate", reason=promo.get("reason"))
