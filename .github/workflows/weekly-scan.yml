@@ -2,8 +2,9 @@ name: Weekly Scan & Rebalance
 
 on:
   schedule:
-    # 16:00 UTC = ~9:00 AM Pacific during PDT
-    - cron: '0 16 * * 1'
+    # Mon–Fri 16:00 UTC (~9:00 AM Pacific PDT). Holiday Mondays defer via the gate job
+    # to the next NYSE session (usually Tuesday).
+    - cron: '0 16 * * 1-5'
   workflow_dispatch:
     inputs:
       force_full_rebalance:
@@ -12,7 +13,29 @@ on:
         default: false
 
 jobs:
+  market-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Decide whether to run this week
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — bypassing holiday gate."
+            exit 0
+          fi
+          python3 scripts/should_run_weekly_scan.py --github-output
+
   weekly-scan:
+    needs: market-gate
+    if: needs.market-gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 600
 
@@ -71,6 +94,7 @@ jobs:
           echo "scan cache hit: ${{ steps.scan_cache_restore.outputs.cache-hit }}"
           echo "S3 scan cache bucket: ${SCAN_CACHE_S3_BUCKET:-not set}"
           echo "S3 scan cache prefix: ${SCAN_CACHE_S3_PREFIX:-not set}"
+          echo "market gate reason: ${{ needs.market-gate.outputs.reason }}"
           echo "performance files:" && ls -la data/performance/ 2>/dev/null || true
           echo "weekly_ledger lines:" && wc -l data/performance/weekly_ledger.jsonl 2>/dev/null || echo 0
           echo "scan_cache run dirs:" && ls data/scan_cache/ 2>/dev/null | wc -l

@@ -45,34 +45,31 @@ def _as_utc(dt: datetime) -> datetime:
 
 
 def is_us_equity_rth(dt: datetime) -> bool:
-    """True during NYSE regular session (Mon–Fri 9:30 AM–4:00 PM ET, no holiday calendar)."""
+    """True during NYSE regular session (Mon–Fri 9:30 AM–4:00 PM ET, holiday-aware)."""
+    from src.trading.us_equity_calendar import is_us_equity_trading_day
+
     et = _as_utc(dt).astimezone(ET)
-    if et.weekday() >= 5:
+    if not is_us_equity_trading_day(et):
         return False
     t = et.time()
     return RTH_OPEN <= t < RTH_CLOSE
 
 
 def next_us_equity_open_after(dt: datetime) -> datetime:
-    """Next regular-session open at or after ``dt`` (ET, naive holiday handling)."""
+    """Next regular-session open at or after ``dt`` (ET, holiday-aware)."""
+    from src.trading.us_equity_calendar import is_us_equity_trading_day
+
     et = _as_utc(dt).astimezone(ET)
-    candidate = et.replace(hour=9, minute=30, second=0, microsecond=0)
-    if et.weekday() >= 5:
-        days_ahead = 7 - et.weekday()
-        candidate = (et + timedelta(days=days_ahead)).replace(
-            hour=9, minute=30, second=0, microsecond=0
-        )
-    elif et.time() >= RTH_CLOSE:
-        candidate = (et + timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
-        while candidate.weekday() >= 5:
-            candidate += timedelta(days=1)
-    elif et.time() < RTH_OPEN:
-        if et.weekday() >= 5:
-            while candidate.weekday() >= 5:
-                candidate += timedelta(days=1)
-    else:
-        return candidate
-    return candidate
+    # Same trading day before the close → today's open (legacy status-email behavior).
+    if is_us_equity_trading_day(et) and et.time() < RTH_CLOSE:
+        return et.replace(hour=9, minute=30, second=0, microsecond=0)
+
+    d = et.date() + timedelta(days=1)
+    for _ in range(14):
+        if is_us_equity_trading_day(d):
+            return datetime(d.year, d.month, d.day, 9, 30, tzinfo=ET)
+        d += timedelta(days=1)
+    return et.replace(hour=9, minute=30, second=0, microsecond=0)
 
 
 def _parse_run_timestamp(ts: Optional[str]) -> datetime:

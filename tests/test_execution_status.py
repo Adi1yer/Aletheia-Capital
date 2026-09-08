@@ -31,6 +31,14 @@ def test_next_open_after_friday_evening():
     assert nxt.hour == 9 and nxt.minute == 30
 
 
+def test_next_open_skips_labor_day_2026():
+    # Labor Day Mon 2026-09-07 → Tue 2026-09-08 9:30 ET
+    dt = datetime(2026, 9, 7, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+    nxt = next_us_equity_open_after(dt)
+    assert nxt.date().isoformat() == "2026-09-08"
+    assert nxt.hour == 9 and nxt.minute == 30
+
+
 def test_build_execution_status_after_hours_pending():
     execution_results = {
         "AAPL": {"success": True, "order_id": "oid-1", "side": "buy", "qty": 5},
