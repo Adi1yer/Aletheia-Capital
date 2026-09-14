@@ -8,7 +8,7 @@ def test_main_returns_zero_when_all_checks_pass(monkeypatch):
 
     monkeypatch.setattr(preflight, "_check_main_alpaca", lambda: calls.append("main"))
     monkeypatch.setattr(preflight, "_check_biotech_alpaca", lambda: calls.append("biotech"))
-    monkeypatch.setattr(preflight, "_check_deepseek", lambda: calls.append("deepseek"))
+    monkeypatch.setattr(preflight, "_check_deepseek", lambda **kwargs: calls.append("deepseek"))
     monkeypatch.setattr(preflight, "_check_smtp", lambda: calls.append("smtp"))
     monkeypatch.setattr(preflight, "_check_finnhub", lambda: calls.append("finnhub"))
 
@@ -18,19 +18,33 @@ def test_main_returns_zero_when_all_checks_pass(monkeypatch):
     assert calls == ["main", "biotech", "deepseek", "smtp", "finnhub"]
 
 
-def test_main_returns_one_when_required_check_fails(monkeypatch):
+def test_soft_fail_deepseek_does_not_fail_preflight(monkeypatch):
     monkeypatch.setattr(preflight, "_check_main_alpaca", lambda: None)
+    monkeypatch.setattr(preflight, "_check_biotech_alpaca", lambda: None)
 
-    def _boom() -> None:
-        raise RuntimeError("bad biotech creds")
+    def _boom(**kwargs) -> None:
+        raise RuntimeError("900-second timeout")
 
-    monkeypatch.setattr(preflight, "_check_biotech_alpaca", _boom)
-    monkeypatch.setattr(preflight, "_check_deepseek", lambda: None)
+    monkeypatch.setattr(preflight, "_check_deepseek", _boom)
+    monkeypatch.setattr(preflight, "_check_smtp", lambda: None)
+    monkeypatch.setattr(preflight, "_check_finnhub", lambda: None)
+
+    rc = preflight.main(["--soft-fail-deepseek"])
+    assert rc == 0
+
+
+def test_deepseek_hard_fail_still_exits_one(monkeypatch):
+    monkeypatch.setattr(preflight, "_check_main_alpaca", lambda: None)
+    monkeypatch.setattr(preflight, "_check_biotech_alpaca", lambda: None)
+
+    def _boom(**kwargs) -> None:
+        raise RuntimeError("900-second timeout")
+
+    monkeypatch.setattr(preflight, "_check_deepseek", _boom)
     monkeypatch.setattr(preflight, "_check_smtp", lambda: None)
     monkeypatch.setattr(preflight, "_check_finnhub", lambda: None)
 
     rc = preflight.main([])
-
     assert rc == 1
 
 
@@ -39,7 +53,7 @@ def test_skip_flags_omit_optional_checks(monkeypatch):
 
     monkeypatch.setattr(preflight, "_check_main_alpaca", lambda: calls.append("main"))
     monkeypatch.setattr(preflight, "_check_biotech_alpaca", lambda: calls.append("biotech"))
-    monkeypatch.setattr(preflight, "_check_deepseek", lambda: calls.append("deepseek"))
+    monkeypatch.setattr(preflight, "_check_deepseek", lambda **kwargs: calls.append("deepseek"))
     monkeypatch.setattr(preflight, "_check_smtp", lambda: calls.append("smtp"))
     monkeypatch.setattr(preflight, "_check_finnhub", lambda: calls.append("finnhub"))
 
@@ -54,7 +68,7 @@ def test_skip_main_omits_main_check(monkeypatch):
 
     monkeypatch.setattr(preflight, "_check_main_alpaca", lambda: calls.append("main"))
     monkeypatch.setattr(preflight, "_check_biotech_alpaca", lambda: calls.append("biotech"))
-    monkeypatch.setattr(preflight, "_check_deepseek", lambda: calls.append("deepseek"))
+    monkeypatch.setattr(preflight, "_check_deepseek", lambda **kwargs: calls.append("deepseek"))
     monkeypatch.setattr(preflight, "_check_smtp", lambda: calls.append("smtp"))
     monkeypatch.setattr(preflight, "_check_finnhub", lambda: calls.append("finnhub"))
 
@@ -69,7 +83,7 @@ def test_skip_biotech_omits_biotech_check(monkeypatch):
 
     monkeypatch.setattr(preflight, "_check_main_alpaca", lambda: calls.append("main"))
     monkeypatch.setattr(preflight, "_check_biotech_alpaca", lambda: calls.append("biotech"))
-    monkeypatch.setattr(preflight, "_check_deepseek", lambda: calls.append("deepseek"))
+    monkeypatch.setattr(preflight, "_check_deepseek", lambda **kwargs: calls.append("deepseek"))
     monkeypatch.setattr(preflight, "_check_smtp", lambda: calls.append("smtp"))
     monkeypatch.setattr(preflight, "_check_finnhub", lambda: calls.append("finnhub"))
 
@@ -97,7 +111,7 @@ def test_satellite_only_flag(monkeypatch):
         "_check_satellite_alpaca",
         lambda: calls.append("satellite"),
     )
-    monkeypatch.setattr(preflight, "_check_deepseek", lambda: calls.append("deepseek"))
+    monkeypatch.setattr(preflight, "_check_deepseek", lambda **kwargs: calls.append("deepseek"))
     monkeypatch.setattr(preflight, "_check_smtp", lambda: calls.append("smtp"))
     monkeypatch.setattr(preflight, "_check_finnhub", lambda: calls.append("finnhub"))
 

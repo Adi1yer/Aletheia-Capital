@@ -2,9 +2,9 @@ name: Weekly Scan & Rebalance
 
 on:
   schedule:
-    # Mon–Fri 16:00 UTC (~9:00 AM Pacific PDT). Holiday Mondays defer via the gate job
-    # to the next NYSE session (usually Tuesday).
-    - cron: '0 16 * * 1-5'
+    # 13:30 UTC ≈ 9:30 AM ET / 6:30 AM PT. GitHub cron often slips 1–3h; earlier
+    # start keeps the job inside RTH even when the queue is delayed.
+    - cron: '30 13 * * 1-5'
   workflow_dispatch:
     inputs:
       force_full_rebalance:
@@ -114,7 +114,7 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
-        run: poetry run python preflight.py --skip-biotech
+        run: poetry run python preflight.py --skip-biotech --deepseek-timeout 30 --soft-fail-deepseek
 
       - name: Run weekly scan & rebalance
         env:

@@ -20,7 +20,6 @@ from src.broker.registry import (
     workflow_credentials_configured,
 )
 from src.config.settings import settings
-from src.llm.models import get_llm_for_agent
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -115,13 +114,39 @@ def _check_biotech_alpaca() -> None:
     _check_workflow_account_alpaca("biotech-catalyst")
 
 
-def _check_deepseek() -> None:
-    logger.info("DEEPSEEK CHECK: model invoke")
+def _check_deepseek(*, timeout_seconds: float = 30.0) -> None:
+    """Probe DeepSeek with a hard ceiling — never sit on their 900s queue timeout."""
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FuturesTimeout
+
+    logger.info("DEEPSEEK CHECK: model invoke", timeout_seconds=timeout_seconds)
     api_key = (settings.deepseek_api_key or "").strip()
     if not api_key:
         raise RuntimeError("Missing DEEPSEEK_API_KEY")
-    llm = get_llm_for_agent("deepseek-v3", "deepseek")
-    _ = llm.bind(max_tokens=1).invoke([HumanMessage(content="respond with OK")])
+
+    # Bound the HTTP client as well as the thread so we fail in seconds, not 15 minutes.
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(
+        model="deepseek-chat",
+        api_key=api_key,
+        base_url="https://api.deepseek.com",
+        timeout=timeout_seconds,
+        max_retries=0,
+    )
+
+    def _invoke() -> None:
+        llm.bind(max_tokens=1).invoke([HumanMessage(content="respond with OK")])
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_invoke)
+        try:
+            fut.result(timeout=timeout_seconds + 5.0)
+        except FuturesTimeout as exc:
+            raise RuntimeError(
+                f"DeepSeek preflight timed out after {timeout_seconds:.0f}s "
+                "(provider queue/start limit — retry later or re-run workflow)"
+            ) from exc
     logger.info("DEEPSEEK OK")
 
 
@@ -170,6 +195,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Ping shared multi-sleeve Alpaca account only (hedge/options/congressional/macro/crypto)",
     )
+    p.add_argument(
+        "--deepseek-timeout",
+        type=float,
+        default=30.0,
+        help="Seconds before DeepSeek probe aborts (default 30; avoids provider 900s queue)",
+    )
+    p.add_argument(
+        "--soft-fail-deepseek",
+        action="store_true",
+        help="Log DeepSeek probe failures but do not fail preflight (transient provider outages)",
+    )
     return p.parse_args(argv)
 
 
@@ -186,26 +222,38 @@ def main(argv: list[str] | None = None) -> int:
         if not args.skip_biotech:
             checks.append(("biotech_alpaca", _check_biotech_alpaca))
     if not args.skip_deepseek:
-        checks.append(("deepseek", _check_deepseek))
+        timeout = float(args.deepseek_timeout)
+        checks.append(("deepseek", lambda: _check_deepseek(timeout_seconds=timeout)))
     if not args.skip_smtp:
         checks.append(("smtp", _check_smtp))
     if not args.skip_finnhub:
         checks.append(("finnhub", _check_finnhub))
 
     failures: list[tuple[str, str]] = []
+    soft_failures: list[tuple[str, str]] = []
     for name, check in checks:
         try:
             check()
         except Exception as exc:
-            failures.append((name, str(exc)))
-            logger.error("CHECK FAILED", check=name, error=str(exc))
+            if name == "deepseek" and args.soft_fail_deepseek:
+                soft_failures.append((name, str(exc)))
+                logger.error("CHECK SOFT-FAILED", check=name, error=str(exc))
+            else:
+                failures.append((name, str(exc)))
+                logger.error("CHECK FAILED", check=name, error=str(exc))
+
+    for name, error in soft_failures:
+        print(f"[WARN] {name}: {error}")
 
     if failures:
         for name, error in failures:
             print(f"[FAIL] {name}: {error}")
         return 1
 
-    print("Preflight checks passed.")
+    if soft_failures:
+        print("Preflight checks passed with warnings.")
+    else:
+        print("Preflight checks passed.")
     return 0
 
 
