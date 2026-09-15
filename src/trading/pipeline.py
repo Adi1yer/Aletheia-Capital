@@ -690,7 +690,140 @@ class TradingPipeline:
                     )
             except Exception as e:
                 logger.warning("Beat SPY cadence check failed", error=str(e))
-        if run_config.get("rebalance") is True:
+
+        wheel_manage_results: List[Dict] = []
+        wheel_state: Dict[str, Any] = {}
+        if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
+            try:
+                from src.options.wheel_lifecycle import (
+                    manage_short_options,
+                    short_option_underlyings,
+                    sync_wheel_assignment_state,
+                )
+                from src.options.wheel_universe import screen_wheel_candidates
+                from src.portfolio.wheel_allocator import allocate_wheel_hybrid_book
+
+                opt_pos = []
+                if self.broker:
+                    try:
+                        opt_pos = self.broker.get_option_positions() or []
+                    except Exception:
+                        opt_pos = []
+                short_und = short_option_underlyings(opt_pos)
+
+                if execute and self.broker:
+                    wheel_manage_results = manage_short_options(
+                        self.broker,
+                        current_prices,
+                        manage_dte_threshold=int(run_config.get("manage_dte_threshold", 7)),
+                        manage_itm_pct=float(run_config.get("manage_itm_pct", 0.02)),
+                        execute=True,
+                    )
+                    try:
+                        portfolio = self.broker.sync_portfolio()
+                        opt_pos = self.broker.get_option_positions() or []
+                        short_und = short_option_underlyings(opt_pos)
+                    except Exception:
+                        pass
+
+                dossiers = getattr(self, "_ticker_dossiers", None) or {}
+                wheel_cands = screen_wheel_candidates(
+                    tickers,
+                    prices=current_prices,
+                    dossiers=dossiers,
+                    max_price=float(run_config.get("max_underlying_price", 35.0)),
+                    min_adv_usd=float(run_config.get("min_adv_usd", 5_000_000.0)),
+                    min_option_oi=int(run_config.get("min_option_oi", 0) or 0),
+                    top_n=max(8, int(run_config.get("max_wheel_names", 4)) * 3),
+                )
+
+                # Directional: residual μ̂ when available, else highest-priced liquid names outside wheel.
+                dir_ranked: List[str] = []
+                try:
+                    from src.alpha.residual_mu import rank_residual_mu
+                    from src.portfolio.sectors import prefetch_sectors
+
+                    mu, _vol, _diag = rank_residual_mu(
+                        list(tickers),
+                        dossiers,
+                        sectors=prefetch_sectors(list(tickers), dossiers=dossiers),
+                    )
+                    dir_ranked = [
+                        t
+                        for t, _ in sorted(
+                            mu.items(), key=lambda kv: float(kv[1]), reverse=True
+                        )
+                    ]
+                except Exception as e:
+                    logger.warning("Directional residual rank failed", error=str(e))
+                    dir_ranked = [
+                        t
+                        for t in tickers
+                        if float(current_prices.get(t) or 0) > float(run_config.get("max_underlying_price", 35))
+                    ]
+
+                equity_now = 0.0
+                if hasattr(portfolio, "get_equity"):
+                    try:
+                        equity_now = float(portfolio.get_equity(current_prices) or 0)
+                    except Exception:
+                        equity_now = 0.0
+                if equity_now <= 0:
+                    equity_now = float(getattr(portfolio, "cash", 0) or 0) + sum(
+                        int(getattr(pos, "long", 0) or 0) * float(current_prices.get(t) or 0)
+                        for t, pos in (portfolio.positions or {}).items()
+                    )
+
+                decisions, wheel_diag = allocate_wheel_hybrid_book(
+                    portfolio=portfolio,
+                    current_prices=current_prices,
+                    wheel_candidates=wheel_cands,
+                    directional_candidates=dir_ranked,
+                    equity=equity_now,
+                    wheel_pct=float(run_config.get("wheel_pct", 0.70)),
+                    directional_pct=float(run_config.get("directional_pct", 0.30)),
+                    cash_buffer_pct=float(run_config.get("cash_buffer_pct", 0.06)),
+                    max_wheel_names=int(run_config.get("max_wheel_names", 4)),
+                    max_directional_names=int(run_config.get("max_directional_names", 5)),
+                    max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
+                    pending_orders_by_symbol=pending_orders_by_symbol,
+                    short_option_underlyings=short_und,
+                )
+                rules_score = int(run_config.get("wheel_rules_score", 55))
+                self.portfolio_manager._last_cc_lot_tickers = list(wheel_diag.get("cc_lot_tickers") or [])
+                self.portfolio_manager._last_csp_tickers = list(wheel_diag.get("csp_candidates") or [])[
+                    : int(run_config.get("max_csp_tickers", 3))
+                ]
+                self.portfolio_manager._last_csp_scores = {
+                    t: rules_score for t in self.portfolio_manager._last_csp_tickers
+                }
+                self.portfolio_manager._last_rebalance_diagnostics = dict(wheel_diag)
+                run_config["wheel_diagnostics"] = wheel_diag
+
+                if self.broker:
+                    try:
+                        wheel_state = sync_wheel_assignment_state(
+                            portfolio,
+                            opt_pos,
+                            max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
+                            current_prices=current_prices,
+                        )
+                    except Exception as e:
+                        logger.warning("Wheel state sync failed", error=str(e))
+
+                logger.info(
+                    "Wheel hybrid decisions ready",
+                    n=len(decisions),
+                    cc_lots=self.portfolio_manager._last_cc_lot_tickers,
+                    csp=self.portfolio_manager._last_csp_tickers,
+                )
+            except Exception as e:
+                logger.error("Wheel hybrid allocation failed; falling back", error=str(e))
+                decisions = None  # type: ignore
+        else:
+            decisions = None  # type: ignore
+
+        if decisions is None and run_config.get("rebalance") is True:
             decisions = self.portfolio_manager.generate_rebalance_decisions(
                 tickers=tickers,
                 agent_signals=agent_signals,
@@ -770,7 +903,7 @@ class TradingPipeline:
                 regime=dict(run_config.get("regime") or {}),
                 ticker_dossiers=getattr(self, "_ticker_dossiers", None) or {},
             )
-        else:
+        elif decisions is None:
             decisions = self.portfolio_manager.generate_decisions(
                 tickers=tickers,
                 agent_signals=agent_signals,
@@ -922,10 +1055,16 @@ class TradingPipeline:
                 logger.info("Running covered call step", cc_lot_tickers=cc_lot_tickers)
                 cc_portfolio = self.broker.sync_portfolio()
                 cc_manager = CoveredCallManager()
-                cc_scores = {
-                    t: self.portfolio_manager._score_covered_call(t, agent_signals, agent_weights)
-                    for t in cc_lot_tickers
-                }
+                rules_score = int(run_config.get("wheel_rules_score", 55))
+                if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
+                    cc_scores = {t: rules_score for t in cc_lot_tickers}
+                else:
+                    cc_scores = {
+                        t: self.portfolio_manager._score_covered_call(
+                            t, agent_signals, agent_weights
+                        )
+                        for t in cc_lot_tickers
+                    }
                 open_syms = {str(o.get("symbol") or ""): str(o.get("status") or "") for o in (open_orders or [])}
                 recent_syms = {str(o.get("symbol") or ""): str(o.get("status") or "") for o in (recent_orders or [])}
                 recon = {"open": 0, "partial": 0, "filled": 0}
@@ -1229,6 +1368,19 @@ class TradingPipeline:
             except Exception as e:
                 logger.warning("Execution status summary failed", error=str(e))
 
+        wheel_scorecard: Dict[str, Any] = {}
+        if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
+            try:
+                from src.performance.wheel_scorecard import build_wheel_scorecard
+
+                wheel_scorecard = build_wheel_scorecard(
+                    equity=float(port_dict.get("equity") or 0),
+                    cash=float(port_dict.get("cash") or 0),
+                    wheel_diagnostics=run_config.get("wheel_diagnostics") or decision_diagnostics,
+                )
+            except Exception as e:
+                logger.warning("Wheel scorecard failed", error=str(e))
+
         results = {
             "run_id": run_id,
             "timestamp": ts_iso,
@@ -1256,6 +1408,10 @@ class TradingPipeline:
             "llm_budget": getattr(self, "_llm_budget_summary", {}),
             "learning_context": learning_context,
             "csp_results": csp_results,
+            "wheel_manage_results": wheel_manage_results,
+            "wheel_state": wheel_state,
+            "wheel_scorecard": wheel_scorecard,
+            "wheel_mode": bool(run_config.get("wheel_mode")),
             "regime": run_config.get("regime") or {},
             "reconciliation": reconciliation,
             "phase13": {

@@ -55,6 +55,28 @@ def is_us_equity_rth(dt: datetime) -> bool:
     return RTH_OPEN <= t < RTH_CLOSE
 
 
+def can_submit_live_orders(dt: datetime, cutoff_et: str = "15:30") -> tuple[bool, str]:
+    """True when we should still submit DAY orders (RTH and before cutoff ET)."""
+    from src.trading.us_equity_calendar import is_us_equity_trading_day
+
+    et = _as_utc(dt).astimezone(ET)
+    if not is_us_equity_trading_day(et):
+        return False, f"market_closed:{et.date().isoformat()}"
+    try:
+        hh, mm = cutoff_et.split(":")
+        cutoff = time(int(hh), int(mm))
+    except (TypeError, ValueError):
+        cutoff = time(15, 30)
+    t = et.time()
+    if t < RTH_OPEN:
+        return False, "before_open"
+    if t >= cutoff:
+        return False, f"past_cutoff:{cutoff_et}"
+    if t >= RTH_CLOSE:
+        return False, "after_close"
+    return True, "ok"
+
+
 def next_us_equity_open_after(dt: datetime) -> datetime:
     """Next regular-session open at or after ``dt`` (ET, holiday-aware)."""
     from src.trading.us_equity_calendar import is_us_equity_trading_day

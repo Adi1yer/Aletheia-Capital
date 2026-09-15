@@ -422,13 +422,43 @@ def main() -> None:
     if universe_source:
         run_config["universe_source"] = universe_source
     try:
-        from src.trading.run_config import apply_phase12_defaults, apply_phase13_defaults, apply_beat_spy_defaults
+        from src.trading.run_config import (
+            apply_phase12_defaults,
+            apply_phase13_defaults,
+            apply_beat_spy_defaults,
+            apply_wheel_defaults,
+        )
 
         run_config = apply_phase12_defaults(run_config)
         run_config = apply_phase13_defaults(run_config)
         run_config = apply_beat_spy_defaults(run_config)
+        run_config = apply_wheel_defaults(run_config)
     except Exception:
         pass
+
+    # Hard RTH / cutoff gate for DAY orders (skip submit after ~15:30 ET).
+    if bool(args.execute) and not os.getenv("FORCE_EXECUTE_AFTER_HOURS"):
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            from src.trading.execution_status import can_submit_live_orders
+
+            ok, reason = can_submit_live_orders(
+                datetime.now(ZoneInfo("America/New_York")),
+                cutoff_et=str(run_config.get("execute_cutoff_et") or "15:30"),
+            )
+            if not ok:
+                logger.warning(
+                    "Outside live submit window — running without --execute",
+                    reason=reason,
+                )
+                args.execute = False
+                run_config["execute"] = False
+                run_config["execute_skipped_reason"] = reason
+        except Exception as e:
+            logger.warning("RTH execute gate failed", error=str(e))
+
     if (args.agents or "").strip():
         run_config["active_agent_keys"] = [
             a.strip() for a in args.agents.split(",") if a.strip()

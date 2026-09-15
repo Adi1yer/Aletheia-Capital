@@ -78,3 +78,9 @@ def apply_beat_spy_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
 
     return _bs(run_config)
 
+
+def apply_wheel_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
+    from src.portfolio.wheel_policy import apply_wheel_defaults as _wh
+
+    return _wh(run_config)
+

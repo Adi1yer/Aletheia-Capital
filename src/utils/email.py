@@ -853,6 +853,35 @@ class EmailNotifier:
                         text.append(f"  - {t}: {err[:200]}")
             text.append("")
 
+        text.append("")
+
+        # Wheel hybrid scorecard / manage
+        if results.get("wheel_mode") or results.get("wheel_scorecard"):
+            ws = results.get("wheel_scorecard") or {}
+            text.append("WHEEL HYBRID")
+            text.append("-" * 80)
+            text.append(
+                f"Fund Sharpe: {ws.get('fund_sharpe')} | SPY Sharpe: {ws.get('spy_sharpe')} | "
+                f"Max DD: {ws.get('max_drawdown')} | Premium ledger: ${float(ws.get('premium_ledger_usd') or 0):,.2f}"
+            )
+            text.append(
+                f"CC lots: {', '.join(ws.get('cc_lot_tickers') or []) or '-'} | "
+                f"CSP cands: {', '.join(ws.get('csp_candidates') or []) or '-'} | "
+                f"Directional: {', '.join(ws.get('directional_targets') or []) or '-'}"
+            )
+            manage = results.get("wheel_manage_results") or []
+            btc = [r for r in manage if r.get("status") == "btc_executed"]
+            if btc:
+                text.append(f"Option manages (BTC): {len(btc)}")
+                for r in btc[:8]:
+                    text.append(
+                        f"  {r.get('underlying')}: {r.get('contract_symbol')} ({r.get('reason')})"
+                    )
+            stages = ((results.get("wheel_state") or {}).get("names") or {})
+            if stages:
+                text.append("Wheel stages: " + ", ".join(f"{t}={row.get('stage')}" for t, row in list(stages.items())[:10]))
+            text.append("")
+
         # Covered Call Results
         cc_diag = results.get("covered_call_diagnostics") or {}
         cc_results = results.get("covered_call_results") or []

@@ -582,6 +582,17 @@ class AlpacaBroker:
             for pos in positions or []:
                 sym = pos.symbol or ""
                 if len(sym) > 10:
+                    und = ""
+                    try:
+                        from src.options.wheel_lifecycle import parse_occ_symbol
+
+                        parsed = parse_occ_symbol(sym)
+                        und = (parsed or {}).get("underlying") or ""
+                    except Exception:
+                        und = ""
+                    if not und:
+                        # Fallback: strip OCC date/type/strike suffix when possible.
+                        und = sym[:6].strip().rstrip("0123456789") or sym[:4].rstrip("0123456789")
                     results.append(
                         {
                             "symbol": sym,
@@ -589,7 +600,7 @@ class AlpacaBroker:
                             "side": "short" if int(float(pos.qty)) < 0 else "long",
                             "avg_entry_price": float(pos.avg_entry_price),
                             "market_value": float(pos.market_value),
-                            "underlying": sym[:4].rstrip("0123456789"),
+                            "underlying": und,
                         }
                     )
             return results

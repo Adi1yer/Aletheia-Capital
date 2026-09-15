@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       force_full_rebalance:
-        description: 'Force a full Beat SPY rebuild (use after a bad book or universe change)'
+        description: 'Force a full equity rebuild (legacy Beat SPY flag; unused for wheel-10k)'
         type: boolean
         default: false
 
@@ -72,20 +72,20 @@ jobs:
             data/cache
           # Unique save key: GitHub cache keys are immutable, so a fixed key
           # fails to save after the first week and next runs restore stale data.
-          key: perf-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
+          key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}
           restore-keys: |
-            perf-${{ github.repository }}-beatspy-v2-
-            perf-${{ github.repository }}-beatspy-v2
+            perf-${{ github.repository }}-wheel-v1-
+            perf-${{ github.repository }}-wheel-v1
 
       - name: Restore scan run cache
         uses: actions/cache/restore@v4
         id: scan_cache_restore
         with:
           path: data/scan_cache
-          key: scan-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
+          key: scan-${{ github.repository }}-wheel-v1-${{ github.run_id }}
           restore-keys: |
-            scan-${{ github.repository }}-beatspy-v2-
-            scan-${{ github.repository }}-beatspy-v2
+            scan-${{ github.repository }}-wheel-v1-
+            scan-${{ github.repository }}-wheel-v1
 
       - name: Cache restore diagnostics
         run: |
@@ -139,17 +139,18 @@ jobs:
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: |
           poetry run python weekly_scan_rebalancing.py \
-            --run-profile beat-spy-10k \
-            --agent-tier-mode tiered \
-            --max-stocks 500 \
-            --universe-source sp500 \
+            --run-profile wheel-10k \
+            --agent-tier-mode core \
+            --max-stocks 400 \
             --stop-loss-pct 0.08 \
             --execute \
-            --enable-cash-rotation --cash-rotation-min-edge 12 \
-            --max-cash-rotation-sells 20 \
-            --max-position-pct 0.10 --max-sector-pct 0.30 \
-            --min-buy-confidence 62 --min-sell-confidence 55 \
-            --cash-buffer-pct 0.04 --max-buy-tickers 12 \
+            --enable-covered-calls \
+            --enable-cash-secured-puts \
+            --max-position-pct 0.35 --max-sector-pct 0.40 \
+            --min-buy-confidence 55 --min-sell-confidence 55 \
+            --cash-buffer-pct 0.06 --max-buy-tickers 8 \
+            --max-csp-tickers 3 --max-csp-collateral-pct 0.45 \
+            --min-csp-premium-usd 25 --min-csp-annualized-yield-pct 8 \
             --regime-mode auto \
             ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_full_rebalance == 'true' && '--force-full-rebalance' || '' }}
 
@@ -180,11 +181,11 @@ jobs:
           path: |
             data/performance
             data/cache
-          key: perf-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
+          key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}
 
       - name: Save scan run cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: data/scan_cache
-          key: scan-${{ github.repository }}-beatspy-v2-${{ github.run_id }}
+          key: scan-${{ github.repository }}-wheel-v1-${{ github.run_id }}
