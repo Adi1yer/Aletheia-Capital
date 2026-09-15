@@ -49,6 +49,46 @@ def test_screen_wheel_candidates_price_and_adv():
     assert "PENNY" not in tickers
 
 
+def test_screen_reads_avg_volume_under_prices_block():
+    """Regression: dossiers store avg_volume under prices, not dossier root."""
+    dossiers = {
+        "F": {"prices": {"last_close": 11.5, "avg_volume": 5_000_000}},
+    }
+    from src.options.wheel_universe import extract_price_adv
+
+    px, adv = extract_price_adv("F", dossiers=dossiers)
+    assert px == 11.5
+    assert adv == 5_000_000 * 11.5
+    cands = screen_wheel_candidates(
+        ["F"],
+        dossiers=dossiers,
+        max_price=35.0,
+        min_adv_usd=5_000_000,
+        allow_missing_adv=False,
+    )
+    assert [c.ticker for c in cands] == ["F"]
+
+
+def test_screen_admits_missing_adv_when_enabled():
+    dossiers = {"XYZ": {"prices": {"last_close": 10.0}}}
+    cands = screen_wheel_candidates(
+        ["XYZ"],
+        dossiers=dossiers,
+        max_price=35.0,
+        min_adv_usd=5_000_000,
+        allow_missing_adv=True,
+    )
+    assert [c.ticker for c in cands] == ["XYZ"]
+    empty = screen_wheel_candidates(
+        ["XYZ"],
+        dossiers=dossiers,
+        max_price=35.0,
+        min_adv_usd=5_000_000,
+        allow_missing_adv=False,
+    )
+    assert empty == []
+
+
 def test_allocate_builds_100_share_lot():
     portfolio = Portfolio(cash=10000.0, positions={})
     prices = {"F": 10.0, "SOFI": 20.0, "NVDA": 120.0}
