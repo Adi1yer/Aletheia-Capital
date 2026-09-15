@@ -185,6 +185,25 @@ def allocate_wheel_hybrid_book(
                     reasoning="Directional sleeve trim",
                 )
 
+    # Exit orphan holdings left from prior broken runs / off-mandate names.
+    keep = set(wheel_targets) | set(dir_names) | set(diagnostics["cc_lot_tickers"])
+    orphans: List[str] = []
+    for t, pos in list((portfolio.positions or {}).items()):
+        qty = int(getattr(pos, "long", 0) or 0)
+        if qty <= 0 or t in keep or t in decisions:
+            continue
+        px = float(current_prices.get(t) or 0.0)
+        if px > 0 and qty * px < 40:
+            continue
+        decisions[t] = PortfolioDecision(
+            action="sell",
+            quantity=qty,
+            confidence=60,
+            reasoning="Orphan exit: not in wheel or directional targets",
+        )
+        orphans.append(t)
+    diagnostics["orphan_exits"] = orphans
+
     # Hold markers for CC path when already at lot size with no trade.
     for t in diagnostics["cc_lot_tickers"]:
         if t not in decisions:
@@ -195,11 +214,29 @@ def allocate_wheel_hybrid_book(
                 reasoning="Wheel lot held — covered call eligible",
             )
 
+    # Email / ops diagnostics expected by the weekly digest templates.
+    lot_builds = sum(
+        1
+        for d in decisions.values()
+        if getattr(d, "action", "") == "buy"
+        and "Wheel lot" in str(getattr(d, "reasoning", ""))
+    )
+    diagnostics["cc_held_lot_count"] = len(diagnostics["cc_lot_tickers"])
+    diagnostics["cc_lot_build_count"] = lot_builds
+    diagnostics["cc_scored_count"] = len(diagnostics["cc_lot_tickers"])
+    diagnostics["cc_passed_threshold_count"] = len(diagnostics["cc_lot_tickers"])
+    diagnostics["buy_candidates_pre_rank"] = len(wheel_candidates) + len(directional_candidates)
+    diagnostics["buy_candidates_post_rank"] = len(wheel_targets) + len(dir_names)
+    diagnostics["buy_signal_count"] = sum(
+        1 for d in decisions.values() if getattr(d, "action", "") == "buy"
+    )
+
     logger.info(
         "Wheel hybrid allocated",
         decisions=len(decisions),
         cc_lots=diagnostics["cc_lot_tickers"],
         csp=diagnostics["csp_candidates"],
         directional=diagnostics["directional_targets"],
+        orphans=orphans,
     )
     return decisions, diagnostics

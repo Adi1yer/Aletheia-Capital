@@ -1,0 +1,78 @@
+name: Wheel Options Daily Manage
+
+# Mid-session options lifecycle for wheel-hybrid: BTC near-ITM / short-DTE,
+# then write covered calls on existing 100-share lots. No equity rebalance.
+on:
+  schedule:
+    # 17:30 UTC ≈ 1:30 PM ET / 10:30 AM PT — inside RTH with buffer for GH delay
+    - cron: '30 17 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  market-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: gate
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/should_run_weekly_scan.py --github-output
+
+  manage:
+    needs: market-gate
+    if: needs.market-gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-
+      - run: poetry install --no-interaction --no-ansi
+
+      - name: Restore performance / wheel state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/performance
+            data/cache
+          key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}
+          restore-keys: |
+            perf-${{ github.repository }}-wheel-v1-
+            perf-${{ github.repository }}-wheel-v1
+
+      - name: Manage wheel options
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          MAX_UNDERLYING_PRICE: '35'
+          CC_MIN_PREMIUM_USD: '15'
+          CC_TARGET_OTM_PCT: '0.08'
+          MANAGE_DTE_THRESHOLD: '7'
+        run: poetry run python scripts/manage_wheel_options.py
+
+      - name: Save performance / wheel state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/performance
+            data/cache
+          key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}

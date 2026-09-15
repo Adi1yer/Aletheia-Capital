@@ -730,6 +730,19 @@ class EmailNotifier:
         if dd:
             text.append("DECISION DIAGNOSTICS")
             text.append("-" * 80)
+            if dd.get("wheel_mode") or results.get("wheel_mode"):
+                text.append(
+                    f"Wheel targets: {', '.join(dd.get('wheel_targets') or []) or '-'} | "
+                    f"Directional: {', '.join(dd.get('directional_targets') or []) or '-'}"
+                )
+                text.append(
+                    f"CC lots (held / build): {int(dd.get('cc_held_lot_count', 0))} / "
+                    f"{int(dd.get('cc_lot_build_count', 0))} | "
+                    f"CSP cands: {', '.join(dd.get('csp_candidates') or []) or '-'}"
+                )
+                orphans = dd.get("orphan_exits") or []
+                if orphans:
+                    text.append(f"Orphan exits: {', '.join(orphans)}")
             text.append(
                 f"Signals: bullish>=buy={int(dd.get('buy_signal_count', 0))}, "
                 f"bearish>=sell on held={int(dd.get('sell_signal_on_held_count', 0))}"
@@ -917,6 +930,10 @@ class EmailNotifier:
             text.append(
                 f"Skipped: {len(cc_skipped)} ({', '.join(r.get('underlying', '?') for r in cc_skipped)})"
             )
+            for r in cc_skipped[:8]:
+                text.append(
+                    f"  - {r.get('underlying', '?')}: {r.get('reason') or 'unspecified'}"
+                )
         if cc_failed:
             text.append(
                 f"Failed: {len(cc_failed)} ({', '.join(r.get('underlying', '?') for r in cc_failed)})"

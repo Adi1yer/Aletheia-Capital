@@ -108,6 +108,44 @@ def test_allocate_builds_100_share_lot():
     assert decisions["F"].action == "buy"
     assert decisions["F"].quantity == 100
     assert "F" in diag["csp_candidates"] or "F" in diag["cc_lot_tickers"] or decisions["F"].quantity == 100
+    assert diag.get("cc_lot_build_count", 0) >= 1
+
+
+def test_allocate_exits_orphan_directional_leftovers():
+    portfolio = Portfolio(
+        cash=2000.0,
+        positions={
+            "ADBE": Position(long=2, long_cost_basis=260.0),
+            "F": Position(long=100, long_cost_basis=12.0),
+        },
+    )
+    prices = {"ADBE": 260.0, "F": 12.0, "SOFI": 15.0}
+    wheel = [WheelCandidate("F", 12.0, 80_000_000, 500, 0.9)]
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices=prices,
+        wheel_candidates=wheel,
+        directional_candidates=["SOFI"],
+        equity=10000.0,
+        max_wheel_names=1,
+        max_directional_names=1,
+    )
+    assert decisions["ADBE"].action == "sell"
+    assert "ADBE" in (diag.get("orphan_exits") or [])
+
+
+def test_cc_select_reports_skip_reason_and_otm_band():
+    from src.options.covered_calls import CoveredCallManager
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            return []
+
+    mgr = CoveredCallManager(otm_pct_low=0.05, otm_pct_high=0.12, target_otm_pct=0.08)
+    contract, reason = mgr.select_contract("AUR", 6.42, 55, _Broker())
+    assert contract is None
+    assert "no_contracts_in_otm_band" in reason
+
 
 
 def test_parse_occ_and_manage_rules():

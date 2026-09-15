@@ -1054,7 +1054,22 @@ class TradingPipeline:
 
                 logger.info("Running covered call step", cc_lot_tickers=cc_lot_tickers)
                 cc_portfolio = self.broker.sync_portfolio()
-                cc_manager = CoveredCallManager()
+                if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
+                    # Prefer ~5–12% OTM for wheel income; absolute $ floor for cheap lots.
+                    cc_manager = CoveredCallManager(
+                        min_premium_pct=float(run_config.get("cc_min_premium_pct", 0.004)),
+                        min_premium_usd=float(run_config.get("cc_min_premium_usd", 15.0)),
+                        otm_pct_low=float(run_config.get("cc_otm_pct_low", 0.05)),
+                        otm_pct_high=float(run_config.get("cc_otm_pct_high", 0.12)),
+                        target_otm_pct=float(run_config.get("cc_target_otm_pct", 0.08)),
+                    )
+                else:
+                    cc_manager = CoveredCallManager(
+                        otm_pct_low=0.0,
+                        otm_pct_high=0.10,
+                        target_otm_pct=0.03,
+                        min_premium_usd=5.0,
+                    )
                 rules_score = int(run_config.get("wheel_rules_score", 55))
                 if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
                     cc_scores = {t: rules_score for t in cc_lot_tickers}

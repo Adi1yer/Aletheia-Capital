@@ -105,12 +105,21 @@ def screen_wheel_candidates(
         oi = int(oi_map.get(ticker) or 0)
         if min_option_oi > 0 and oi > 0 and oi < int(min_option_oi):
             continue
-        # Prefer names where 100 shares are affordable but not penny stocks.
+        # Prefer mid-cheap lots ($8–$28). Ultra-cheap ADR-style names get a score penalty
+        # so a $10k book does not concentrate in $3 Brazil ADRs.
         lot_cost = px * 100.0
         afford = max(0.0, 1.0 - (lot_cost / (float(max_price) * 100.0)))
+        if 8.0 <= px <= 28.0:
+            band = 1.0
+        elif 5.0 <= px < 8.0:
+            band = 0.55
+        elif px < 5.0:
+            band = 0.25
+        else:
+            band = 0.7
         liq = min(adv / max(float(min_adv_usd), 1.0), 5.0) / 5.0
         oi_boost = min(oi / 500.0, 1.0) if oi > 0 else 0.35
-        score = 0.45 * liq + 0.35 * afford + 0.20 * oi_boost
+        score = 0.40 * liq + 0.25 * afford + 0.20 * oi_boost + 0.15 * band
         out.append(
             WheelCandidate(
                 ticker=ticker,
@@ -118,11 +127,22 @@ def screen_wheel_candidates(
                 adv_usd=adv,
                 open_interest=oi,
                 score=round(score, 4),
-                reason=f"px={px:.2f} adv={adv:.0f} oi={oi}",
+                reason=f"px={px:.2f} adv={adv:.0f} oi={oi} band={band:.2f}",
             )
         )
     out.sort(key=lambda c: c.score, reverse=True)
-    ranked = out[: max(1, int(top_n))] if out else []
+    # Cap ultra-cheap (<$8) names so they cannot dominate the wheel sleeve.
+    capped: List[WheelCandidate] = []
+    cheap_n = 0
+    for c in out:
+        if c.price < 8.0:
+            if cheap_n >= 1:
+                continue
+            cheap_n += 1
+        capped.append(c)
+        if len(capped) >= max(1, int(top_n)):
+            break
+    ranked = capped
     logger.info(
         "Wheel universe screened",
         input_n=len(tickers),
@@ -130,6 +150,7 @@ def screen_wheel_candidates(
         top_n=len(ranked),
         rejected_adv=rejected_adv,
         missing_adv_admitted=missing_adv,
+        cheap_capped=cheap_n,
         top=[c.ticker for c in ranked[:8]],
     )
     return ranked
