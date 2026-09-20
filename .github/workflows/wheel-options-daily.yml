@@ -1,12 +1,19 @@
 name: Wheel Options Daily Manage
 
-# Mid-session options lifecycle for wheel-hybrid: BTC near-ITM / short-DTE,
+# Mid-session options lifecycle for wheel-hybrid: BTC / roll near-ITM / short-DTE,
 # then write covered calls on existing 100-share lots. No equity rebalance.
+# Emails only when portfolio actions occur.
 on:
   schedule:
-    # 17:30 UTC ≈ 1:30 PM ET / 10:30 AM PT — inside RTH with buffer for GH delay
-    - cron: '30 17 * * 1-5'
+    # 16:00 UTC ≈ 11:00 AM EST / 12:00 PM EDT — before NYSE early closes (13:00 ET)
+    # and still inside RTH with GH queue buffer.
+    - cron: '0 16 * * 1-5'
   workflow_dispatch:
+
+# Wait if morning scan is still running (same paper book).
+concurrency:
+  group: aletheia-wheel-paper
+  cancel-in-progress: false
 
 jobs:
   market-gate:
@@ -23,7 +30,7 @@ jobs:
             echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          python3 scripts/should_run_weekly_scan.py --github-output
+          python3 scripts/should_run_daily_scan.py --github-output
 
   manage:
     needs: market-gate
@@ -62,10 +69,20 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
           MAX_UNDERLYING_PRICE: '35'
           CC_MIN_PREMIUM_USD: '15'
-          CC_TARGET_OTM_PCT: '0.08'
+          CC_OTM_PCT_LOW: '0.03'
+          CC_OTM_PCT_HIGH: '0.08'
+          CC_TARGET_OTM_PCT: '0.05'
           MANAGE_DTE_THRESHOLD: '7'
+          EMAIL_ON_CHANGES_ONLY: '1'
+          # Options can still trade after equity DAY cutoff (15:30); early-close still wins.
+          EXECUTE_CUTOFF_ET: '15:55'
         run: poetry run python scripts/manage_wheel_options.py
 
       - name: Save performance / wheel state

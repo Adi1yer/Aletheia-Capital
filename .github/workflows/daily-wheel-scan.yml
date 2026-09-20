@@ -1,16 +1,22 @@
-name: Weekly Scan & Rebalance
+name: Daily Wheel Scan & Rebalance
 
 on:
   schedule:
-    # 13:30 UTC ≈ 9:30 AM ET / 6:30 AM PT. GitHub cron often slips 1–3h; earlier
-    # start keeps the job inside RTH even when the queue is delayed.
-    - cron: '30 13 * * 1-5'
+    # 14:30 UTC ≈ 9:30 AM EST / 10:30 AM EDT. Winter starts at the open; summer
+    # starts one hour after. GH delay buffer remains; pipeline also waits if
+    # before_open and rechecks cutoff before equity/CC submits.
+    - cron: '30 14 * * 1-5'
   workflow_dispatch:
     inputs:
       force_full_rebalance:
         description: 'Force a full equity rebuild (legacy Beat SPY flag; unused for wheel-10k)'
         type: boolean
         default: false
+
+# Serialize with afternoon manage so both never trade the same paper book at once.
+concurrency:
+  group: aletheia-wheel-paper
+  cancel-in-progress: false
 
 jobs:
   market-gate:
@@ -22,7 +28,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Decide whether to run this week
+      - name: Decide whether to run today
         id: gate
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
@@ -31,9 +37,9 @@ jobs:
             echo "Manual dispatch — bypassing holiday gate."
             exit 0
           fi
-          python3 scripts/should_run_weekly_scan.py --github-output
+          python3 scripts/should_run_daily_scan.py --github-output
 
-  weekly-scan:
+  daily-scan:
     needs: market-gate
     if: needs.market-gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
@@ -70,8 +76,6 @@ jobs:
           path: |
             data/performance
             data/cache
-          # Unique save key: GitHub cache keys are immutable, so a fixed key
-          # fails to save after the first week and next runs restore stale data.
           key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}
           restore-keys: |
             perf-${{ github.repository }}-wheel-v1-
@@ -116,7 +120,7 @@ jobs:
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
         run: poetry run python preflight.py --skip-biotech --deepseek-timeout 30 --soft-fail-deepseek
 
-      - name: Run weekly scan & rebalance
+      - name: Run daily wheel scan & rebalance
         env:
           SCAN_CACHE_KEEP_WEEKS: "26"
           CACHE_HIT_PERFORMANCE: ${{ steps.perf_cache_restore.outputs.cache-hit }}
@@ -137,6 +141,9 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          CC_OTM_PCT_LOW: '0.03'
+          CC_OTM_PCT_HIGH: '0.08'
+          CC_TARGET_OTM_PCT: '0.05'
         run: |
           poetry run python weekly_scan_rebalancing.py \
             --run-profile wheel-10k \
@@ -159,11 +166,11 @@ jobs:
         continue-on-error: true
         run: poetry run python scripts/ops_orchestrator.py --stage cockpit,slo,gonogo --strict
 
-      - name: Upload weekly run summary artifact
+      - name: Upload daily run summary artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: weekly-run-summary-${{ github.run_id }}
+          name: daily-wheel-run-summary-${{ github.run_id }}
           retention-days: 7
           path: |
             data/performance/

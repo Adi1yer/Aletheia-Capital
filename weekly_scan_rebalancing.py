@@ -247,8 +247,13 @@ def main() -> None:
     )
     p.add_argument("--max-position-pct", type=float, default=0.20)
     p.add_argument("--max-sector-pct", type=float, default=0.35)
-    p.add_argument("--max-csp-tickers", type=int, default=2)
-    p.add_argument("--max-csp-collateral-pct", type=float, default=0.10)
+    p.add_argument("--max-csp-tickers", type=int, default=None)
+    p.add_argument(
+        "--max-csp-collateral-pct",
+        type=float,
+        default=None,
+        help="Max equity fraction for CSP collateral (profile default if omitted)",
+    )
     p.add_argument("--regime-mode", type=str, default="", help="auto to adjust knobs from SPY regime")
     p.add_argument(
         "--use-portfolio-optimizer",
@@ -394,17 +399,11 @@ def main() -> None:
         ),
         "agent_tier_mode": str(args.agent_tier_mode),
         "agent_tier_core_only": str(args.agent_tier_mode) == "core",
-        "financial_limit": 1,
-        "dossier_financial_limit": 5,
-        "focused_financial_limit": 5,
         "llm_cache": not args.no_llm_cache,
-        "max_llm_calls": 4000,
         "require_s3_restore": bool(os.getenv("SCAN_CACHE_S3_BUCKET")),
         "broker_required": broker_required,
         "max_position_pct": float(args.max_position_pct),
         "max_sector_pct": float(args.max_sector_pct),
-        "max_csp_tickers": int(args.max_csp_tickers),
-        "max_csp_collateral_pct": float(args.max_csp_collateral_pct),
         "regime_mode": (args.regime_mode or "").strip(),
         "wash_sale_days": int(args.wash_sale_days),
         "min_agent_weight_to_run": 0.15,
@@ -414,9 +413,20 @@ def main() -> None:
         "min_csp_annualized_yield_pct": float(args.min_csp_annualized_yield_pct),
         "use_portfolio_optimizer": bool(args.use_portfolio_optimizer),
     }
+    if args.max_csp_tickers is not None:
+        run_config["max_csp_tickers"] = int(args.max_csp_tickers)
+    if args.max_csp_collateral_pct is not None:
+        run_config["max_csp_collateral_pct"] = float(args.max_csp_collateral_pct)
     if profile_name:
         run_config = merge_run_profile(run_config, profile_name)
         run_config["run_profile"] = profile_name
+    # Profile wins for LLM budget knobs (hardcoded dict used to clobber wheel-10k's 800).
+    run_config.setdefault("financial_limit", 1)
+    run_config.setdefault("dossier_financial_limit", 5)
+    run_config.setdefault("focused_financial_limit", 5)
+    run_config.setdefault("max_llm_calls", 4000)
+    run_config.setdefault("max_csp_tickers", 2)
+    run_config.setdefault("max_csp_collateral_pct", 0.10)
     if args.force_full_rebalance:
         run_config["beat_spy_force_full_rebalance"] = True
     if universe_source:
@@ -436,26 +446,65 @@ def main() -> None:
     except Exception:
         pass
 
-    # Hard RTH / cutoff gate for DAY orders (skip submit after ~15:30 ET).
+    # Hard RTH / cutoff gate for DAY orders.
+    # If we are before the open (winter cron starts early), wait until open rather
+    # than permanently disabling execute for the whole multi-hour job.
+    # Wheel: past equity cutoff but inside options_execute_cutoff_et → keep execute
+    # so pipeline can still manage/CC/CSP (equity_ok skips stock submits).
     if bool(args.execute) and not os.getenv("FORCE_EXECUTE_AFTER_HOURS"):
         try:
             from datetime import datetime
             from zoneinfo import ZoneInfo
 
-            from src.trading.execution_status import can_submit_live_orders
+            from src.trading.execution_status import can_submit_live_orders, RTH_OPEN
 
-            ok, reason = can_submit_live_orders(
-                datetime.now(ZoneInfo("America/New_York")),
-                cutoff_et=str(run_config.get("execute_cutoff_et") or "15:30"),
+            et = ZoneInfo("America/New_York")
+            now = datetime.now(et)
+            equity_cutoff = str(run_config.get("execute_cutoff_et") or "15:30")
+            wheel_active = bool(run_config.get("wheel_mode")) and not bool(
+                run_config.get("beat_spy_mode")
             )
-            if not ok:
+            options_cutoff = str(
+                run_config.get("options_execute_cutoff_et") or equity_cutoff
+            )
+            ok, reason = can_submit_live_orders(now, cutoff_et=equity_cutoff)
+            if not ok and reason == "before_open":
+                # Wait until 9:30 ET (cap 90 minutes) so winter EST cron can still execute.
+                open_dt = now.replace(
+                    hour=RTH_OPEN.hour, minute=RTH_OPEN.minute, second=0, microsecond=0
+                )
+                wait_s = max(0, int((open_dt - now).total_seconds()))
+                wait_s = min(wait_s, 90 * 60)
+                if wait_s > 0:
+                    logger.info("Before open — waiting for RTH", wait_seconds=wait_s)
+                    import time as _time
+
+                    _time.sleep(wait_s)
+                now = datetime.now(et)
+                ok, reason = can_submit_live_orders(now, cutoff_et=equity_cutoff)
+            ok_opt, reason_opt = (
+                can_submit_live_orders(now, cutoff_et=options_cutoff)
+                if wheel_active
+                else (ok, reason)
+            )
+            if not ok and not (wheel_active and ok_opt):
                 logger.warning(
                     "Outside live submit window — running without --execute",
-                    reason=reason,
+                    reason=reason_opt if wheel_active else reason,
                 )
                 args.execute = False
                 run_config["execute"] = False
+                run_config["execute_skipped_reason"] = (
+                    reason_opt if wheel_active else reason
+                )
+            elif not ok and wheel_active and ok_opt:
+                logger.warning(
+                    "Past equity cutoff — continuing for wheel options window",
+                    equity_reason=reason,
+                    options_cutoff=options_cutoff,
+                )
                 run_config["execute_skipped_reason"] = reason
+                run_config["equity_blocked_at_entrypoint"] = True
         except Exception as e:
             logger.warning("RTH execute gate failed", error=str(e))
 

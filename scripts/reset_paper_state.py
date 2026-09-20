@@ -34,9 +34,9 @@ Wheel-10k paper reset checklist
 3. Confirm options trading is enabled on the account.
 4. If new account: update GitHub secrets ALPACA_API_KEY / ALPACA_SECRET_KEY / ALPACA_BASE_URL.
 5. Run: poetry run python scripts/reset_paper_state.py --yes
-6. Push wheel-10k workflow (already on weekly-scan.yml) then Actions → Weekly Scan → Run workflow
-   mid-morning ET (manual dispatch bypasses holiday gate; RTH gate still applies).
-7. Expect email sections: WHEEL HYBRID + Covered Calls / CSP (not Beat SPY concentrated book).
+6. Push daily-wheel-scan.yml; wait for the next weekday scheduled run (or Actions → Daily Wheel Scan & Rebalance → Run workflow).
+   Manual dispatch bypasses the holiday gate; RTH gate still applies.
+7. Expect a daily wheel email (equity, sleeves, coverage map, actions) — not Beat SPY agent dumps.
 """
 
 

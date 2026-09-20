@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -9,11 +10,12 @@ from typing import Any, Dict, List
 def reconcile_orders(
     *,
     broker: Any,
-    max_polls: int = 3,
+    max_polls: int = 8,
+    poll_sleep_s: float = 1.0,
 ) -> Dict[str, Any]:
     transitions: List[Dict[str, Any]] = []
     unresolved = set()
-    for _ in range(max(1, int(max_polls))):
+    for i in range(max(1, int(max_polls))):
         open_orders = broker.get_open_orders(limit=100) if broker else []
         recent_orders = broker.get_recent_orders(limit=100) if broker else []
         by_id = {str(o.get("id") or o.get("order_id") or ""): o for o in (recent_orders or [])}
@@ -33,5 +35,6 @@ def reconcile_orders(
             )
         if not open_orders:
             break
+        if i < int(max_polls) - 1 and float(poll_sleep_s) > 0:
+            time.sleep(float(poll_sleep_s))
     return {"unresolved_count": len(unresolved), "transitions": transitions}
-

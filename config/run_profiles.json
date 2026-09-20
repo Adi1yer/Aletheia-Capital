@@ -48,6 +48,13 @@
     "manage_dte_threshold": 7,
     "manage_itm_pct": 0.02,
     "execute_cutoff_et": "15:30",
+    "options_execute_cutoff_et": "15:55",
+    "cc_otm_pct_low": 0.03,
+    "cc_otm_pct_high": 0.08,
+    "cc_target_otm_pct": 0.05,
+    "cc_profit_take_pct": 0.60,
+    "atomic_cc_lots": true,
+    "csp_reserve_frac": 0.20,
     "rebalance": true
   },
   "beat-spy-10k": {

@@ -45,34 +45,40 @@ def _as_utc(dt: datetime) -> datetime:
 
 
 def is_us_equity_rth(dt: datetime) -> bool:
-    """True during NYSE regular session (Mon–Fri 9:30 AM–4:00 PM ET, holiday-aware)."""
-    from src.trading.us_equity_calendar import is_us_equity_trading_day
+    """True during NYSE regular session (Mon–Fri open→close ET, holiday/early-close aware)."""
+    from src.trading.us_equity_calendar import is_us_equity_trading_day, nyse_session_close_et
 
     et = _as_utc(dt).astimezone(ET)
     if not is_us_equity_trading_day(et):
         return False
     t = et.time()
-    return RTH_OPEN <= t < RTH_CLOSE
+    close = nyse_session_close_et(et)
+    return RTH_OPEN <= t < close
 
 
 def can_submit_live_orders(dt: datetime, cutoff_et: str = "15:30") -> tuple[bool, str]:
     """True when we should still submit DAY orders (RTH and before cutoff ET)."""
-    from src.trading.us_equity_calendar import is_us_equity_trading_day
+    from src.trading.us_equity_calendar import is_us_equity_trading_day, nyse_session_close_et
 
     et = _as_utc(dt).astimezone(ET)
     if not is_us_equity_trading_day(et):
         return False, f"market_closed:{et.date().isoformat()}"
+    close = nyse_session_close_et(et)
     try:
         hh, mm = cutoff_et.split(":")
         cutoff = time(int(hh), int(mm))
     except (TypeError, ValueError):
         cutoff = time(15, 30)
+    # On early-close days, never submit at/after the early close (ignore late cutoff).
+    effective_cutoff = min(cutoff, close)
     t = et.time()
     if t < RTH_OPEN:
         return False, "before_open"
-    if t >= cutoff:
-        return False, f"past_cutoff:{cutoff_et}"
-    if t >= RTH_CLOSE:
+    if t >= effective_cutoff:
+        if close <= time(13, 0) and t >= close:
+            return False, "after_early_close"
+        return False, f"past_cutoff:{effective_cutoff.strftime('%H:%M')}"
+    if t >= close:
         return False, "after_close"
     return True, "ok"
 

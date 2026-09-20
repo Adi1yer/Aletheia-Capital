@@ -34,9 +34,14 @@ def apply_wheel_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("manage_dte_threshold", 7)
     out.setdefault("manage_itm_pct", 0.02)
     out.setdefault("execute_cutoff_et", "15:30")
+    out.setdefault("options_execute_cutoff_et", "15:55")
     out.setdefault("cc_min_premium_usd", 15.0)
     out.setdefault("cc_min_premium_pct", 0.004)
-    out.setdefault("cc_otm_pct_low", 0.05)
-    out.setdefault("cc_otm_pct_high", 0.12)
-    out.setdefault("cc_target_otm_pct", 0.08)
+    # Premium-leaning band (~3–8% OTM, target ~5%).
+    out.setdefault("cc_otm_pct_low", 0.03)
+    out.setdefault("cc_otm_pct_high", 0.08)
+    out.setdefault("cc_target_otm_pct", 0.05)
+    out.setdefault("cc_profit_take_pct", 0.60)
+    out.setdefault("atomic_cc_lots", True)
+    out.setdefault("csp_reserve_frac", 0.20)
     return out

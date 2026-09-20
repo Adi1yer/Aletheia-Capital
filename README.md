@@ -2,174 +2,79 @@
 
 **Repository:** [github.com/Adi1yer/Aletheia-Capital](https://github.com/Adi1yer/Aletheia-Capital) · **Maintainer:** [@Adi1yer](https://github.com/Adi1yer)
 
-An AI-powered hedge fund that uses 22 specialized investment agents to analyze 500+ stocks weekly, make autonomous trading decisions, and execute via Alpaca paper trading. Built for automated weekly operation via GitHub Actions.
+Paper-trading system for a **~$10k wheel-hybrid** book: rules-first covered-call / CSP wheel (~70% of capital) plus a smaller directional equity sleeve (~30%). Agents still run as an overlay for learning and residual ranking; they do **not** pick wheel underlyings in v1.
 
-> **Contributors:** Configure git so commits attribute to **Adi1yer** only (see [SETUP.md](SETUP.md#git-commit-identity)). Do not use generic `adityaiyer@users.noreply.github.com` — GitHub may link that to a different account.
+> **Contributors:** Configure git so commits attribute to **Adi1yer** only (see [SETUP.md](SETUP.md#git-commit-identity)).
+
+## Current mandate: `wheel-10k`
+
+| Sleeve | Target | What it does |
+|--------|--------|----------------|
+| **Wheel** | ~70% of equity | 100-share lots in liquid names priced ≤ ~$35; sell covered calls; CSPs to enter when cash-heavy |
+| **Directional** | ~30% of equity | Smaller long-only names (can be >$35); residual/momentum ranked |
+| **Cash buffer** | ~6% | Kept for option collateral / slippage |
+
+**Goal:** beat **SPY absolute return** over time by chasing option premium, while managing assignment with **roll-for-credit** (rules engine + CC agent overlay for ambiguous cases).
+
+**Invariants (enforced in code):**
+
+- Every open weekday the **Daily Wheel Scan & Rebalance** job runs (holiday/weekend skip only).
+- **Fill-confirmed** critical path: BTC, rolls, CC writes, CSP, and wheel lot buys wait for broker fills (not submit-only).
+- No 100-share wheel lot without a short **call** — write fails or unfilled ⇒ **same-session unwind** (also waited).
+- New lots require **option-chain preflight** before buy; start-of-run uncovered lots are force-unwound.
+- Threatened shorts (≤7 DTE, near-ITM, or ≥~60% profit) ⇒ BTC then roll with **policy B**: near-ITM/DTE allow small debit ≤ max($25, 25% of new premium); profit-take is **credit-only**.
+- **Wheel-first capital**; directional uses residual cash and is capped at **99 shares** (no naked 100-lots outside the wheel path).
+- Orphan exits never sell shares while a short option is open on that name.
+- You get a **daily email** after every rebalance run (even if no trades). Afternoon options manage emails **only when something changed**.
+
+Legacy **Beat SPY** (`beat-spy-10k`) remains in the repo but is **not** the scheduled paper runner.
 
 ## How It Works
 
-The system runs a weekly pipeline every Monday at market open:
-
-```mermaid
-flowchart LR
-    Universe["Stock Universe\n(500 tickers)"] --> Data["Data Fetch\n(Yahoo, Finnhub)"]
-    Data --> Agents["22 AI Agents\nanalyze in parallel"]
-    Agents --> Signals["Aggregated\nSignals"]
-    Signals --> Risk["Risk Manager\n(vol + correlation)"]
-    Risk --> Decisions["Portfolio Manager\n(unified ranking)"]
-    Decisions --> Execution["Alpaca Broker\n(paper trading)"]
-    Execution --> Email["Weekly Email\nReport"]
-```
-
-**Each ticker gets scored by every agent independently.** Agents disagree — that's by design. A growth investor might love NVDA while a value investor hates it. The portfolio manager aggregates these weighted signals into actionable decisions.
-
-## The 22 Agents
-
-Agents are split into philosophical camps that drive both trading decisions and the covered call strategy:
-
 ```mermaid
 flowchart TD
-    subgraph growth ["Growth / Momentum Camp"]
-        CW["Cathie Wood"]
-        CP["Chamath Palihapitiya"]
-        RB["Ron Baron"]
-        PF["Phil Fisher"]
-        GA["Growth Analyst"]
-        TA["Technicals Analyst"]
-        NSA["News Sentiment"]
-    end
-
-    subgraph value ["Value / Fundamental Camp"]
-        BG["Ben Graham"]
-        WB["Warren Buffett"]
-        CM["Charlie Munger"]
-        MB["Michael Burry"]
-        AD["Aswath Damodaran"]
-        PL["Peter Lynch"]
-        MP["Mohnish Pabrai"]
-        VA["Valuation Analyst"]
-        FA["Fundamentals Analyst"]
-    end
-
-    subgraph swing ["Swing Agents"]
-        BA["Bill Ackman"]
-        SD["Stanley Druckenmiller"]
-        RJ["Rakesh Jhunjhunwala"]
-        SA["Sentiment Analyst"]
-        CT["Congressional Trader"]
-        AI["Aditya Iyer"]
-    end
-
-    growth --> PM["Portfolio Manager"]
-    value --> PM
-    swing --> PM
-    PM --> BuyDecisions["Buy / Sell / Hold / CC"]
+  universe[US_liquid_universe] --> screen[Rules_screen_price_ADV]
+  screen --> preflight[Option_chain_preflight]
+  preflight --> split[Capital_split_70_30]
+  split --> wheel[Wheel_sleeve]
+  split --> directional[Directional_sleeve]
+  wheel --> lots[Build_100_share_lots]
+  lots --> cc[Sell_covered_calls]
+  cc -->|fail| unwind[Unwind_lot]
+  wheel --> csp[Sell_CSPs_when_no_lot]
+  csp -->|assigned| lots
+  cc -->|manage_BTC_or_roll| cc
+  directional --> equity[Long_only_trims_adds]
+  lots --> daily[Daily_scan_rebalance]
+  cc --> afternoon[Afternoon_options_manage]
 ```
 
-Each agent uses a different LLM prompt embodying that investor's philosophy. Signals are weighted by historical accuracy (weights adjust automatically over time).
+1. **Daily scan** (`wheel-10k`): screen + preflight, allocate sleeves, orphan-exit, manage/roll shorts, write CCs/CSPs, **always email**.
+2. **Afternoon options manage**: BTC / roll / rewrite on existing lots; email only if actions occurred.
+3. **Market calendar gate**: every NYSE open weekday; RTH cutoff refuses new DAY orders after ~15:30 ET.
 
-## Decision Engine
+## Covered calls (wheel)
 
-The portfolio manager scores every ticker for two possible actions:
+- Open band **~3–8% OTM** (target ~5%) — premium-leaning but still OTM.
+- Minimum premium floors (`cc_min_premium_usd` / `cc_min_premium_pct`).
+- **Atomic lots:** buy → write CC same session → else sell shares.
+- **Rolls:** near-ITM / short DTE → BTC + STO new call preferring net credit; ambiguous → CC agent among precomputed contracts only.
 
-```mermaid
-flowchart TD
-    Ticker["Each Ticker"] --> AggSignal["Aggregate 22 agent signals"]
-    AggSignal --> IsBullish{"Bullish\nconf >= 50?"}
-    IsBullish -->|Yes| BuyCandidate["Buy Candidate\nscore = bullish confidence"]
-    IsBullish -->|No| HoldTicker["Hold Ticker"]
-    HoldTicker --> CCCheck{"Growth bulls +\nValue bears?"}
-    CCCheck -->|"CC score >= 40"| CCCandidate["Covered Call Candidate\nscore = camp disagreement"]
-    CCCheck -->|No| Skip["Skip (hold)"]
-
-    BuyCandidate --> Unified["Unified Ranked List"]
-    CCCandidate --> Unified
-    Unified --> Allocate["Allocate capital\ntop-down by score"]
-    Allocate --> BuyOrder["Equity Buy"]
-    Allocate --> CCOrder["Buy 100 shares\n+ Sell Call"]
-```
-
-**Buy and covered call opportunities compete for the same capital.** If a CC opportunity on AMD scores 60 and a directional buy on ABBV scores 58, AMD gets capital first. The system allocates to whatever it's most confident in.
-
-### Covered Call Strategy
-
-Covered calls target **only hold tickers** — never stocks the system wants to buy directionally (those need full upside). The ideal CC candidate has:
-
-- **Growth agents bullish** (Cathie Wood, Chamath, etc.) → downside protection, the business is solid
-- **Value agents bearish** (Graham, Burry, Damodaran) → upside is capped, stock is expensive
-
-This creates a range-bound profile ideal for harvesting option premium. The CC confidence score is:
+## Architecture (high level)
 
 ```
-cc_score = min(growth_bull_pct, value_bear_pct) × avg_confidence
+weekly_scan_rebalancing.py          # Entry (--run-profile wheel-10k); runs daily via Actions
+scripts/manage_wheel_options.py     # Afternoon CC manage / BTC / roll
+scripts/should_run_daily_scan.py    # Weekday market-open gate
+src/options/
+  wheel_universe.py / covered_calls.py / wheel_lifecycle.py / cc_agent.py
+src/portfolio/wheel_allocator.py    # 70/30 + preflight + atomic unwind hooks
+src/utils/wheel_email.py            # Compact daily digest
+config/run_profiles.json            # wheel-10k, beat-spy-10k, …
+.github/workflows/
+  daily-wheel-scan.yml              # Mon–Fri morning rebalance + email
+  wheel-options-daily.yml           # Mon–Fri afternoon options manage
 ```
-
-## Architecture
-
-```
-ai-hedge-fund-production/
-├── weekly_scan_rebalancing.py  # Main entry point
-├── src/
-│   ├── agents/                 # 22 investment agent implementations
-│   │   ├── base.py             # BaseAgent class
-│   │   ├── registry.py         # Agent registry + weight management
-│   │   ├── initialize.py       # Agent registration
-│   │   ├── warren_buffett.py   # Value investing philosophy
-│   │   ├── cathie_wood.py      # Disruptive innovation
-│   │   ├── michael_burry.py    # Contrarian deep value
-│   │   └── ...                 # 19 more agents
-│   ├── broker/
-│   │   └── alpaca.py           # Alpaca SDK (equities + options)
-│   ├── data/
-│   │   ├── providers/          # Yahoo Finance, Finnhub, Congressional
-│   │   ├── universe.py         # Stock universe selection
-│   │   └── models.py           # Price, FinancialMetrics, LineItem
-│   ├── llm/
-│   │   ├── models.py           # DeepSeek / Ollama model routing
-│   │   └── utils.py            # Retry logic, JSON parsing
-│   ├── options/
-│   │   └── covered_calls.py    # Covered call manager
-│   ├── portfolio/
-│   │   ├── manager.py          # Decision engine + CC scorer
-│   │   └── models.py           # Portfolio, Position models
-│   ├── risk/
-│   │   └── manager.py          # Volatility + correlation limits
-│   ├── trading/
-│   │   └── pipeline.py         # Weekly pipeline orchestrator
-│   ├── performance/
-│   │   ├── tracker.py          # Agent weight adjustment
-│   │   ├── cycle_tracker.py    # Cycle-over-cycle tracking
-│   │   ├── policy_calibration.py  # Learned rebalance knobs
-│   │   ├── decision_ledger.py     # Buy/sell attribution
-│   │   └── weekly_ledger.py       # Compact run fallback
-│   ├── scan_cache/             # Run persistence (full history; prune optional)
-│   └── utils/
-│       └── email.py            # HTML email reports
-├── config/
-│   └── agent_weights.json      # Dynamic agent weights
-├── .github/workflows/
-│   └── weekly-scan.yml         # GitHub Actions automation
-└── tests/                      # Test suite
-```
-
-## Risk Management
-
-```mermaid
-flowchart LR
-    Volatility["Annualized\nVolatility"] --> VolLimit["Vol-adjusted\nposition limit %"]
-    Correlation["Avg correlation\nwith portfolio"] --> CorrMult["Correlation\nmultiplier"]
-    VolLimit --> Combined["Combined\nposition limit"]
-    CorrMult --> Combined
-    Combined --> MaxDollars["Max $ for\nthis ticker"]
-    MaxDollars --> Sizing["Order sizing\n(capped by cash + risk)"]
-```
-
-| Volatility | Max Allocation | Correlation | Multiplier |
-|------------|---------------|-------------|------------|
-| < 15% | Up to 25% | >= 0.8 | 0.70x |
-| 15-30% | 15-20% | 0.6-0.8 | 0.85x |
-| 30-50% | 10-15% | 0.4-0.6 | 1.00x |
-| > 50% | Max 10% | < 0.2 | 1.10x |
 
 ## Setup
 
@@ -177,8 +82,8 @@ flowchart LR
 
 - Python 3.9+
 - [Poetry](https://python-poetry.org/docs/#installation)
-- Alpaca paper trading account ([sign up free](https://alpaca.markets/))
-- DeepSeek API key ([get one](https://platform.deepseek.com/)) or local Ollama
+- Alpaca **paper** account with **options** enabled
+- DeepSeek API key (or Ollama)
 
 ### Installation
 
@@ -191,114 +96,75 @@ cp .env.example .env
 
 ### Configuration
 
-Edit `.env` with your API keys:
-
 ```bash
-# Required
-ALPACA_API_KEY=your_alpaca_key
-ALPACA_SECRET_KEY=your_alpaca_secret
-
-# LLM (pick one)
-DEEPSEEK_API_KEY=your_deepseek_key   # Recommended (~$2/run for 500 tickers)
-# Or use local Ollama (free, slower)
-
-# Optional
-FINNHUB_API_KEY=your_finnhub_key     # Insider/analyst data
-SMTP_SERVER=smtp.gmail.com           # Email notifications
-SENDER_EMAIL=you@gmail.com
-SENDER_PASSWORD=your_app_password
-RECIPIENT_EMAIL=you@gmail.com
+ALPACA_API_KEY=...
+ALPACA_SECRET_KEY=...
+ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2
+DEEPSEEK_API_KEY=...
+FINNHUB_API_KEY=...          # optional
+SMTP_SERVER=smtp.gmail.com   # daily email
+SENDER_EMAIL=...
+SENDER_PASSWORD=...
+RECIPIENT_EMAIL=...
 ```
 
-### Running
+Fresh paper reset:
 
 ```bash
-# Full weekly scan with execution (500 tickers, covered calls enabled)
-poetry run python weekly_scan_rebalancing.py
-
-# Custom run
-poetry run python weekly_scan_rebalancing.py \
-  --max-stocks 300 \
-  --execute \
-  --min-buy-confidence 50 \
-  --enable-covered-calls \
-  --email-to you@example.com
-
-# Dry run (no trades)
-poetry run python weekly_scan_rebalancing.py --max-stocks 100
+poetry run python scripts/reset_paper_state.py --checklist-only
+poetry run python scripts/reset_paper_state.py --yes
 ```
 
-### Automated Workflows
+After a **new** paper account: update `.env` and GitHub Secrets (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL`). First live book builds on the **next weekday scheduled run** (no manual dispatch required).
 
-GitHub Actions schedules are defined in UTC:
-
-- Weekly scan + rebalance: `0 16 * * 1` (Monday)
-- Biotech catalyst scan: `0 16 * * 1` (Monday)
-- Daily position health check: `0 16 * * 1-5` (Monday-Friday)
-
-At `16:00 UTC`, runs are around `9:00 AM` Pacific during daylight time and around `8:00 AM` Pacific during standard time.
-
-To set up:
-
-1. Push code to your GitHub repo
-2. Add secrets in **Settings → Secrets and variables → Actions**:
-   - Weekly scan + rebalance: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL`, `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`, `SMTP_SERVER`, `SMTP_PORT`, `SENDER_EMAIL`, `SENDER_PASSWORD`, `RECIPIENT_EMAIL`
-   - Biotech catalyst scan: `BIOTECH_ALPACA_API_KEY`, `BIOTECH_ALPACA_SECRET_KEY`, `DEEPSEEK_API_KEY`, `SMTP_SERVER`, `SMTP_PORT`, `SENDER_EMAIL`, `SENDER_PASSWORD`, `RECIPIENT_EMAIL` (optional: `BIOTECH_RECIPIENT_EMAIL`, `BIOTECH_TICKERS`)
-   - Daily position health check: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `BIOTECH_ALPACA_API_KEY`, `BIOTECH_ALPACA_SECRET_KEY`
-3. Workflows trigger automatically on schedule, or manually via **Actions → Run workflow**
-
-### Biotech thesis validation
-
-The biotech scanner runs **dual paper arms** (mechanical straddle on every catalyst pass + LLM-gated straddle when gates pass), logs outcomes to `data/biotech/thesis_ledger.jsonl`, and emails a **thesis scorecard** (win rate, PnL vs premium, A/B comparison). See [docs/BIOTECH_THESIS.md](docs/BIOTECH_THESIS.md).
-
-**Phase 13** hardens profitability controls (cash floors, risk-off gates, 1000-name universe, SPY benchmarks, biotech mechanical freeze). See [docs/PHASE13.md](docs/PHASE13.md).
+### Running locally
 
 ```bash
-poetry run python biotech_catalyst_scan.py --discover-candidates
-poetry run python daily_health_check.py --account biotech
+poetry run python weekly_scan_rebalancing.py --run-profile wheel-10k --execute
+poetry run python scripts/manage_wheel_options.py
 ```
 
-## Weekly Email Report
+### GitHub Actions
 
-Each run sends an HTML email containing:
+| Workflow | Schedule (UTC) | Role |
+|----------|----------------|------|
+| **Daily Wheel Scan & Rebalance** | `30 14 * * 1-5` | Every open weekday → full `wheel-10k` + **daily email** (≈9:30 EST / 10:30 EDT) |
+| **Wheel Options Daily Manage** | `0 16 * * 1-5` | Mid-session BTC/roll/rewrite; email on changes (≈11:00 EST / 12:00 EDT) |
+| Biotech / health checks | see workflow files | Separate sleeves (optional) |
 
-- **Portfolio status** — cash, equity, top positions
-- **Decisions summary** — X buys, Y sells, Z holds
-- **Buy/sell orders** — ticker, quantity, confidence, reasoning
-- **Covered calls** — contracts written, strikes, expiry, estimated premium
-- **CC lot builds** — shares bought to reach 100-share lots
-- **Failed orders** — any execution failures flagged
-- **Past performance** — week-over-week equity change
-- **AI weekly outlook** — LLM-generated 2-3 sentence market summary
+Gate: `scripts/should_run_daily_scan.py` (NYSE open weekday). Manual `workflow_dispatch` bypasses the holiday gate; RTH cutoff still applies. Both wheel workflows share concurrency group `aletheia-wheel-paper` (afternoon waits if morning is still running).
 
-## Key Parameters
+## Daily email (wheel)
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--max-stocks` | 500 | Universe size (top N by market cap) |
-| `--min-buy-confidence` | 50 | Minimum aggregated bullish confidence to buy |
-| `--min-sell-confidence` | 60 | Minimum bearish confidence to sell existing longs |
-| `--cash-buffer-pct` | 0.03 | Keep 3% of equity in cash |
-| `--max-buy-tickers` | 30 | Max number of buy candidates per run |
-| `--enable-covered-calls` | True | Enable covered call strategy on hold tickers |
-| `--min-cc-score` | 40 | Minimum CC score to qualify |
+Subject: `Aletheia daily wheel — YYYY-MM-DD — equity $X (SPY ±Y% since start)`
 
-## Performance
+Includes: equity/cash, **actual vs target sleeve mix**, vs SPY / Sharpe when available, **actions today**, **coverage map** (lot ↔ short call or UNCOVERED), compact directional list, CC/CSP/roll/unwind skips with reasons.
 
-- **Parallel agent execution** — 22 agents run concurrently
-- **Parallel data fetching** — all tickers fetched in parallel
-- **Batch processing** — large universes processed in 100-ticker batches
-- **Memory caching** — 24hr TTL to avoid redundant API calls
-- **Dynamic agent weights** — agents that make better predictions get more influence over time
+Excludes on wheel runs: agent leaderboards, lane diagnostics, Beat-SPY/Phase13 noise, LLM budget dumps.
+
+## Key `wheel-10k` knobs
+
+| Knob | Typical | Meaning |
+|------|---------|---------|
+| `wheel_pct` / `directional_pct` | 0.70 / 0.30 | Capital split |
+| `max_underlying_price` | 35 | Wheel lot price cap |
+| `max_wheel_names` | 4 | Concurrent wheel underlyings |
+| `cc_target_otm_pct` | 0.05 | Target call OTM |
+| `cc_otm_pct_low` / `high` | 0.03 / 0.08 | Open band |
+| `cc_min_premium_usd` | 15 | Absolute premium floor |
+| `atomic_cc_lots` | true | Unwind if CC write fails |
+| `csp_reserve_frac` | 0.20 | Wheel cash reserved for CSP |
+| `execute_cutoff_et` | 15:30 | No new equity DAY orders after this |
+| `options_execute_cutoff_et` | 15:55 | Manage/CC/CSP window (early-close still wins) |
+| `max_csp_collateral_pct` | 0.45 | Max equity fraction for CSP collateral |
 
 ## Testing
 
 ```bash
-poetry run pytest                              # All tests
-poetry run pytest --cov=src --cov-report=html  # With coverage
-poetry run pytest tests/test_agents.py         # Specific suite
+poetry run pytest
+poetry run pytest tests/test_wheel_hybrid.py tests/test_us_equity_calendar.py
 ```
 
 ## Disclaimer
 
-This system is for educational and research purposes only. It operates exclusively on Alpaca paper trading accounts. Past performance does not guarantee future results. Options trading involves significant risk. Always do your own research before making investment decisions with real capital.
+Educational / research only. Alpaca **paper** trading. Options involve significant risk. Past paper results do not guarantee live performance.

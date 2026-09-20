@@ -189,15 +189,16 @@ class EmailNotifier:
         results: dict,
     ) -> bool:
         """
-        Send weekly trading results email
+        Send trading results email.
 
-        Args:
-            recipient: Recipient email address
-            results: Trading results dictionary
-
-        Returns:
-            True if sent successfully, False otherwise
+        Wheel-mode runs use a compact daily digest (no Beat-SPY / agent noise).
         """
+        if results.get("wheel_mode") and not results.get("beat_spy_mode"):
+            from src.utils.wheel_email import build_wheel_daily_email
+
+            subject, body_text, body_html = build_wheel_daily_email(results)
+            return self.send_email(recipient, subject, body_text, body_html)
+
         all_decisions = results.get("decisions", {})
         decision_count = len(all_decisions)
         buy_count = sum(1 for d in all_decisions.values() if d.get("action") in ("buy", "cover"))

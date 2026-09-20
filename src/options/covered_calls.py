@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 
 import structlog
 
@@ -61,6 +61,88 @@ def _contract_premium_usd(contract: Dict) -> float:
     return 0.0
 
 
+def short_call_qty_by_underlying(option_positions: Optional[List[Dict]] = None) -> Dict[str, int]:
+    """Map underlying → total short call contracts."""
+    out: Dict[str, int] = {}
+    for op in option_positions or []:
+        if str(op.get("side") or "").lower() != "short":
+            continue
+        sym = str(op.get("symbol") or "")
+        otype = str(op.get("option_type") or "").lower()
+        if not otype:
+            try:
+                from src.options.wheel_lifecycle import parse_occ_symbol
+
+                parsed = parse_occ_symbol(sym)
+                otype = str((parsed or {}).get("option_type") or "").lower()
+            except Exception:
+                otype = ""
+        if otype != "call":
+            compact = sym.replace(" ", "")
+            if len(compact) >= 15 and compact[-9] == "C":
+                otype = "call"
+            else:
+                continue
+        und = str(op.get("underlying") or "").upper()
+        if not und:
+            try:
+                from src.options.wheel_lifecycle import parse_occ_symbol
+
+                und = str((parse_occ_symbol(sym) or {}).get("underlying") or "").upper()
+            except Exception:
+                und = ""
+        if und:
+            out[und] = out.get(und, 0) + int(op.get("qty") or 1)
+    return out
+
+
+def short_call_underlyings(option_positions: Optional[List[Dict]] = None) -> Set[str]:
+    """Underlyings with an open short **call** (not puts)."""
+    return set(short_call_qty_by_underlying(option_positions).keys())
+
+
+def coverage_sto_qty(
+    shares: int,
+    short_call_qty: int,
+    requested: int,
+) -> int:
+    """Max new short calls that stay covered: floor(shares/100) − existing shorts."""
+    req = max(0, int(requested or 0))
+    if req <= 0:
+        return 0
+    slots = max(0, int(shares or 0) // 100)
+    need = max(0, slots - max(0, int(short_call_qty or 0)))
+    return min(req, need)
+
+
+def live_coverage_sto_qty(broker: "AlpacaBroker", underlying: str, requested: int) -> int:
+    """Coverage-capped STO qty from live broker portfolio + short calls.
+
+    Fail closed: if option positions cannot be fetched, return 0 (never assume
+    short_q=0 and open a naked / overhedged short).
+    """
+    und = str(underlying or "").upper()
+    req = max(0, int(requested or 0))
+    if req <= 0 or not und:
+        return 0
+    try:
+        portfolio = broker.sync_portfolio()
+        pos = None
+        if hasattr(portfolio, "get_position"):
+            pos = portfolio.get_position(und)
+        if pos is None:
+            pos = (getattr(portfolio, "positions", None) or {}).get(und)
+        shares = int(getattr(pos, "long", 0) or 0) if pos else 0
+    except Exception:
+        return 0
+    try:
+        opts = broker.get_option_positions()
+    except Exception:
+        return 0
+    short_q = int(short_call_qty_by_underlying(opts or []).get(und) or 0)
+    return coverage_sto_qty(shares, short_q, req)
+
+
 class CoveredCallManager:
     """Identifies callable positions, picks contracts, and sells covered calls."""
 
@@ -69,16 +151,57 @@ class CoveredCallManager:
         min_premium_pct: float = 0.005,
         min_premium_usd: float = 15.0,
         *,
-        # Wheel-friendly default: 5–12% OTM (less assignment-chasing than ATM).
-        otm_pct_low: float = 0.05,
-        otm_pct_high: float = 0.12,
-        target_otm_pct: float = 0.08,
+        otm_pct_low: float = 0.03,
+        otm_pct_high: float = 0.08,
+        target_otm_pct: float = 0.05,
+        wait_fill: bool = True,
+        fill_timeout_s: float = 45.0,
     ):
         self.min_premium_pct = min_premium_pct
         self.min_premium_usd = min_premium_usd
         self.otm_pct_low = otm_pct_low
         self.otm_pct_high = otm_pct_high
         self.target_otm_pct = target_otm_pct
+        self.wait_fill = wait_fill
+        self.fill_timeout_s = fill_timeout_s
+
+    def preflight_underlying(
+        self,
+        underlying: str,
+        current_price: float,
+        broker: "AlpacaBroker",
+        *,
+        cc_score: int = 55,
+    ) -> Tuple[bool, str]:
+        contract, reason = self.select_contract(underlying, current_price, cc_score, broker)
+        if contract is None:
+            return False, reason or "preflight_failed"
+        return True, ""
+
+    def preflight_tickers(
+        self,
+        tickers: Sequence[str],
+        current_prices: Dict[str, float],
+        broker: "AlpacaBroker",
+        *,
+        cc_score: int = 55,
+    ) -> Tuple[Set[str], Dict[str, str]]:
+        ok: Set[str] = set()
+        fails: Dict[str, str] = {}
+        for t in tickers:
+            ticker = str(t).upper().strip()
+            if not ticker:
+                continue
+            px = float(current_prices.get(ticker) or 0.0)
+            if px <= 0:
+                fails[ticker] = "invalid_price"
+                continue
+            passed, reason = self.preflight_underlying(ticker, px, broker, cc_score=cc_score)
+            if passed:
+                ok.add(ticker)
+            else:
+                fails[ticker] = reason
+        return ok, fails
 
     def identify_callable_positions(
         self,
@@ -86,44 +209,33 @@ class CoveredCallManager:
         cc_lot_tickers: List[str],
         existing_option_positions: Optional[List[Dict]] = None,
     ) -> List[Dict]:
-        """Find positions with >= 100 shares that are flagged as CC candidates."""
-        already_written = set()
-        for op in existing_option_positions or []:
-            if op.get("side") == "short":
-                und = str(op.get("underlying") or "")
-                if und:
-                    already_written.add(und)
+        """Find positions needing short calls (including underhedged top-ups)."""
+        have_by_und = short_call_qty_by_underlying(existing_option_positions)
 
         candidates = []
         seen = set()
-        for ticker in cc_lot_tickers:
-            if ticker in already_written:
-                logger.info("Skipping CC — already have open call", ticker=ticker)
+        for ticker in list(dict.fromkeys(list(cc_lot_tickers) + list((portfolio.positions or {}).keys()))):
+            if ticker not in cc_lot_tickers:
                 continue
             pos = portfolio.get_position(ticker)
-            if pos and pos.long >= CC_LOT_SIZE:
-                lots = pos.long // CC_LOT_SIZE
-                candidates.append(
-                    {
-                        "ticker": ticker,
-                        "callable_lots": lots,
-                        "current_long": pos.long,
-                    }
-                )
-                seen.add(ticker)
-
-        for ticker, pos in portfolio.positions.items():
-            if ticker in already_written or ticker in seen:
+            if not pos or pos.long < CC_LOT_SIZE:
                 continue
-            if pos.long >= CC_LOT_SIZE and ticker in cc_lot_tickers:
-                lots = pos.long // CC_LOT_SIZE
-                candidates.append(
-                    {
-                        "ticker": ticker,
-                        "callable_lots": lots,
-                        "current_long": pos.long,
-                    }
-                )
+            need_lots = int(pos.long) // CC_LOT_SIZE
+            have = int(have_by_und.get(ticker, 0) or 0)
+            extra = need_lots - have
+            if extra <= 0:
+                if have > 0:
+                    logger.info("Skipping CC — fully covered", ticker=ticker, have=have)
+                continue
+            candidates.append(
+                {
+                    "ticker": ticker,
+                    "callable_lots": extra,
+                    "current_long": pos.long,
+                    "short_calls_have": have,
+                }
+            )
+            seen.add(ticker)
 
         logger.info(
             "Callable positions identified",
@@ -138,28 +250,25 @@ class CoveredCallManager:
         current_price: float,
         cc_score: int,
         broker: "AlpacaBroker",
+        *,
+        expiry_gte_days: int = 14,
+        expiry_lte_days: int = 45,
+        strike_floor_otm: Optional[float] = None,
     ) -> Tuple[Optional[Dict], str]:
-        """
-        Pick a call contract.
-
-        Returns (contract, skip_reason). skip_reason is empty on success.
-
-        Strike band comes from manager OTM settings (wheel defaults to 5–12% OTM).
-        Legacy aggressive ATM behavior is available by constructing the manager with
-        otm_pct_low=0.0 for high scores.
-        """
         if current_price <= 0:
             return None, "invalid_price"
 
-        # Mild score tilt: higher score → slightly closer to ATM within the band.
         if cc_score >= 55:
-            lo = max(self.otm_pct_low, self.target_otm_pct - 0.03)
-            hi = self.target_otm_pct + 0.02
+            lo = max(self.otm_pct_low, self.target_otm_pct - 0.02)
+            hi = min(self.otm_pct_high, self.target_otm_pct + 0.03)
             target = self.target_otm_pct
         else:
             lo = self.otm_pct_low
             hi = self.otm_pct_high
             target = self.target_otm_pct
+
+        if strike_floor_otm is not None:
+            lo = max(lo, float(strike_floor_otm))
 
         strike_low = current_price * (1.0 + lo)
         strike_high = current_price * (1.0 + hi)
@@ -167,8 +276,8 @@ class CoveredCallManager:
         contracts = broker.get_option_contracts(
             underlying=underlying,
             option_type="call",
-            expiry_gte=date.today() + timedelta(days=14),
-            expiry_lte=date.today() + timedelta(days=35),
+            expiry_gte=date.today() + timedelta(days=int(expiry_gte_days)),
+            expiry_lte=date.today() + timedelta(days=int(expiry_lte_days)),
             strike_gte=strike_low,
             strike_lte=strike_high,
             limit=40,
@@ -181,6 +290,11 @@ class CoveredCallManager:
             )
 
         tradable = [c for c in contracts if c.get("tradable", True)] or list(contracts)
+        min_strike = current_price * (1.0 + self.otm_pct_low)
+        tradable = [c for c in tradable if float(c.get("strike") or 0) >= min_strike - 1e-6]
+        if not tradable:
+            return None, f"no_contracts_above_min_otm_{min_strike:.2f}"
+
         target_strike = current_price * (1.0 + target)
         tradable.sort(key=lambda c: (abs(c["strike"] - target_strike), c["expiry"]))
 
@@ -238,7 +352,7 @@ class CoveredCallManager:
 
         flagged = set(cc_lot_tickers)
         results: List[Dict] = []
-        # Explicit skip when flagged but not yet 100 shares (pending equity fill).
+        have_by_und = short_call_qty_by_underlying(existing_options)
         for ticker in flagged:
             if any(c["ticker"] == ticker for c in candidates):
                 continue
@@ -250,6 +364,17 @@ class CoveredCallManager:
                         "underlying": ticker,
                         "status": "skipped",
                         "reason": f"insufficient_shares_for_lot_{qty}<{CC_LOT_SIZE}",
+                    }
+                )
+                continue
+            need = qty // CC_LOT_SIZE
+            have = int(have_by_und.get(ticker, 0) or 0)
+            if have >= need:
+                results.append(
+                    {
+                        "underlying": ticker,
+                        "status": "skipped",
+                        "reason": "already_has_short_call",
                     }
                 )
 
@@ -283,32 +408,65 @@ class CoveredCallManager:
                 )
                 continue
 
-            lots = cand["callable_lots"]
-            order = broker.submit_option_order(
-                contract_symbol=contract["symbol"],
-                qty=lots,
-                side="sell",
-                order_type="market",
-            )
+            lots = int(cand["callable_lots"])
+            # Cap and write one contract at a time so partial fills cannot over-hedge.
+            filled_total = 0
+            last_order = None
+            for _ in range(max(1, lots)):
+                sto_qty = live_coverage_sto_qty(broker, ticker, 1)
+                if sto_qty <= 0:
+                    break
+                order = broker.submit_option_order(
+                    contract_symbol=contract["symbol"],
+                    qty=1,
+                    side="sell",
+                    order_type="market",
+                    wait_fill=self.wait_fill,
+                    fill_timeout_s=self.fill_timeout_s,
+                )
+                last_order = order
+                if order and (not self.wait_fill or order.get("fill_ok") is True):
+                    filled_total += 1
+                else:
+                    break
+
             prem = float(contract.get("estimated_premium_usd") or _contract_premium_usd(contract))
-            if order:
+            if filled_total > 0:
                 decision = CoveredCallDecision(
                     underlying=ticker,
                     contract_symbol=contract["symbol"],
                     strike=contract["strike"],
                     expiry=contract["expiry"],
-                    contracts=lots,
-                    estimated_premium=prem * lots,
+                    contracts=filled_total,
+                    estimated_premium=prem * filled_total,
                     cc_score=score,
                 )
-                results.append({**decision.to_dict(), "status": "executed", "order": order})
+                status = "executed" if filled_total >= lots else "partial"
+                results.append(
+                    {
+                        **decision.to_dict(),
+                        "status": status,
+                        "requested_contracts": lots,
+                        "order": last_order,
+                    }
+                )
+            elif last_order:
+                results.append(
+                    {
+                        "underlying": ticker,
+                        "contract_symbol": contract["symbol"],
+                        "status": "failed",
+                        "reason": f"sto_not_filled_{last_order.get('status') or (last_order.get('fill') or {}).get('status')}",
+                        "order": last_order,
+                    }
+                )
             else:
                 results.append(
                     {
                         "underlying": ticker,
                         "contract_symbol": contract["symbol"],
                         "status": "failed",
-                        "reason": "order submission failed",
+                        "reason": "order submission failed or no coverage slots",
                     }
                 )
 
@@ -320,3 +478,49 @@ class CoveredCallManager:
             failed=sum(1 for r in results if r.get("status") == "failed"),
         )
         return results
+
+
+def tickers_needing_atomic_unwind(
+    cc_results: List[Dict],
+    *,
+    held_lot_tickers: Sequence[str],
+    short_call_underlyings: Optional[Set[str]] = None,
+    short_option_underlyings: Optional[Set[str]] = None,
+) -> Set[str]:
+    """
+    Lots that still have ≥100 shares after a failed/skipped CC write.
+
+    Insufficient-shares skips are excluded (equity fill pending — caller should wait).
+    already_has_short_call skips are excluded.
+    Never unwind while *any* short option (call or put) is open on the name.
+    """
+    short = {str(x).upper() for x in (short_option_underlyings or set())}
+    if not short:
+        short = {str(x).upper() for x in (short_call_underlyings or set())}
+    held = {str(x).upper() for x in held_lot_tickers}
+    out: Set[str] = set()
+    for r in cc_results or []:
+        status = str(r.get("status") or "")
+        if status not in ("skipped", "failed", "error"):
+            continue
+        und = str(r.get("underlying") or "").upper()
+        if not und or und not in held:
+            continue
+        if und in short:
+            continue
+        reason = str(r.get("reason") or "")
+        if reason.startswith("insufficient_shares_for_lot"):
+            continue
+        if reason == "already_has_short_call":
+            continue
+        # Transient data / premium miss — leave lot for afternoon or next session.
+        if reason in ("invalid_price", "no suitable contract", "no_contract_met_premium"):
+            continue
+        if reason.startswith("cc_score_below_threshold"):
+            continue
+        if reason.startswith("no_contracts_"):
+            continue
+        if reason.startswith("premium_below_"):
+            continue
+        out.add(und)
+    return out

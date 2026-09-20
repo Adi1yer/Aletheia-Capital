@@ -8,6 +8,7 @@ from src.trading.us_equity_calendar import (
     is_first_us_equity_session_of_week,
     is_us_equity_trading_day,
     nyse_full_day_closures,
+    should_run_daily_trading_session,
     should_run_weekly_scan,
 )
 
@@ -46,3 +47,16 @@ def test_et_datetime_uses_america_new_york_date():
     dt = datetime(2026, 9, 8, 1, 0, tzinfo=ZoneInfo("UTC"))
     assert is_us_equity_trading_day(dt) is False
     assert should_run_weekly_scan(dt)[0] is False
+
+
+def test_daily_gate_runs_every_open_weekday():
+    labor = date(2026, 9, 7)
+    tuesday = date(2026, 9, 15)
+    monday = date(2026, 9, 14)
+    weekend = date(2026, 9, 19)  # Saturday
+    assert should_run_daily_trading_session(labor)[0] is False
+    assert "market_closed" in should_run_daily_trading_session(labor)[1]
+    assert should_run_daily_trading_session(weekend)[0] is False
+    assert should_run_daily_trading_session(monday)[0] is True
+    assert should_run_daily_trading_session(tuesday)[0] is True
+    assert "trading_session" in should_run_daily_trading_session(tuesday)[1]

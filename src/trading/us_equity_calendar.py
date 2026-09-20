@@ -6,7 +6,7 @@ the next open session (usually Tuesday), without adding calendar dependencies.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Iterable, Optional, Set, Union
 from zoneinfo import ZoneInfo
 
@@ -95,6 +95,35 @@ def _closures_covering(d: date) -> Set[date]:
     )
 
 
+def nyse_early_close_days(year: int) -> Set[date]:
+    """NYSE 1:00 PM ET early-close sessions (approximate regular schedule)."""
+    # Day before Independence Day when Jul 4 is a weekday observance
+    july4 = _observed_fixed(date(year, 7, 4))
+    early: Set[date] = set()
+    # Friday after Thanksgiving
+    thanksgiving = _nth_weekday(year, 11, 3, 4)
+    early.add(thanksgiving + timedelta(days=1))
+    # Christmas Eve when Dec 24 is a weekday and Christmas is observed that week
+    christmas = _observed_fixed(date(year, 12, 25))
+    eve = date(year, 12, 24)
+    if eve.weekday() < 5 and eve not in nyse_full_day_closures(year):
+        early.add(eve)
+    # July 3 when Independence Day observed on Friday Jul 4 / Thursday Jul 3 patterns
+    day_before_july4 = july4 - timedelta(days=1)
+    if day_before_july4.weekday() < 5 and day_before_july4 not in nyse_full_day_closures(year):
+        early.add(day_before_july4)
+    return early
+
+
+def nyse_session_close_et(value: DateLike) -> time:
+    """Regular session close time in ET (16:00, or 13:00 on early-close days)."""
+    d = _as_et_date(value)
+    early = nyse_early_close_days(d.year) | nyse_early_close_days(d.year - 1)
+    if d in early:
+        return time(13, 0)
+    return time(16, 0)
+
+
 def is_us_equity_trading_day(value: DateLike) -> bool:
     """True if NYSE has a regular (or early-close) session on this calendar day."""
     d = _as_et_date(value)
@@ -140,6 +169,7 @@ def should_run_weekly_scan(value: Optional[DateLike] = None) -> tuple[bool, str]
     Whether the scheduled weekly scan should execute on this ET calendar day.
 
     Runs on the first US equity session of the ISO/calendar week (Mon–Sun by weekday).
+    Kept for legacy callers/tests; production wheel uses ``should_run_daily_trading_session``.
     """
     d = _as_et_date(value or datetime.now(tz=ET))
     if not is_us_equity_trading_day(d):
@@ -150,3 +180,15 @@ def should_run_weekly_scan(value: Optional[DateLike] = None) -> tuple[bool, str]
     if d != first:
         return False, f"not_first_session:{d.isoformat()}:first={first.isoformat()}"
     return True, f"first_session:{d.isoformat()}"
+
+
+def should_run_daily_trading_session(value: Optional[DateLike] = None) -> tuple[bool, str]:
+    """
+    Whether a scheduled daily wheel job should run on this ET calendar day.
+
+    True on every NYSE open weekday (holidays/weekends skip).
+    """
+    d = _as_et_date(value or datetime.now(tz=ET))
+    if not is_us_equity_trading_day(d):
+        return False, f"market_closed:{d.isoformat()}"
+    return True, f"trading_session:{d.isoformat()}"

@@ -30,6 +30,9 @@ def allocate_wheel_hybrid_book(
     max_underlying_price: float = 35.0,
     pending_orders_by_symbol: Optional[Dict[str, Dict[str, Any]]] = None,
     short_option_underlyings: Optional[Set[str]] = None,
+    preflight_ok: Optional[Set[str]] = None,
+    uncovered_unwind: Optional[Set[str]] = None,
+    csp_reserve_frac: float = 0.20,
 ) -> tuple[Dict[str, PortfolioDecision], Dict[str, Any]]:
     """
     Build equity decisions for the hybrid book.
@@ -37,6 +40,8 @@ def allocate_wheel_hybrid_book(
     - Wheel sleeve: bring/keep 100-share lots on cheap liquid names (CC fuel).
     - Directional sleeve: smaller long-only positions (not forced to 100 shares).
     - CSP entries are selected separately (tickers list); collateral reserved in diagnostics.
+    - ``preflight_ok``: only open *new* lots for tickers that passed option preflight.
+    - ``uncovered_unwind``: force-sell 100-share lots that failed CC write (atomic rule).
     """
     eq = float(equity if equity is not None else 0.0)
     if eq <= 0 and hasattr(portfolio, "get_equity"):
@@ -49,6 +54,17 @@ def allocate_wheel_hybrid_book(
     cash = float(getattr(portfolio, "cash", 0) or 0)
     pending = pending_orders_by_symbol or {}
     short_und = {str(x).upper() for x in (short_option_underlyings or set())}
+
+    # Pending equity buys already commit cash/BP — do not double-spend.
+    pending_buy_notional = 0.0
+    for sym, pend in pending.items():
+        bq = int((pend or {}).get("buy_qty", 0) or 0)
+        if bq <= 0:
+            continue
+        px = float(current_prices.get(str(sym).upper()) or current_prices.get(sym) or 0.0)
+        if px > 0:
+            pending_buy_notional += bq * px
+    cash = max(0.0, cash - pending_buy_notional)
 
     wheel_budget = eq * float(wheel_pct)
     dir_budget = eq * float(directional_pct)
@@ -65,6 +81,7 @@ def allocate_wheel_hybrid_book(
         "csp_candidates": [],
         "cc_lot_tickers": [],
         "skipped": [],
+        "pending_buy_notional": round(pending_buy_notional, 2),
     }
 
     def held_qty(t: str) -> int:
@@ -77,23 +94,60 @@ def allocate_wheel_hybrid_book(
 
     decisions: Dict[str, PortfolioDecision] = {}
 
-    # Existing wheel lots (100+ shares, price still in band) keep priority.
+    preflight = {str(x).upper() for x in (preflight_ok or set())} if preflight_ok is not None else None
+    unwind_set = {str(x).upper() for x in (uncovered_unwind or set())}
+
+    # Force-unwind uncovered lots that failed CC (atomic invariant).
+    # Credit estimated sell proceeds so replacement buys can use freed cash.
+    for t in list(unwind_set):
+        qty = held_qty(t)
+        if qty <= 0:
+            continue
+        if t in short_und:
+            diagnostics["skipped"].append(
+                {"ticker": t, "reason": "unwind_blocked_open_short_option"}
+            )
+            continue
+        px = float(current_prices.get(t) or 0.0)
+        decisions[t] = PortfolioDecision(
+            action="sell",
+            quantity=qty,
+            confidence=90,
+            reasoning="Atomic CC rule: unwind lot — covered call write failed/skipped",
+        )
+        diagnostics["skipped"].append({"ticker": t, "reason": "atomic_unwind"})
+        if px > 0:
+            cash += qty * px
+
+    # Existing wheel lots (100+ shares). Soft band (≤ max×1.25) keeps recently-appreciated
+    # lots in the CC path so a same-session BTC cannot orphan-sell them.
+    soft_max = float(max_underlying_price) * 1.25
     existing_wheel: List[str] = []
+    graduated_lots: List[str] = []  # ≥100 shares above soft max — still CC-eligible, never orphan
     for t, pos in list((portfolio.positions or {}).items()):
+        if t in unwind_set or t in decisions:
+            continue
         qty = int(getattr(pos, "long", 0) or 0)
         px = float(current_prices.get(t) or 0.0)
-        if qty >= CC_LOT and 0 < px <= float(max_underlying_price):
-            existing_wheel.append(t)
+        if qty >= CC_LOT and px > 0:
+            if px <= soft_max:
+                existing_wheel.append(t)
+            else:
+                graduated_lots.append(t)
 
     ranked_new = [c.ticker for c in wheel_candidates if c.ticker not in existing_wheel]
+    if preflight is not None:
+        ranked_new = [t for t in ranked_new if t in preflight]
     wheel_targets: List[str] = []
     for t in existing_wheel + ranked_new:
-        if t in wheel_targets:
+        if t in wheel_targets or t in unwind_set:
             continue
         wheel_targets.append(t)
         if len(wheel_targets) >= int(max_wheel_names):
             break
     diagnostics["wheel_targets"] = list(wheel_targets)
+    diagnostics["preflight_required"] = preflight is not None
+    diagnostics["preflight_ok_count"] = len(preflight) if preflight is not None else None
 
     wheel_spent = 0.0
     for t in existing_wheel:
@@ -101,10 +155,14 @@ def allocate_wheel_hybrid_book(
         qty = held_qty(t)
         wheel_spent += qty * px
 
-    # Top up / open 100-share lots within wheel budget (leave room for CSP collateral).
-    csp_reserve_frac = 0.40
-    lot_budget = wheel_budget * (1.0 - csp_reserve_frac)
+    # Top up / open 100-share lots within wheel budget (leave room for CSP collateral + buffer).
+    reserve = float(csp_reserve_frac)
+    lot_budget = wheel_budget * (1.0 - reserve)
+    csp_cash_floor = wheel_budget * reserve
+    min_cash_after_lot = buffer_cash + csp_cash_floor
     for t in wheel_targets:
+        if t in decisions:
+            continue
         px = float(current_prices.get(t) or 0.0)
         if px <= 0 or px > float(max_underlying_price):
             diagnostics["skipped"].append({"ticker": t, "reason": "price"})
@@ -116,6 +174,16 @@ def allocate_wheel_hybrid_book(
             if held >= CC_LOT:
                 diagnostics["cc_lot_tickers"].append(t)
             continue
+        # Never buy shares into a name with an open short option (CSP collateral or CC).
+        if t in short_und:
+            diagnostics["skipped"].append({"ticker": t, "reason": "open_short_option"})
+            continue
+        # New lot buys require option-chain preflight when provided.
+        if held < CC_LOT and preflight is not None and t not in preflight:
+            diagnostics["skipped"].append({"ticker": t, "reason": "preflight_failed"})
+            if t not in short_und:
+                diagnostics["csp_candidates"].append(t)
+            continue
         cost = need * px
         if wheel_spent + cost > lot_budget:
             # Still a CSP candidate if we cannot afford shares.
@@ -123,10 +191,10 @@ def allocate_wheel_hybrid_book(
                 diagnostics["csp_candidates"].append(t)
             diagnostics["skipped"].append({"ticker": t, "reason": "lot_budget"})
             continue
-        if cash - cost < buffer_cash and held < CC_LOT:
+        if cash - cost < min_cash_after_lot and held < CC_LOT:
             if t not in short_und:
                 diagnostics["csp_candidates"].append(t)
-            diagnostics["skipped"].append({"ticker": t, "reason": "cash_buffer"})
+            diagnostics["skipped"].append({"ticker": t, "reason": "cash_buffer_or_csp_reserve"})
             continue
         decisions[t] = PortfolioDecision(
             action="buy",
@@ -151,32 +219,75 @@ def allocate_wheel_hybrid_book(
         if t not in diagnostics["csp_candidates"]:
             diagnostics["csp_candidates"].append(t)
 
-    diagnostics["csp_candidates"] = diagnostics["csp_candidates"][: int(max_wheel_names)]
-    diagnostics["csp_collateral_reserve"] = round(wheel_budget * csp_reserve_frac, 2)
+    # Overflow existing 100-lots (beyond max_wheel_names) stay CC-eligible so we never
+    # orphan-sell covered/naked wheel inventory without a write attempt.
+    for t in existing_wheel:
+        if held_qty(t) >= CC_LOT and t not in diagnostics["cc_lot_tickers"]:
+            diagnostics["cc_lot_tickers"].append(t)
+            diagnostics.setdefault("overflow_cc_lots", []).append(t)
+    # Graduated lots (price > soft max) still get CC writes — never orphan-sell a 100-lot.
+    for t in graduated_lots:
+        if held_qty(t) >= CC_LOT and t not in diagnostics["cc_lot_tickers"]:
+            diagnostics["cc_lot_tickers"].append(t)
+            diagnostics.setdefault("graduated_cc_lots", []).append(t)
 
-    # Directional sleeve: equal-weight among top names not in wheel targets.
-    wheel_set = set(wheel_targets)
+    diagnostics["csp_candidates"] = diagnostics["csp_candidates"][: int(max_wheel_names)]
+    diagnostics["csp_collateral_reserve"] = round(wheel_budget * reserve, 2)
+    diagnostics["csp_reserve_frac"] = reserve
+
+    # Directional sleeve: residual cash only after wheel buys + buffer + CSP reserve.
+    wheel_set = set(wheel_targets) | set(diagnostics["cc_lot_tickers"])
     dir_names = [t for t in directional_candidates if t not in wheel_set][: int(max_directional_names)]
     diagnostics["directional_targets"] = list(dir_names)
-    if dir_names and dir_budget > 0:
-        per = dir_budget / len(dir_names)
+    csp_cash_reserve = wheel_budget * reserve
+    cash_after_wheel = cash
+    residual_dir_budget = min(
+        dir_budget,
+        max(0.0, cash_after_wheel - buffer_cash - csp_cash_reserve),
+    )
+    diagnostics["directional_residual_budget"] = round(residual_dir_budget, 2)
+    diagnostics["csp_cash_reserve"] = round(csp_cash_reserve, 2)
+    if dir_names and residual_dir_budget > 0:
+        per = residual_dir_budget / len(dir_names)
         for t in dir_names:
             px = float(current_prices.get(t) or 0.0)
             if px <= 0:
                 continue
             held = held_qty(t)
             pending_buy = int((pending.get(t) or {}).get("buy_qty", 0) or 0)
-            target_qty = int(per // px)
+            # Cap at 99 shares so directional never forms an uncovered CC lot.
+            max_dir_qty = 99
+            target_qty = min(max_dir_qty, int(per // px))
             delta = target_qty - held - pending_buy
+            if held + pending_buy > max_dir_qty:
+                # Trim excess that would create a naked 100-lot outside the wheel path.
+                over = held + pending_buy - max_dir_qty
+                if over >= 1:
+                    decisions[t] = PortfolioDecision(
+                        action="sell",
+                        quantity=int(over),
+                        confidence=70,
+                        reasoning="Directional cap 99 — avoid uncovered 100-share lot",
+                    )
+                continue
             if delta >= 1 and delta * px >= 50:
                 if t in decisions:
+                    continue
+                if t in short_und:
+                    diagnostics["skipped"].append(
+                        {"ticker": t, "reason": "directional_blocked_open_short_option"}
+                    )
+                    continue
+                cost = delta * px
+                if cash_after_wheel - cost < buffer_cash + csp_cash_reserve:
                     continue
                 decisions[t] = PortfolioDecision(
                     action="buy",
                     quantity=int(delta),
                     confidence=60,
-                    reasoning=f"Directional sleeve target (~{directional_pct:.0%} book)",
+                    reasoning=f"Directional sleeve residual (~{directional_pct:.0%} target, wheel-first)",
                 )
+                cash_after_wheel -= cost
             elif delta <= -1 and (abs(delta) * px >= 50 or target_qty == 0):
                 decisions[t] = PortfolioDecision(
                     action="sell",
@@ -191,6 +302,10 @@ def allocate_wheel_hybrid_book(
     for t, pos in list((portfolio.positions or {}).items()):
         qty = int(getattr(pos, "long", 0) or 0)
         if qty <= 0 or t in keep or t in decisions:
+            continue
+        # Never sell shares while a short option is open on this name (BTC first).
+        if t in short_und:
+            diagnostics["skipped"].append({"ticker": t, "reason": "orphan_blocked_open_short_option"})
             continue
         px = float(current_prices.get(t) or 0.0)
         if px > 0 and qty * px < 40:

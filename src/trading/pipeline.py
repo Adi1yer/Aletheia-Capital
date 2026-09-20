@@ -694,9 +694,11 @@ class TradingPipeline:
         wheel_manage_results: List[Dict] = []
         wheel_state: Dict[str, Any] = {}
         if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
+            # Manage (BTC/roll) is isolated from allocate: a later allocate exception must not
+            # discard wheel_manage_results or imply manage never ran.
             try:
+                from src.options.covered_calls import CoveredCallManager
                 from src.options.wheel_lifecycle import (
-                    manage_short_options,
                     short_option_underlyings,
                     sync_wheel_assignment_state,
                 )
@@ -704,126 +706,180 @@ class TradingPipeline:
                 from src.portfolio.wheel_allocator import allocate_wheel_hybrid_book
 
                 opt_pos = []
+                option_positions_ok = True
                 if self.broker:
                     try:
                         opt_pos = self.broker.get_option_positions() or []
-                    except Exception:
-                        opt_pos = []
-                short_und = short_option_underlyings(opt_pos)
-
-                if execute and self.broker:
-                    wheel_manage_results = manage_short_options(
-                        self.broker,
-                        current_prices,
-                        manage_dte_threshold=int(run_config.get("manage_dte_threshold", 7)),
-                        manage_itm_pct=float(run_config.get("manage_itm_pct", 0.02)),
-                        execute=True,
-                    )
-                    try:
-                        portfolio = self.broker.sync_portfolio()
-                        opt_pos = self.broker.get_option_positions() or []
-                        short_und = short_option_underlyings(opt_pos)
-                    except Exception:
-                        pass
-
-                dossiers = getattr(self, "_ticker_dossiers", None) or {}
-                wheel_cands = screen_wheel_candidates(
-                    tickers,
-                    prices=current_prices,
-                    dossiers=dossiers,
-                    max_price=float(run_config.get("max_underlying_price", 35.0)),
-                    min_adv_usd=float(run_config.get("min_adv_usd", 5_000_000.0)),
-                    min_option_oi=int(run_config.get("min_option_oi", 0) or 0),
-                    top_n=max(8, int(run_config.get("max_wheel_names", 4)) * 3),
-                )
-
-                # Directional: residual μ̂ when available, else highest-priced liquid names outside wheel.
-                dir_ranked: List[str] = []
-                try:
-                    from src.alpha.residual_mu import rank_residual_mu
-                    from src.portfolio.sectors import prefetch_sectors
-
-                    mu, _vol, _diag = rank_residual_mu(
-                        list(tickers),
-                        dossiers,
-                        sectors=prefetch_sectors(list(tickers), dossiers=dossiers),
-                    )
-                    dir_ranked = [
-                        t
-                        for t, _ in sorted(
-                            mu.items(), key=lambda kv: float(kv[1]), reverse=True
+                    except Exception as e:
+                        logger.error(
+                            "Option positions unavailable; aborting wheel allocate to avoid naked shorts",
+                            error=str(e),
                         )
-                    ]
-                except Exception as e:
-                    logger.warning("Directional residual rank failed", error=str(e))
-                    dir_ranked = [
-                        t
-                        for t in tickers
-                        if float(current_prices.get(t) or 0) > float(run_config.get("max_underlying_price", 35))
-                    ]
+                        option_positions_ok = False
+                        opt_pos = []
+                if not option_positions_ok:
+                    decisions = {}
+                    self.portfolio_manager._last_cc_lot_tickers = []
+                    self.portfolio_manager._last_csp_tickers = []
+                    self.portfolio_manager._last_csp_scores = {}
+                    self.portfolio_manager._last_rebalance_diagnostics = {
+                        "error": "option_positions_unavailable"
+                    }
+                    execute = False
+                else:
+                    short_und = short_option_underlyings(opt_pos)
 
-                equity_now = 0.0
-                if hasattr(portfolio, "get_equity"):
-                    try:
-                        equity_now = float(portfolio.get_equity(current_prices) or 0)
-                    except Exception:
-                        equity_now = 0.0
-                if equity_now <= 0:
-                    equity_now = float(getattr(portfolio, "cash", 0) or 0) + sum(
-                        int(getattr(pos, "long", 0) or 0) * float(current_prices.get(t) or 0)
-                        for t, pos in (portfolio.positions or {}).items()
+                    # Naked lots are fixed by CC write → atomic unwind (not pre-CC force sells).
+                    uncovered_now: set = set()
+
+                    cc_mgr_for_roll = CoveredCallManager(
+                        min_premium_pct=float(run_config.get("cc_min_premium_pct", 0.004)),
+                        min_premium_usd=float(run_config.get("cc_min_premium_usd", 15.0)),
+                        otm_pct_low=float(run_config.get("cc_otm_pct_low", 0.03)),
+                        otm_pct_high=float(run_config.get("cc_otm_pct_high", 0.08)),
+                        target_otm_pct=float(run_config.get("cc_target_otm_pct", 0.05)),
+                        wait_fill=True,
                     )
 
-                decisions, wheel_diag = allocate_wheel_hybrid_book(
-                    portfolio=portfolio,
-                    current_prices=current_prices,
-                    wheel_candidates=wheel_cands,
-                    directional_candidates=dir_ranked,
-                    equity=equity_now,
-                    wheel_pct=float(run_config.get("wheel_pct", 0.70)),
-                    directional_pct=float(run_config.get("directional_pct", 0.30)),
-                    cash_buffer_pct=float(run_config.get("cash_buffer_pct", 0.06)),
-                    max_wheel_names=int(run_config.get("max_wheel_names", 4)),
-                    max_directional_names=int(run_config.get("max_directional_names", 5)),
-                    max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
-                    pending_orders_by_symbol=pending_orders_by_symbol,
-                    short_option_underlyings=short_und,
-                )
-                rules_score = int(run_config.get("wheel_rules_score", 55))
-                self.portfolio_manager._last_cc_lot_tickers = list(wheel_diag.get("cc_lot_tickers") or [])
-                self.portfolio_manager._last_csp_tickers = list(wheel_diag.get("csp_candidates") or [])[
-                    : int(run_config.get("max_csp_tickers", 3))
-                ]
-                self.portfolio_manager._last_csp_scores = {
-                    t: rules_score for t in self.portfolio_manager._last_csp_tickers
-                }
-                self.portfolio_manager._last_rebalance_diagnostics = dict(wheel_diag)
-                run_config["wheel_diagnostics"] = wheel_diag
-
-                if self.broker:
+                    # Manage/BTC runs immediately before the CC step (same live window).
                     try:
-                        wheel_state = sync_wheel_assignment_state(
-                            portfolio,
-                            opt_pos,
-                            max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
+                        dossiers = getattr(self, "_ticker_dossiers", None) or {}
+                        wheel_cands = screen_wheel_candidates(
+                            tickers,
+                            prices=current_prices,
+                            dossiers=dossiers,
+                            max_price=float(run_config.get("max_underlying_price", 35.0)),
+                            min_adv_usd=float(run_config.get("min_adv_usd", 5_000_000.0)),
+                            min_option_oi=int(run_config.get("min_option_oi", 0) or 0),
+                            top_n=max(8, int(run_config.get("max_wheel_names", 4)) * 3),
+                        )
+
+                        # Option-chain preflight before opening new lots.
+                        preflight_ok = None
+                        preflight_fails: Dict[str, str] = {}
+                        if self.broker and wheel_cands:
+                            try:
+                                probe = [c.ticker for c in wheel_cands]
+                                preflight_ok, preflight_fails = cc_mgr_for_roll.preflight_tickers(
+                                    probe,
+                                    current_prices,
+                                    self.broker,
+                                    cc_score=int(run_config.get("wheel_rules_score", 55)),
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "CC preflight failed; allowing existing lots only", error=str(e)
+                                )
+                                preflight_ok = set()
+
+                        # Directional: residual μ̂ when available, else highest-priced liquid names outside wheel.
+                        dir_ranked: List[str] = []
+                        try:
+                            from src.alpha.residual_mu import rank_residual_mu
+                            from src.portfolio.sectors import prefetch_sectors
+
+                            mu, _vol, _diag = rank_residual_mu(
+                                list(tickers),
+                                dossiers,
+                                sectors=prefetch_sectors(list(tickers), dossiers=dossiers),
+                            )
+                            dir_ranked = [
+                                t
+                                for t, _ in sorted(
+                                    mu.items(), key=lambda kv: float(kv[1]), reverse=True
+                                )
+                            ]
+                        except Exception as e:
+                            logger.warning("Directional residual rank failed", error=str(e))
+                            dir_ranked = [
+                                t
+                                for t in tickers
+                                if float(current_prices.get(t) or 0)
+                                > float(run_config.get("max_underlying_price", 35))
+                            ]
+
+                        equity_now = 0.0
+                        try:
+                            equity_now = float(getattr(portfolio, "_broker_equity", 0) or 0)
+                        except Exception:
+                            equity_now = 0.0
+                        if equity_now <= 0 and hasattr(portfolio, "get_equity"):
+                            try:
+                                equity_now = float(portfolio.get_equity(current_prices) or 0)
+                            except Exception:
+                                equity_now = 0.0
+                        if equity_now <= 0:
+                            equity_now = float(getattr(portfolio, "cash", 0) or 0) + sum(
+                                int(getattr(pos, "long", 0) or 0) * float(current_prices.get(t) or 0)
+                                for t, pos in (portfolio.positions or {}).items()
+                            )
+
+                        decisions, wheel_diag = allocate_wheel_hybrid_book(
+                            portfolio=portfolio,
                             current_prices=current_prices,
+                            wheel_candidates=wheel_cands,
+                            directional_candidates=dir_ranked,
+                            equity=equity_now,
+                            wheel_pct=float(run_config.get("wheel_pct", 0.70)),
+                            directional_pct=float(run_config.get("directional_pct", 0.30)),
+                            cash_buffer_pct=float(run_config.get("cash_buffer_pct", 0.06)),
+                            max_wheel_names=int(run_config.get("max_wheel_names", 4)),
+                            max_directional_names=int(run_config.get("max_directional_names", 5)),
+                            max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
+                            pending_orders_by_symbol=pending_orders_by_symbol,
+                            short_option_underlyings=short_und,
+                            preflight_ok=preflight_ok,
+                            uncovered_unwind=uncovered_now,
+                            csp_reserve_frac=float(run_config.get("csp_reserve_frac", 0.20)),
+                        )
+                        if preflight_fails:
+                            wheel_diag["preflight_fails"] = dict(list(preflight_fails.items())[:12])
+                        rules_score = int(run_config.get("wheel_rules_score", 55))
+                        self.portfolio_manager._last_cc_lot_tickers = list(
+                            wheel_diag.get("cc_lot_tickers") or []
+                        )
+                        self.portfolio_manager._last_csp_tickers = list(
+                            wheel_diag.get("csp_candidates") or []
+                        )[: int(run_config.get("max_csp_tickers", 3))]
+                        self.portfolio_manager._last_csp_scores = {
+                            t: rules_score for t in self.portfolio_manager._last_csp_tickers
+                        }
+                        self.portfolio_manager._last_rebalance_diagnostics = dict(wheel_diag)
+                        run_config["wheel_diagnostics"] = wheel_diag
+
+                        if self.broker:
+                            try:
+                                wheel_state = sync_wheel_assignment_state(
+                                    portfolio,
+                                    opt_pos,
+                                    max_underlying_price=float(
+                                        run_config.get("max_underlying_price", 35.0)
+                                    ),
+                                    current_prices=current_prices,
+                                )
+                            except Exception as e:
+                                logger.warning("Wheel state sync failed", error=str(e))
+
+                        logger.info(
+                            "Wheel hybrid decisions ready",
+                            n=len(decisions),
+                            cc_lots=self.portfolio_manager._last_cc_lot_tickers,
+                            csp=self.portfolio_manager._last_csp_tickers,
                         )
                     except Exception as e:
-                        logger.warning("Wheel state sync failed", error=str(e))
-
-                logger.info(
-                    "Wheel hybrid decisions ready",
-                    n=len(decisions),
-                    cc_lots=self.portfolio_manager._last_cc_lot_tickers,
-                    csp=self.portfolio_manager._last_csp_tickers,
-                )
+                        logger.error(
+                            "Wheel hybrid allocation failed; holding (no non-wheel fallback)",
+                            error=str(e),
+                        )
+                        decisions = {}  # type: ignore
             except Exception as e:
-                logger.error("Wheel hybrid allocation failed; falling back", error=str(e))
-                decisions = None  # type: ignore
+                logger.error("Wheel hybrid setup failed; holding (no non-wheel fallback)", error=str(e))
+                decisions = {}  # type: ignore
         else:
             decisions = None  # type: ignore
 
-        if decisions is None and run_config.get("rebalance") is True:
+        wheel_active = bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode"))
+        if decisions is None and run_config.get("rebalance") is True and not wheel_active:
             decisions = self.portfolio_manager.generate_rebalance_decisions(
                 tickers=tickers,
                 agent_signals=agent_signals,
@@ -903,7 +959,7 @@ class TradingPipeline:
                 regime=dict(run_config.get("regime") or {}),
                 ticker_dossiers=getattr(self, "_ticker_dossiers", None) or {},
             )
-        elif decisions is None:
+        elif decisions is None and not wheel_active:
             decisions = self.portfolio_manager.generate_decisions(
                 tickers=tickers,
                 agent_signals=agent_signals,
@@ -912,6 +968,8 @@ class TradingPipeline:
                 agent_weights=agent_weights,
                 pending_orders_by_symbol=pending_orders_by_symbol,
             )
+        elif decisions is None:
+            decisions = {}
         pretrade = {}
         try:
             from src.risk.pretrade import simulate_pretrade
@@ -922,8 +980,21 @@ class TradingPipeline:
                 max_sector_pct=float(run_config.get("max_sector_pct", 0.35)),
             )
             if bool(pretrade.get("hard_block")) and execute:
-                logger.warning("Pre-trade simulation blocked execution", reason=pretrade.get("block_reason"))
-                execute = False
+                # Manage runs after equity, so a manage_acted bypass is impossible here.
+                # Wheel: drop equity decisions but keep execute so manage/CC/CSP still run.
+                if wheel_active:
+                    logger.warning(
+                        "Pre-trade blocks equity; continuing for wheel manage/CC/CSP",
+                        reason=pretrade.get("block_reason"),
+                    )
+                    decisions = {}
+                    run_config["equity_blocked_by_pretrade"] = True
+                else:
+                    logger.warning(
+                        "Pre-trade simulation blocked execution",
+                        reason=pretrade.get("block_reason"),
+                    )
+                    execute = False
         except Exception as e:
             logger.warning("Pre-trade simulation failed", error=str(e))
 
@@ -959,8 +1030,35 @@ class TradingPipeline:
                 pass
 
         # 8. Execute trades (if enabled)
+        # Re-check RTH/cutoff immediately before submits (morning scans can run for hours).
+        # Wheel: equity uses execute_cutoff_et; manage/CC/CSP use a later options cutoff so a
+        # slow morning can still cover lots after the equity window closes.
+        equity_ok = bool(execute)
+        if execute and not bool(run_config.get("force_execute_after_hours")):
+            try:
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _TZ
+
+                from src.trading.execution_status import can_submit_live_orders
+
+                ok_now, reason_now = can_submit_live_orders(
+                    _dt.now(_TZ("America/New_York")),
+                    cutoff_et=str(run_config.get("execute_cutoff_et") or "15:30"),
+                )
+                if not ok_now:
+                    logger.warning(
+                        "Live submit window closed before equity execute — skipping equity submits",
+                        reason=reason_now,
+                    )
+                    equity_ok = False
+                    run_config["execute_skipped_reason"] = reason_now
+                    if not wheel_active:
+                        execute = False
+            except Exception as e:
+                logger.warning("Pre-execute RTH recheck failed", error=str(e))
+
         execution_results = None
-        if execute:
+        if equity_ok:
             if self._broker_class is None:
                 logger.error("Cannot execute trades - Alpaca broker not available")
                 execution_results = {"error": "Alpaca broker not available"}
@@ -985,8 +1083,42 @@ class TradingPipeline:
                     limit_slippage_pct=float(run_config.get("limit_slippage_pct", 0.002)),
                     run_config=run_config,
                 )
+                # Wait for wheel equity fills (sells first for BP, then lot buys) before CC.
+                if bool(run_config.get("wheel_mode")) and hasattr(self.broker, "wait_for_order_fill"):
+                    for ticker, res in (execution_results or {}).items():
+                        if ticker == "error" or not isinstance(res, dict):
+                            continue
+                        dec = (decisions or {}).get(ticker)
+                        if not dec:
+                            continue
+                        act = getattr(dec, "action", "")
+                        reason = str(getattr(dec, "reasoning", "") or "")
+                        # Always confirm sells; confirm wheel lot buys.
+                        if act not in ("sell", "cover") and not (
+                            act == "buy" and "Wheel lot" in reason
+                        ):
+                            continue
+                        oid = str(res.get("order_id") or res.get("id") or "")
+                        if not oid:
+                            continue
+                        fill = self.broker.wait_for_order_fill(
+                            oid,
+                            timeout_s=float(run_config.get("lot_fill_timeout_s", 60)),
+                            min_filled_qty=int(getattr(dec, "quantity", 0) or 0) or None,
+                        )
+                        res["fill"] = fill
+                        if not fill.get("ok"):
+                            logger.warning(
+                                "Wheel equity order not fully filled",
+                                ticker=ticker,
+                                action=act,
+                                fill=fill,
+                            )
         else:
-            logger.info("Dry run mode - trades not executed")
+            if execute and not equity_ok:
+                logger.info("Equity window closed — trades not executed; options may still run")
+            else:
+                logger.info("Dry run mode - trades not executed")
 
         if execute and self.broker:
             try:
@@ -999,7 +1131,11 @@ class TradingPipeline:
             try:
                 from src.trading.reconciler import reconcile_orders
 
-                reconciliation = reconcile_orders(broker=self.broker, max_polls=int(run_config.get("reconcile_polls", 3)))
+                reconciliation = reconcile_orders(
+                    broker=self.broker,
+                    max_polls=int(run_config.get("reconcile_polls", 8)),
+                    poll_sleep_s=float(run_config.get("reconcile_poll_sleep_s", 1.0)),
+                )
             except Exception as e:
                 logger.warning("Execution reconciliation failed", error=str(e))
 
@@ -1047,7 +1183,103 @@ class TradingPipeline:
             "order_state": {},
         }
         csp_results: List[Dict] = []
-        if enable_cc and execute and self.broker and cc_lot_tickers:
+        options_window_ok = True
+
+        # Wheel manage/BTC/roll immediately before CC — same live window, no multi-hour gap.
+        if (
+            bool(run_config.get("wheel_mode"))
+            and not bool(run_config.get("beat_spy_mode"))
+            and execute
+            and self.broker
+        ):
+            try:
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _TZ
+
+                from src.options.cc_agent import resolve_ambiguous_cc_actions
+                from src.options.covered_calls import CoveredCallManager
+                from src.options.wheel_lifecycle import manage_or_roll_short_calls
+                from src.trading.execution_status import can_submit_live_orders
+
+                ok_m, reason_m = can_submit_live_orders(
+                    _dt.now(_TZ("America/New_York")),
+                    cutoff_et=str(
+                        run_config.get("options_execute_cutoff_et")
+                        or run_config.get("execute_cutoff_et")
+                        or "15:55"
+                    ),
+                )
+                if not ok_m and not bool(run_config.get("force_execute_after_hours")):
+                    logger.warning(
+                        "Submit window closed before manage/CC — skipping BTC, CC, and CSP",
+                        reason=reason_m,
+                    )
+                    run_config["execute_skipped_reason"] = reason_m
+                    options_window_ok = False
+                else:
+                    cc_mgr_roll = CoveredCallManager(
+                        min_premium_pct=float(run_config.get("cc_min_premium_pct", 0.004)),
+                        min_premium_usd=float(run_config.get("cc_min_premium_usd", 15.0)),
+                        otm_pct_low=float(run_config.get("cc_otm_pct_low", 0.03)),
+                        otm_pct_high=float(run_config.get("cc_otm_pct_high", 0.08)),
+                        target_otm_pct=float(run_config.get("cc_target_otm_pct", 0.05)),
+                        wait_fill=True,
+                    )
+                    wheel_manage_results = manage_or_roll_short_calls(
+                        self.broker,
+                        latest_price_map or current_prices,
+                        cc_mgr_roll,
+                        manage_dte_threshold=int(run_config.get("manage_dte_threshold", 7)),
+                        manage_itm_pct=float(run_config.get("manage_itm_pct", 0.02)),
+                        profit_take_pct=float(run_config.get("cc_profit_take_pct", 0.60)),
+                        prefer_roll=True,
+                        execute=True,
+                        cc_score=int(run_config.get("wheel_rules_score", 55)),
+                    )
+                    amb = [r for r in wheel_manage_results if r.get("status") == "ambiguous"]
+                    if amb:
+                        cands: Dict[str, List[Dict]] = {}
+                        for r in amb:
+                            reason = str(r.get("reason") or "")
+                            if any(
+                                m in reason
+                                for m in (
+                                    "profit_take_requires_credit",
+                                    "roll_debit_exceeds_cap",
+                                    "roll_debit_too_large",
+                                    "btc_cost_unknown",
+                                    "no_share_coverage_for_roll_sto",
+                                )
+                            ):
+                                continue
+                            und = str(r.get("underlying") or "").upper()
+                            sym = r.get("new_contract")
+                            if und and sym:
+                                cands.setdefault(und, []).append({"symbol": sym})
+                        try:
+                            resolved = resolve_ambiguous_cc_actions(
+                                amb,
+                                candidate_contracts_by_underlying=cands,
+                                broker=self.broker,
+                                execute=True,
+                            )
+                            wheel_manage_results.extend(resolved)
+                        except Exception as e:
+                            logger.warning("CC agent overlay failed", error=str(e))
+                    # Ensure BTCed names are CC-eligible this session.
+                    for r in wheel_manage_results:
+                        if str(r.get("status") or "") == "btc_executed":
+                            und = str(r.get("underlying") or "").upper()
+                            if und and und not in cc_lot_tickers:
+                                cc_lot_tickers.append(und)
+                    try:
+                        self.broker.sync_portfolio()
+                    except Exception as e:
+                        logger.warning("Post-manage sync before CC failed", error=str(e))
+            except Exception as e:
+                logger.error("Wheel manage/roll before CC failed", error=str(e))
+
+        if enable_cc and execute and options_window_ok and self.broker and cc_lot_tickers:
             cc_diagnostics["step_ran"] = True
             try:
                 from src.options.covered_calls import CoveredCallManager
@@ -1055,13 +1287,14 @@ class TradingPipeline:
                 logger.info("Running covered call step", cc_lot_tickers=cc_lot_tickers)
                 cc_portfolio = self.broker.sync_portfolio()
                 if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
-                    # Prefer ~5–12% OTM for wheel income; absolute $ floor for cheap lots.
+                    # Premium-leaning ~3–8% OTM for wheel income.
                     cc_manager = CoveredCallManager(
                         min_premium_pct=float(run_config.get("cc_min_premium_pct", 0.004)),
                         min_premium_usd=float(run_config.get("cc_min_premium_usd", 15.0)),
-                        otm_pct_low=float(run_config.get("cc_otm_pct_low", 0.05)),
-                        otm_pct_high=float(run_config.get("cc_otm_pct_high", 0.12)),
-                        target_otm_pct=float(run_config.get("cc_target_otm_pct", 0.08)),
+                        otm_pct_low=float(run_config.get("cc_otm_pct_low", 0.03)),
+                        otm_pct_high=float(run_config.get("cc_otm_pct_high", 0.08)),
+                        target_otm_pct=float(run_config.get("cc_target_otm_pct", 0.05)),
+                        wait_fill=True,
                     )
                 else:
                     cc_manager = CoveredCallManager(
@@ -1099,6 +1332,82 @@ class TradingPipeline:
                     cc_scores=cc_scores,
                     current_prices=latest_price_map,
                 )
+                # Atomic CC rule: unwind lots whose write failed/skipped (same session).
+                if (
+                    bool(run_config.get("wheel_mode"))
+                    and bool(run_config.get("atomic_cc_lots", True))
+                    and not bool(run_config.get("beat_spy_mode"))
+                ):
+                    from src.options.covered_calls import tickers_needing_atomic_unwind
+                    from src.options.wheel_lifecycle import short_option_underlyings
+                    from src.portfolio.manager import PortfolioDecision
+
+                    try:
+                        opt_now = self.broker.get_option_positions() or []
+                    except Exception as e:
+                        logger.error(
+                            "Option positions unavailable; skipping atomic unwind to avoid naked calls",
+                            error=str(e),
+                        )
+                        opt_now = None
+                    if opt_now is None:
+                        cc_diagnostics["atomic_unwind_skipped"] = "option_positions_unavailable"
+                    else:
+                        short_now = short_option_underlyings(opt_now)
+                        held_lots = []
+                        for t, pos in (cc_portfolio.positions or {}).items():
+                            if int(getattr(pos, "long", 0) or 0) >= 100:
+                                held_lots.append(t)
+                        unwind = tickers_needing_atomic_unwind(
+                            cc_results,
+                            held_lot_tickers=held_lots,
+                            short_option_underlyings=short_now,
+                        )
+                        cc_diagnostics["atomic_unwind_tickers"] = sorted(unwind)
+                        for t in sorted(unwind):
+                            pos = cc_portfolio.get_position(t)
+                            qty = int(getattr(pos, "long", 0) or 0) if pos else 0
+                            if qty <= 0:
+                                continue
+                            try:
+                                dec = PortfolioDecision(
+                                    action="sell",
+                                    quantity=qty,
+                                    confidence=90,
+                                    reasoning="Atomic CC unwind",
+                                )
+                                order = self.broker.execute_order(
+                                    t,
+                                    dec,
+                                    current_price=float(latest_price_map.get(t) or 0) or None,
+                                )
+                                fill = None
+                                if order and hasattr(self.broker, "wait_for_order_fill"):
+                                    oid = str(order.get("order_id") or order.get("id") or "")
+                                    if oid:
+                                        fill = self.broker.wait_for_order_fill(
+                                            oid, timeout_s=60.0, min_filled_qty=qty
+                                        )
+                                ok = bool(fill) and bool(fill.get("ok"))
+                                cc_results.append(
+                                    {
+                                        "underlying": t,
+                                        "status": "atomic_unwind" if ok else "atomic_unwind_failed",
+                                        "quantity": qty,
+                                        "order": order,
+                                        "fill": fill,
+                                        "reason": "cc_write_failed_unwind_lot",
+                                    }
+                                )
+                            except Exception as ue:
+                                cc_results.append(
+                                    {
+                                        "underlying": t,
+                                        "status": "atomic_unwind_failed",
+                                        "quantity": qty,
+                                        "reason": str(ue)[:200],
+                                    }
+                                )
             except Exception as e:
                 logger.error("Covered call step failed (non-fatal)", error=str(e))
                 cc_results = [{"status": "error", "reason": str(e)}]
@@ -1125,9 +1434,12 @@ class TradingPipeline:
 
         csp_lot_tickers = getattr(self.portfolio_manager, "_last_csp_tickers", [])
         csp_scores_map = getattr(self.portfolio_manager, "_last_csp_scores", {})
-        if enable_csp and execute and self.broker and csp_lot_tickers:
+        if enable_csp and execute and options_window_ok and self.broker and csp_lot_tickers:
             try:
-                from src.options.cash_secured_puts import CashSecuredPutManager
+                from src.options.cash_secured_puts import (
+                    CashSecuredPutManager,
+                    outstanding_short_put_collateral_usd,
+                )
 
                 logger.info("Running cash-secured put step", csp_tickers=csp_lot_tickers)
                 csp_mgr = CashSecuredPutManager(
@@ -1136,12 +1448,70 @@ class TradingPipeline:
                         run_config.get("min_csp_annualized_yield_pct", 3.0)
                     ),
                 )
-                csp_results = csp_mgr.execute_cash_secured_puts(
-                    broker=self.broker,
-                    csp_tickers=csp_lot_tickers,
-                    csp_scores=csp_scores_map,
-                    current_prices=latest_price_map,
-                )
+                wd = run_config.get("wheel_diagnostics") or {}
+                eq = float(wd.get("equity") or 0.0)
+                if eq <= 0 and self.broker:
+                    try:
+                        eq = float((self.broker.get_account() or {}).get("equity") or 0.0)
+                    except Exception:
+                        eq = 0.0
+                pct = float(run_config.get("max_csp_collateral_pct", 0.45))
+                pct_cap = eq * pct if eq > 0 and pct > 0 else 0.0
+                reserve_cap = float(wd.get("csp_collateral_reserve") or 0.0)
+                if reserve_cap <= 0 and eq > 0:
+                    reserve_cap = eq * float(run_config.get("wheel_pct", 0.70)) * float(
+                        run_config.get("csp_reserve_frac", 0.20)
+                    )
+                # Policy max is equity × max_csp_collateral_pct (not the thin reserve floor).
+                csp_cap_f = pct_cap if pct_cap > 0 else reserve_cap
+                opt_now = []
+                try:
+                    opt_now = self.broker.get_option_positions() or []
+                except Exception as e:
+                    logger.error(
+                        "Option positions unavailable; skipping CSP to avoid over-collateralizing",
+                        error=str(e),
+                    )
+                    csp_results = [
+                        {
+                            "status": "skipped",
+                            "reason": "option_positions_unavailable",
+                        }
+                    ]
+                    opt_now = None
+                if opt_now is not None:
+                    outstanding = outstanding_short_put_collateral_usd(opt_now)
+                    # Spendable BP is already net of open CSP collateral. Cap must be
+                    # outstanding + remaining spendable so the execute seed doesn't
+                    # double-count and block every new put.
+                    if self.broker and csp_cap_f > 0:
+                        try:
+                            acct = self.broker.get_account() or {}
+                            raw_cash = float(acct.get("cash") or 0.0)
+                            bp = float(acct.get("buying_power") or 0.0)
+                            spendable = min(raw_cash, bp) if bp > 0 else raw_cash
+                            headroom = outstanding + max(spendable, 0.0)
+                            if headroom > 0:
+                                csp_cap_f = min(csp_cap_f, headroom)
+                        except Exception:
+                            pass
+                    run_config.setdefault("wheel_diagnostics", wd)
+                    if isinstance(run_config.get("wheel_diagnostics"), dict):
+                        run_config["wheel_diagnostics"]["csp_collateral_cap_usd"] = round(
+                            float(csp_cap_f or 0), 2
+                        )
+                        run_config["wheel_diagnostics"]["csp_outstanding_collateral_usd"] = round(
+                            float(outstanding or 0), 2
+                        )
+                    csp_results = csp_mgr.execute_cash_secured_puts(
+                        broker=self.broker,
+                        csp_tickers=csp_lot_tickers,
+                        csp_scores=csp_scores_map,
+                        current_prices=latest_price_map,
+                        max_collateral_usd=csp_cap_f if csp_cap_f > 0 else None,
+                        wait_fill=True,
+                        option_positions=opt_now,
+                    )
             except Exception as e:
                 logger.error("CSP step failed (non-fatal)", error=str(e))
                 csp_results = [{"status": "error", "reason": str(e)}]
@@ -1350,15 +1720,24 @@ class TradingPipeline:
             if (execute and self.broker and portfolio_after is not None)
             else portfolio.model_dump()
         )
-        # Ensure email/reports get equity (cash + market value of positions)
-        equity = float(port_dict.get("cash", 0))
-        for ticker, pos in (port_dict.get("positions") or {}).items():
-            price = risk_analysis.get(ticker, {}).get("current_price")
-            if price is None:
-                price = pos.get("long_cost_basis") or pos.get("short_cost_basis") or 0
-            price = float(price)
-            equity += (pos.get("long", 0) * price) - (pos.get("short", 0) * price)
+        # Prefer broker equity (not BP-haircut cash) for sleeve % and email.
+        broker_eq = float(getattr(portfolio, "_broker_equity", 0) or 0)
+        raw_cash = float(getattr(portfolio, "_raw_cash", 0) or 0)
+        if broker_eq > 0:
+            equity = broker_eq
+        else:
+            equity = float(port_dict.get("cash", 0))
+            for ticker, pos in (port_dict.get("positions") or {}).items():
+                price = risk_analysis.get(ticker, {}).get("current_price")
+                if price is None:
+                    price = pos.get("long_cost_basis") or pos.get("short_cost_basis") or 0
+                price = float(price)
+                equity += (pos.get("long", 0) * price) - (pos.get("short", 0) * price)
         port_dict["equity"] = round(equity, 2)
+        if broker_eq > 0:
+            port_dict["broker_equity"] = round(broker_eq, 2)
+        if raw_cash > 0:
+            port_dict["raw_cash"] = round(raw_cash, 2)
 
         def _safe_dump(obj: Any) -> Any:
             if obj is None:
@@ -1384,6 +1763,8 @@ class TradingPipeline:
                 logger.warning("Execution status summary failed", error=str(e))
 
         wheel_scorecard: Dict[str, Any] = {}
+        coverage_map: List[Dict[str, Any]] = []
+        coverage_unavailable = False
         if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
             try:
                 from src.performance.wheel_scorecard import build_wheel_scorecard
@@ -1395,6 +1776,53 @@ class TradingPipeline:
                 )
             except Exception as e:
                 logger.warning("Wheel scorecard failed", error=str(e))
+            try:
+                from src.options.wheel_lifecycle import build_coverage_map
+
+                cov_prices = dict(latest_price_map or {})
+                cov_prices.update(current_prices or {})
+                cov_port = portfolio
+                cov_opts: List[Dict] = []
+                if self.broker:
+                    try:
+                        if execute:
+                            cov_port = self.broker.sync_portfolio()
+                        cov_opts = self.broker.get_option_positions() or []
+                    except Exception as e:
+                        logger.warning(
+                            "Coverage map option sync failed — not claiming uncovered",
+                            error=str(e),
+                        )
+                        coverage_unavailable = True
+                        cov_opts = []
+                elif execute:
+                    coverage_unavailable = True
+                if coverage_unavailable:
+                    coverage_map = []
+                    wheel_scorecard["coverage_unavailable"] = True
+                else:
+                    coverage_map = build_coverage_map(
+                        cov_port,
+                        cov_opts,
+                        cov_prices,
+                        max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
+                    )
+                    wheel_scorecard["coverage_map"] = coverage_map
+                    uncovered_n = sum(1 for r in coverage_map if r.get("coverage") == "UNCOVERED")
+                    underhedged_n = sum(1 for r in coverage_map if r.get("coverage") == "UNDERHEDGED")
+                    overhedged_n = sum(
+                        1
+                        for r in coverage_map
+                        if r.get("coverage") in ("OVERHEDGED", "NAKED_SHORT")
+                    )
+                    wheel_scorecard["uncovered_lot_count"] = uncovered_n
+                    wheel_scorecard["underhedged_lot_count"] = underhedged_n
+                    wheel_scorecard["overhedged_lot_count"] = overhedged_n
+                    wheel_scorecard["coverage_alert_count"] = (
+                        uncovered_n + underhedged_n + overhedged_n
+                    )
+            except Exception as e:
+                logger.warning("Coverage map failed", error=str(e))
 
         results = {
             "run_id": run_id,
@@ -1426,6 +1854,9 @@ class TradingPipeline:
             "wheel_manage_results": wheel_manage_results,
             "wheel_state": wheel_state,
             "wheel_scorecard": wheel_scorecard,
+            "coverage_map": coverage_map,
+            "coverage_unavailable": coverage_unavailable,
+            "execute_skipped_reason": run_config.get("execute_skipped_reason"),
             "wheel_mode": bool(run_config.get("wheel_mode")),
             "regime": run_config.get("regime") or {},
             "reconciliation": reconciliation,

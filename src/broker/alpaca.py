@@ -19,6 +19,11 @@ import structlog
 
 logger = structlog.get_logger()
 
+
+class BrokerDataError(RuntimeError):
+    """Broker account/position data unavailable — callers must not treat as empty book."""
+
+
 T = TypeVar("T")
 
 
@@ -130,6 +135,10 @@ class AlpacaBroker:
             position_dict = {}
 
             for pos in positions:
+                sym = str(pos.symbol or "")
+                # Options OCC symbols are longer than equity tickers — keep equity-only here.
+                if len(sym) > 10:
+                    continue
                 qty = abs(int(float(pos.qty)))
                 side = (
                     getattr(pos.side, "value", str(pos.side)).lower()
@@ -138,7 +147,7 @@ class AlpacaBroker:
                 )
                 if side not in ("long", "short"):
                     side = "long"
-                position_dict[pos.symbol] = {
+                position_dict[sym] = {
                     "qty": qty,
                     "avg_entry_price": float(pos.avg_entry_price),
                     "market_value": float(pos.market_value),
@@ -420,7 +429,63 @@ class AlpacaBroker:
 
         prices = current_prices or {}
         executed = 0
+        cfg = run_config or {}
+        wheel_fill_wait = bool(cfg.get("wheel_mode")) and hasattr(self, "wait_for_order_fill")
+        sell_phase_done = False
         for i, (ticker, decision) in enumerate(ordered, 1):
+            # After all sells/shorts submitted, wait for fills before buys (free BP).
+            if (
+                wheel_fill_wait
+                and not sell_phase_done
+                and decision.action == "buy"
+            ):
+                sell_failed = False
+                for st_ticker, st_res in list(results.items()):
+                    st_dec = non_hold_decisions.get(st_ticker)
+                    if not st_dec or st_dec.action not in ("sell", "short", "cover"):
+                        continue
+                    if not isinstance(st_res, dict) or not st_res.get("success", True):
+                        logger.warning(
+                            "Wheel sell submit failed; blocking subsequent buys",
+                            ticker=st_ticker,
+                            result=st_res,
+                        )
+                        sell_failed = True
+                        continue
+                    oid = str(st_res.get("order_id") or st_res.get("id") or "")
+                    if not oid:
+                        logger.warning(
+                            "Wheel sell missing order_id; blocking subsequent buys",
+                            ticker=st_ticker,
+                        )
+                        sell_failed = True
+                        continue
+                    if not st_res.get("fill"):
+                        fill = self.wait_for_order_fill(
+                            oid,
+                            timeout_s=float(cfg.get("lot_fill_timeout_s", 60)),
+                            min_filled_qty=int(getattr(st_dec, "quantity", 0) or 0) or None,
+                        )
+                        st_res["fill"] = fill
+                    fill = st_res.get("fill") or {}
+                    if not fill.get("ok"):
+                        logger.warning(
+                            "Wheel sell not filled; blocking subsequent buys",
+                            ticker=st_ticker,
+                            fill=fill,
+                        )
+                        sell_failed = True
+                sell_phase_done = True
+                if sell_failed:
+                    # Skip remaining buys — do not spend BP that never freed.
+                    for rest_ticker, rest_dec in ordered[i - 1 :]:
+                        if rest_dec.action == "buy" and rest_ticker not in results:
+                            results[rest_ticker] = {
+                                "success": False,
+                                "error": "blocked_after_sell_fill_failure",
+                            }
+                    break
+
             px = prices.get(ticker)
             tactic = None
             try:
@@ -524,6 +589,108 @@ class AlpacaBroker:
             logger.error("Failed to fetch option contracts", underlying=underlying, error=str(e))
             return []
 
+    def get_order(self, order_id: str) -> Optional[Dict]:
+        """Fetch a single order by id."""
+        try:
+            o = self.client.get_order_by_id(str(order_id))
+            if o is None:
+                return None
+            return {
+                "id": str(o.id),
+                "order_id": str(o.id),
+                "symbol": o.symbol,
+                "side": getattr(o.side, "value", str(o.side)).lower(),
+                "qty": int(float(o.qty)) if o.qty else 0,
+                "filled_qty": int(float(o.filled_qty))
+                if getattr(o, "filled_qty", None) is not None
+                else 0,
+                "filled_avg_price": float(o.filled_avg_price)
+                if getattr(o, "filled_avg_price", None) is not None
+                else None,
+                "status": getattr(o.status, "value", str(o.status)).lower(),
+            }
+        except Exception as e:
+            logger.warning("get_order failed", order_id=str(order_id), error=str(e))
+            return None
+
+    def wait_for_order_fill(
+        self,
+        order_id: str,
+        *,
+        timeout_s: float = 45.0,
+        poll_s: float = 1.0,
+        cancel_on_timeout: bool = True,
+        min_filled_qty: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Poll until the order is fully filled, terminal-failed, or timeout.
+
+        Returns dict with keys: ok, status, filled_qty, qty, order_id, timed_out.
+        """
+        oid = str(order_id or "")
+        if not oid:
+            return {
+                "ok": False,
+                "status": "missing_order_id",
+                "filled_qty": 0,
+                "qty": 0,
+                "order_id": oid,
+                "timed_out": False,
+            }
+        deadline = time.time() + max(1.0, float(timeout_s))
+        last: Dict[str, Any] = {}
+        terminal_bad = {
+            "canceled",
+            "cancelled",
+            "expired",
+            "rejected",
+            "replaced",
+            "done_for_day",
+        }
+        while time.time() < deadline:
+            last = self.get_order(oid) or {}
+            status = str(last.get("status") or "").lower()
+            qty = int(last.get("qty") or 0)
+            filled = int(last.get("filled_qty") or 0)
+            need = int(min_filled_qty) if min_filled_qty is not None else qty
+            if status == "filled" or (need > 0 and filled >= need):
+                return {
+                    "ok": True,
+                    "status": status or "filled",
+                    "filled_qty": filled,
+                    "qty": qty,
+                    "order_id": oid,
+                    "timed_out": False,
+                    "filled_avg_price": last.get("filled_avg_price"),
+                }
+            if status in terminal_bad:
+                return {
+                    "ok": False,
+                    "status": status,
+                    "filled_qty": filled,
+                    "qty": qty,
+                    "order_id": oid,
+                    "timed_out": False,
+                }
+            time.sleep(max(0.2, float(poll_s)))
+
+        if cancel_on_timeout:
+            self.cancel_order(oid)
+            last = self.get_order(oid) or last
+        filled = int(last.get("filled_qty") or 0)
+        qty = int(last.get("qty") or 0)
+        need = int(min_filled_qty) if min_filled_qty is not None else qty
+        ok = need > 0 and filled >= need
+        return {
+            "ok": ok,
+            "status": str(last.get("status") or "timeout"),
+            "filled_qty": filled,
+            "qty": qty,
+            "order_id": oid,
+            "timed_out": True,
+            "filled_avg_price": last.get("filled_avg_price"),
+        }
+
     def submit_option_order(
         self,
         contract_symbol: str,
@@ -531,6 +698,9 @@ class AlpacaBroker:
         side: str = "sell",
         order_type: str = "market",
         limit_price: Optional[float] = None,
+        *,
+        wait_fill: bool = False,
+        fill_timeout_s: float = 45.0,
     ) -> Optional[Dict]:
         """Submit an options order (e.g. sell-to-open for covered calls)."""
         try:
@@ -561,8 +731,9 @@ class AlpacaBroker:
                 qty=qty,
                 order_id=str(order.id),
             )
-            return {
+            result = {
                 "order_id": str(order.id),
+                "id": str(order.id),
                 "symbol": order.symbol,
                 "qty": int(order.qty) if order.qty else qty,
                 "side": side,
@@ -570,43 +741,95 @@ class AlpacaBroker:
                 if hasattr(order.status, "value")
                 else str(order.status),
             }
+            if wait_fill:
+                fill = self.wait_for_order_fill(
+                    str(order.id),
+                    timeout_s=fill_timeout_s,
+                    min_filled_qty=int(qty),
+                )
+                result["fill"] = fill
+                result["status"] = fill.get("status") or result["status"]
+                if not fill.get("ok"):
+                    result["fill_ok"] = False
+                    return result
+                result["fill_ok"] = True
+                result["filled_qty"] = fill.get("filled_qty")
+            return result
         except Exception as e:
             logger.error("Option order failed", contract=contract_symbol, error=str(e))
             return None
 
     def get_option_positions(self) -> List[Dict]:
-        """Return current option positions (contracts whose symbol length > 10)."""
-        try:
-            positions = self.client.get_all_positions()
-            results = []
-            for pos in positions or []:
-                sym = pos.symbol or ""
-                if len(sym) > 10:
-                    und = ""
-                    try:
-                        from src.options.wheel_lifecycle import parse_occ_symbol
+        """Return current option positions (contracts whose symbol length > 10).
 
-                        parsed = parse_occ_symbol(sym)
-                        und = (parsed or {}).get("underlying") or ""
-                    except Exception:
+        Retries transient Alpaca failures; raises BrokerDataError only after retries
+        so callers never treat an outage as an empty book.
+        """
+        last_err: Optional[BaseException] = None
+        for attempt in range(1, 4):
+            try:
+                positions = alpaca_call_with_retry(
+                    lambda: self.client.get_all_positions(),
+                    op="get_option_positions",
+                )
+                results = []
+                for pos in positions or []:
+                    sym = pos.symbol or ""
+                    if len(sym) > 10:
                         und = ""
-                    if not und:
-                        # Fallback: strip OCC date/type/strike suffix when possible.
-                        und = sym[:6].strip().rstrip("0123456789") or sym[:4].rstrip("0123456789")
-                    results.append(
-                        {
-                            "symbol": sym,
-                            "qty": abs(int(float(pos.qty))),
-                            "side": "short" if int(float(pos.qty)) < 0 else "long",
-                            "avg_entry_price": float(pos.avg_entry_price),
-                            "market_value": float(pos.market_value),
-                            "underlying": und,
-                        }
-                    )
-            return results
-        except Exception as e:
-            logger.error("Failed to fetch option positions", error=str(e))
-            return []
+                        try:
+                            from src.options.wheel_lifecycle import parse_occ_symbol
+
+                            parsed = parse_occ_symbol(sym)
+                            und = (parsed or {}).get("underlying") or ""
+                        except Exception:
+                            und = ""
+                        if not und:
+                            und = (
+                                sym[:6].strip().rstrip("0123456789")
+                                or sym[:4].rstrip("0123456789")
+                            )
+                        qty_signed = int(float(pos.qty))
+                        qty_abs = abs(qty_signed)
+                        mv = float(pos.market_value) if pos.market_value is not None else 0.0
+                        mark = (
+                            abs(mv) / (qty_abs * 100.0)
+                            if qty_abs > 0 and abs(mv) > 0
+                            else 0.0
+                        )
+                        if mark <= 0:
+                            try:
+                                mark = (
+                                    float(pos.current_price)
+                                    if getattr(pos, "current_price", None)
+                                    else 0.0
+                                )
+                            except (TypeError, ValueError):
+                                mark = 0.0
+                        results.append(
+                            {
+                                "symbol": sym,
+                                "qty": qty_abs,
+                                "side": "short" if qty_signed < 0 else "long",
+                                "avg_entry_price": float(pos.avg_entry_price),
+                                "market_value": mv,
+                                "current_price": mark,
+                                "mark_price": mark,
+                                "underlying": und,
+                            }
+                        )
+                return results
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    "Option positions fetch attempt failed",
+                    attempt=attempt,
+                    error=str(e),
+                )
+                if attempt < 3:
+                    time.sleep(0.5 * attempt)
+        logger.error("Failed to fetch option positions after retries", error=str(last_err))
+        raise BrokerDataError(f"option positions unavailable: {last_err}") from last_err
 
     def sync_portfolio(self) -> Portfolio:
         """
@@ -619,11 +842,26 @@ class AlpacaBroker:
             account = self.get_account()
             positions = self.get_positions()
 
+            # Spendable cash for new equity: Alpaca keeps cash high while CSP
+            # collateral reduces buying_power — never plan buys above BP.
+            raw_cash = float(account["cash"])
+            bp = float(account.get("buying_power") or raw_cash)
+            spendable = min(raw_cash, bp) if bp > 0 else raw_cash
+
             portfolio = Portfolio(
-                cash=account["cash"],
+                cash=spendable,
                 margin_requirement=0.5,  # Default margin requirement
                 margin_used=0.0,  # Calculate if needed
             )
+            # Broker equity for sleeve sizing (not haircut by BP).
+            try:
+                portfolio._broker_equity = float(  # type: ignore[attr-defined]
+                    account.get("equity") or account.get("portfolio_value") or 0.0
+                )
+                portfolio._buying_power = bp  # type: ignore[attr-defined]
+                portfolio._raw_cash = raw_cash  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
             for ticker, pos_data in positions.items():
                 if pos_data["side"] == "long":

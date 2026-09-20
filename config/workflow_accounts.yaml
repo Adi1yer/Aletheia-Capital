@@ -8,7 +8,7 @@ workflows:
     data_dir: data/performance
     account_group: primary
     enabled: true
-    label: Beat SPY equity book
+    label: Wheel-hybrid equity book (daily-wheel-scan)
 
   biotech-catalyst:
     broker: alpaca
