@@ -132,7 +132,7 @@ poetry run python scripts/manage_wheel_options.py
 | **Wheel Options Daily Manage** | `0 16 * * 1-5` | Mid-session BTC/roll/rewrite; email on changes (≈11:00 EST / 12:00 EDT) |
 | Biotech / health checks | see workflow files | Separate sleeves (optional) |
 
-Gate: `scripts/should_run_daily_scan.py` (NYSE open weekday). Manual `workflow_dispatch` bypasses the holiday gate; RTH cutoff still applies. Both wheel workflows share concurrency group `aletheia-wheel-paper` (afternoon waits if morning is still running).
+Gate: `scripts/should_run_daily_scan.py` (NYSE open weekday). Manual `workflow_dispatch` bypasses the holiday gate; RTH cutoff still applies. Both wheel workflows share concurrency group `aletheia-wheel-paper` (afternoon waits if morning is still running). Scheduled morning runs also skip if `data/performance/wheel_daily_completed_et.txt` already marks today’s ET date (stops late GH crons from double-rebalancing); manual dispatch still forces a run.
 
 ## Daily email (wheel)
 

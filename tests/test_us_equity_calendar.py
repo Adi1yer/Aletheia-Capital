@@ -60,3 +60,25 @@ def test_daily_gate_runs_every_open_weekday():
     assert should_run_daily_trading_session(monday)[0] is True
     assert should_run_daily_trading_session(tuesday)[0] is True
     assert "trading_session" in should_run_daily_trading_session(tuesday)[1]
+
+
+def test_wheel_daily_once_marker(tmp_path):
+    from datetime import date
+
+    from src.trading.wheel_daily_once import (
+        already_ran_et_day,
+        check_already_ran,
+        mark_ran_et_day,
+        read_completed_et_day,
+    )
+
+    day = date(2026, 9, 21)
+    assert already_ran_et_day(day, marker_dir=tmp_path) is False
+    assert check_already_ran(day, marker_dir=tmp_path)[0] is False
+    mark_ran_et_day(day, marker_dir=tmp_path)
+    assert read_completed_et_day(tmp_path) == day
+    assert already_ran_et_day(day, marker_dir=tmp_path) is True
+    assert already_ran_et_day(date(2026, 9, 22), marker_dir=tmp_path) is False
+    already, reason = check_already_ran(day, marker_dir=tmp_path)
+    assert already is True
+    assert "already_ran_et:2026-09-21" in reason

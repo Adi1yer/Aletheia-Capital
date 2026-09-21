@@ -540,6 +540,16 @@ def main() -> None:
     else:
         logger.info("No email recipient configured; skipping email")
 
+    # Same-ET-day marker so a late GH schedule cron does not full-rebalance again.
+    if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
+        try:
+            from src.trading.wheel_daily_once import mark_ran_et_day
+
+            path = mark_ran_et_day()
+            logger.info("Marked wheel daily run complete for ET day", path=str(path))
+        except Exception as e:
+            logger.warning("Could not write wheel daily-once marker", error=str(e))
+
     logger.info("Weekly scan + rebalancing complete", run_id=results.get("run_id"))
 
 
