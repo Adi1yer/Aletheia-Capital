@@ -2,24 +2,52 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 
 def _f(x: Any, default: float = 0.0) -> float:
     try:
-        return float(x)
+        v = float(x)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(v):
+        return default
+    return v
+
+
+def _otm_label(row: dict) -> str:
+    if _f(row.get("price")) <= 0:
+        return "n/a"
+    otm = row.get("otm_pct")
+    if otm is None:
+        return "n/a"
+    v = _f(otm, default=float("nan"))
+    if not math.isfinite(v):
+        return "n/a"
+    return f"{v}%"
 
 
 def _sleeve_mix(results: dict) -> Dict[str, Any]:
     port = results.get("portfolio") or {}
     prices = {}
+    coverage = results.get("coverage_map") or (results.get("wheel_scorecard") or {}).get(
+        "coverage_map"
+    ) or []
+    coverage_prices = {
+        str(r.get("ticker") or "").upper(): _f(r.get("price"))
+        for r in coverage
+        if _f(r.get("price")) > 0
+    }
     for t, pos in (port.get("positions") or {}).items():
-        # Prefer risk_analysis prices when present
+        # Prefer risk_analysis prices when present; ignore NaN so we fall back.
         ra = (results.get("risk_analysis") or {}).get(t) or {}
         px = _f(ra.get("current_price"))
+        if px <= 0:
+            px = coverage_prices.get(str(t).upper(), 0.0)
+        if px <= 0:
+            px = _f(pos.get("market_value")) / max(int(pos.get("long") or 0), 1)
         if px <= 0:
             px = _f(pos.get("long_cost_basis"))
         prices[t] = px
@@ -31,9 +59,6 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
     if cash <= 0:
         cash = _f(port.get("cash"))
     spendable = _f(port.get("cash"))
-    coverage = results.get("coverage_map") or (results.get("wheel_scorecard") or {}).get(
-        "coverage_map"
-    ) or []
     wheel_tickers = {str(r.get("ticker") or "").upper() for r in coverage if r.get("ticker")}
     dd = results.get("decision_diagnostics") or {}
     for t in dd.get("wheel_targets") or []:
@@ -268,7 +293,7 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
             lines.append(
                 f"  {t}: {row.get('shares')} sh | {row.get('contract')} "
                 f"strike ${_f(row.get('strike')):.2f} DTE={row.get('dte')} "
-                f"OTM={row.get('otm_pct')}%"
+                f"OTM={_otm_label(row)}"
             )
     lines.append("")
 
@@ -288,7 +313,11 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
         if dir_targets and t not in dir_targets and qty >= 100:
             continue
         ra = (results.get("risk_analysis") or {}).get(t) or {}
-        px = _f(ra.get("current_price")) or _f(pos.get("long_cost_basis"))
+        px = _f(ra.get("current_price"))
+        if px <= 0:
+            px = _f(pos.get("market_value")) / max(qty, 1)
+        if px <= 0:
+            px = _f(pos.get("long_cost_basis"))
         lines.append(f"  {t}: {qty} sh MV ${_f(qty * px):,.2f}")
         dir_rows += 1
     if dir_rows == 0:

@@ -1,5 +1,6 @@
 """Weekly trading pipeline"""
 
+import math
 import os
 from typing import List, Dict, Optional, Any, Set
 from datetime import datetime, timedelta
@@ -17,6 +18,27 @@ from src.portfolio.manager import PortfolioManager
 from src.portfolio.models import Portfolio
 from src.performance.tracker import PerformanceTracker
 from src.performance.cycle_tracker import CyclePerformanceTracker
+
+
+def _finite_price(value: Any) -> Optional[float]:
+    try:
+        px = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(px) or px <= 0:
+        return None
+    return px
+
+
+def _prices_from_risk(risk_analysis: Dict[str, Any]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for t, row in (risk_analysis or {}).items():
+        if not isinstance(row, dict):
+            continue
+        px = _finite_price(row.get("current_price"))
+        if px is not None:
+            out[t] = px
+    return out
 
 
 # Lazy import for Alpaca broker (only needed when executing trades)
@@ -484,12 +506,7 @@ class TradingPipeline:
             tickers, portfolio, start_date, end_date
         )
 
-        current_prices = {
-            t: float(risk_analysis[t]["current_price"])
-            for t in risk_analysis
-            if isinstance(risk_analysis.get(t), dict)
-            and risk_analysis[t].get("current_price") is not None
-        }
+        current_prices = _prices_from_risk(risk_analysis)
         try:
             from src.performance.decision_ledger import resolve_pending_outcomes
 
@@ -1066,12 +1083,7 @@ class TradingPipeline:
                 if self.broker is None:
                     self.broker = self._broker_class()
                 logger.info("Executing trades")
-                px_map = {
-                    t: float(risk_analysis[t]["current_price"])
-                    for t in risk_analysis
-                    if isinstance(risk_analysis.get(t), dict)
-                    and risk_analysis[t].get("current_price") is not None
-                }
+                px_map = _prices_from_risk(risk_analysis)
                 sl_pct = run_config.get("stop_loss_pct")
                 if bool(run_config.get("prefer_market_orders")):
                     sl_pct = None
@@ -1153,12 +1165,7 @@ class TradingPipeline:
             except Exception as e:
                 logger.warning("Execution status summary failed", error=str(e))
 
-        latest_price_map = {
-            t: float(risk_analysis[t]["current_price"])
-            for t in risk_analysis
-            if isinstance(risk_analysis.get(t), dict)
-            and risk_analysis[t].get("current_price") is not None
-        }
+        latest_price_map = _prices_from_risk(risk_analysis)
         try:
             for t in latest_price_map.keys():
                 px = self.data_provider.get_prices(
@@ -1166,8 +1173,9 @@ class TradingPipeline:
                     (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
                     datetime.now().strftime("%Y-%m-%d"),
                 )
-                if px:
-                    latest_price_map[t] = float(px[-1].close)
+                close_px = _finite_price(getattr(px[-1], "close", None)) if px else None
+                if close_px is not None:
+                    latest_price_map[t] = close_px
         except Exception:
             pass
 
@@ -1728,10 +1736,9 @@ class TradingPipeline:
         else:
             equity = float(port_dict.get("cash", 0))
             for ticker, pos in (port_dict.get("positions") or {}).items():
-                price = risk_analysis.get(ticker, {}).get("current_price")
+                price = _finite_price((risk_analysis.get(ticker) or {}).get("current_price"))
                 if price is None:
-                    price = pos.get("long_cost_basis") or pos.get("short_cost_basis") or 0
-                price = float(price)
+                    price = _finite_price(pos.get("long_cost_basis") or pos.get("short_cost_basis")) or 0.0
                 equity += (pos.get("long", 0) * price) - (pos.get("short", 0) * price)
         port_dict["equity"] = round(equity, 2)
         if broker_eq > 0:
@@ -1781,6 +1788,7 @@ class TradingPipeline:
 
                 cov_prices = dict(latest_price_map or {})
                 cov_prices.update(current_prices or {})
+                cov_prices = {t: px for t, px in cov_prices.items() if _finite_price(px) is not None}
                 cov_port = portfolio
                 cov_opts: List[Dict] = []
                 if self.broker:
@@ -1801,6 +1809,12 @@ class TradingPipeline:
                     coverage_map = []
                     wheel_scorecard["coverage_unavailable"] = True
                 else:
+                    for t, pos in (getattr(cov_port, "positions", None) or {}).items():
+                        if _finite_price(cov_prices.get(t)) is not None:
+                            continue
+                        basis = _finite_price(getattr(pos, "long_cost_basis", 0))
+                        if basis is not None:
+                            cov_prices[t] = basis
                     coverage_map = build_coverage_map(
                         cov_port,
                         cov_opts,

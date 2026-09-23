@@ -286,6 +286,50 @@ def test_wheel_daily_email_has_coverage_omits_agent_noise():
     assert "ALETHEIA DAILY WHEEL" in text
 
 
+def test_wheel_daily_email_ignores_nan_prices():
+    from src.utils.wheel_email import build_wheel_daily_email
+
+    nan = float("nan")
+    subject, text, _ = build_wheel_daily_email(
+        {
+            "timestamp": "2026-09-23T14:00:00-04:00",
+            "portfolio": {
+                "cash": 5075.20,
+                "equity": 9870.35,
+                "positions": {
+                    "F": {"long": 100, "long_cost_basis": 12.0},
+                    "CTSH": {"long": 2, "long_cost_basis": 59.38},
+                },
+            },
+            "risk_analysis": {
+                "F": {"current_price": nan},
+                "CTSH": {"current_price": nan},
+            },
+            "coverage_map": [
+                {
+                    "ticker": "F",
+                    "shares": 100,
+                    "price": 0,
+                    "coverage": "covered",
+                    "contract": "F261009C00014000",
+                    "strike": 14.0,
+                    "dte": 16,
+                    "otm_pct": None,
+                }
+            ],
+            "decision_diagnostics": {"wheel_targets": ["F"], "directional_targets": ["CTSH"]},
+            "wheel_scorecard": {"premium_ledger_usd": 173},
+        }
+    )
+    assert "wheel $nan" not in text
+    assert "nan%" not in text
+    assert "MV $nan" not in text
+    assert "OTM=n/a" in text
+    assert "wheel $1,200.00" in text
+    assert "CTSH: 2 sh MV $118.76" in text
+    assert "equity $9,870.35" in subject.lower()
+
+
 def test_manage_or_roll_would_roll_on_near_itm():
     from src.options.covered_calls import CoveredCallManager
     from src.options.wheel_lifecycle import manage_or_roll_short_calls
