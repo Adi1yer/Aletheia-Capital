@@ -30,6 +30,8 @@
     "min_adv_usd": 5000000,
     "min_option_oi": 100,
     "max_wheel_names": 4,
+    "max_lots_per_name": 3,
+    "add_lot_min_score": 0.55,
     "max_directional_names": 5,
     "wheel_rules_score": 55,
     "enable_covered_calls": true,

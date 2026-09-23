@@ -25,6 +25,8 @@ def apply_wheel_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("min_adv_usd", 5_000_000.0)
     out.setdefault("min_option_oi", 100)
     out.setdefault("max_wheel_names", 4)
+    out.setdefault("max_lots_per_name", 3)
+    out.setdefault("add_lot_min_score", 0.55)
     out.setdefault("max_directional_names", 5)
     out.setdefault("wheel_rules_score", 55)
     out.setdefault("min_csp_premium_usd", 25.0)

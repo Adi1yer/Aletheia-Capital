@@ -634,6 +634,133 @@ def test_no_lot_buy_while_short_option_open():
     assert any(s.get("reason") == "open_short_option" for s in diag.get("skipped") or [])
 
 
+def test_allocate_adds_second_lot_when_score_high():
+    portfolio = Portfolio(
+        cash=5000.0,
+        positions={"F": Position(long=100, long_cost_basis=12.0)},
+    )
+    prices = {"F": 11.0, "SOFI": 10.0}
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices=prices,
+        wheel_candidates=[
+            WheelCandidate("F", 11.0, 80_000_000, 500, 0.80),
+            WheelCandidate("SOFI", 10.0, 40_000_000, 400, 0.70),
+        ],
+        directional_candidates=[],
+        equity=10000.0,
+        max_wheel_names=1,
+        max_lots_per_name=3,
+        max_position_pct=0.35,
+        add_lot_min_score=0.55,
+        short_option_underlyings={"F"},
+        preflight_ok={"F", "SOFI"},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert decisions["F"].action == "buy"
+    assert decisions["F"].quantity == 100
+    assert "F" in (diag.get("extra_lot_adds") or [])
+    assert decisions["SOFI"].action == "buy"
+    assert decisions["SOFI"].quantity == 100
+
+
+def test_allocate_extra_lot_uses_full_wheel_sleeve_not_csp_reserve():
+    """4 existing lots can sit under lot_budget (70%×80%) but still have room in 70%."""
+    portfolio = Portfolio(
+        cash=5000.0,
+        positions={
+            "F": Position(long=100, long_cost_basis=12.0),
+            "CPNG": Position(long=100, long_cost_basis=14.0),
+            "NOK": Position(long=100, long_cost_basis=10.0),
+            "ITUB": Position(long=100, long_cost_basis=8.0),
+        },
+    )
+    prices = {"F": 12.0, "CPNG": 14.0, "NOK": 10.0, "ITUB": 8.0}
+    # wheel_spent = 4400; lot_budget (csp 20%) = 5600 so +1200 F fits lot_budget too.
+    # Tighten via high csp reserve: lot_budget = 7000*0.5 = 3500 < 4400+1200,
+    # but wheel_budget = 7000 >= 5600.
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices=prices,
+        wheel_candidates=[
+            WheelCandidate("F", 12.0, 80_000_000, 500, 0.90),
+            WheelCandidate("CPNG", 14.0, 80_000_000, 400, 0.40),
+            WheelCandidate("NOK", 10.0, 80_000_000, 400, 0.40),
+            WheelCandidate("ITUB", 8.0, 80_000_000, 400, 0.40),
+        ],
+        directional_candidates=[],
+        equity=10000.0,
+        max_lots_per_name=3,
+        max_position_pct=0.35,
+        add_lot_min_score=0.55,
+        short_option_underlyings={"F", "CPNG", "NOK", "ITUB"},
+        preflight_ok={"F", "CPNG", "NOK", "ITUB"},
+        csp_reserve_frac=0.50,
+        cash_buffer_pct=0.0,
+    )
+    assert decisions["F"].action == "buy"
+    assert decisions["F"].quantity == 100
+    assert "F" in (diag.get("extra_lot_adds") or [])
+    assert not any(
+        s.get("ticker") == "F" and "lot_budget_extra" in str(s.get("reason") or "")
+        for s in diag.get("skipped") or []
+    )
+
+
+def test_wheel_addon_reason_is_waited_for_fill():
+    reason = "Wheel add-on lot (score 0.80, 2 lots, 70% sleeve)"
+    assert "Wheel lot" not in reason
+    assert "Wheel add-on" in reason
+
+
+def test_allocate_prefers_extra_lot_over_new_name():
+    portfolio = Portfolio(
+        cash=1300.0,
+        positions={"F": Position(long=100, long_cost_basis=12.0)},
+    )
+    decisions, _diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 12.0, "SOFI": 10.0},
+        wheel_candidates=[
+            WheelCandidate("F", 12.0, 80_000_000, 500, 0.90),
+            WheelCandidate("SOFI", 10.0, 80_000_000, 400, 0.80),
+        ],
+        directional_candidates=[],
+        equity=10000.0,
+        add_lot_min_score=0.55,
+        short_option_underlyings={"F"},
+        preflight_ok={"F", "SOFI"},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert decisions["F"].action == "buy"
+    assert decisions["F"].quantity == 100
+    assert "SOFI" not in decisions or decisions["SOFI"].action != "buy"
+
+
+def test_allocate_skips_extra_lot_when_score_low():
+    portfolio = Portfolio(
+        cash=5000.0,
+        positions={"F": Position(long=100, long_cost_basis=12.0)},
+    )
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 11.0},
+        wheel_candidates=[WheelCandidate("F", 11.0, 80_000_000, 500, 0.40)],
+        directional_candidates=[],
+        equity=10000.0,
+        max_lots_per_name=3,
+        add_lot_min_score=0.55,
+        short_option_underlyings={"F"},
+        preflight_ok={"F"},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert getattr(decisions.get("F"), "action", "hold") != "buy"
+    assert any("add_lot_score" in str(s.get("reason") or "") for s in diag.get("skipped") or [])
+
+
 def test_pending_buy_notional_reduces_cash():
     portfolio = Portfolio(cash=1500.0, positions={})
     prices = {"F": 12.0, "SOFI": 10.0}

@@ -768,7 +768,7 @@ class TradingPipeline:
                             max_price=float(run_config.get("max_underlying_price", 35.0)),
                             min_adv_usd=float(run_config.get("min_adv_usd", 5_000_000.0)),
                             min_option_oi=int(run_config.get("min_option_oi", 0) or 0),
-                            top_n=max(8, int(run_config.get("max_wheel_names", 4)) * 3),
+                            top_n=max(12, int(run_config.get("max_wheel_names", 4)) * 4),
                         )
 
                         # Option-chain preflight before opening new lots.
@@ -841,6 +841,9 @@ class TradingPipeline:
                             directional_pct=float(run_config.get("directional_pct", 0.30)),
                             cash_buffer_pct=float(run_config.get("cash_buffer_pct", 0.06)),
                             max_wheel_names=int(run_config.get("max_wheel_names", 4)),
+                            max_lots_per_name=int(run_config.get("max_lots_per_name", 3)),
+                            max_position_pct=float(run_config.get("max_position_pct", 0.35)),
+                            add_lot_min_score=float(run_config.get("add_lot_min_score", 0.55)),
                             max_directional_names=int(run_config.get("max_directional_names", 5)),
                             max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
                             pending_orders_by_symbol=pending_orders_by_symbol,
@@ -1105,9 +1108,14 @@ class TradingPipeline:
                             continue
                         act = getattr(dec, "action", "")
                         reason = str(getattr(dec, "reasoning", "") or "")
-                        # Always confirm sells; confirm wheel lot buys.
+                        # Always confirm sells; confirm first-lot and add-on wheel buys
+                        # ("Wheel add-on lot" does not contain the substring "Wheel lot").
                         if act not in ("sell", "cover") and not (
-                            act == "buy" and "Wheel lot" in reason
+                            act == "buy"
+                            and (
+                                "Wheel lot" in reason
+                                or "Wheel add-on" in reason
+                            )
                         ):
                             continue
                         oid = str(res.get("order_id") or res.get("id") or "")

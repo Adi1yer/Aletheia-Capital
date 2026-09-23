@@ -148,7 +148,9 @@ Excludes on wheel runs: agent leaderboards, lane diagnostics, Beat-SPY/Phase13 n
 |------|---------|---------|
 | `wheel_pct` / `directional_pct` | 0.70 / 0.30 | Capital split |
 | `max_underlying_price` | 35 | Wheel lot price cap |
-| `max_wheel_names` | 4 | Concurrent wheel underlyings |
+| `max_wheel_names` | 4 | Soft hint only — sleeve % is the cap |
+| `max_lots_per_name` | 3 | Extra 100-share lots on a name |
+| `add_lot_min_score` | 0.55 | Min screen score to add a 2nd/3rd lot |
 | `cc_target_otm_pct` | 0.05 | Target call OTM |
 | `cc_otm_pct_low` / `high` | 0.03 / 0.08 | Open band |
 | `cc_min_premium_usd` | 15 | Absolute premium floor |
