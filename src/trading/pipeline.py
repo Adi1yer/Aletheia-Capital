@@ -1381,8 +1381,11 @@ class TradingPipeline:
                         )
                         cc_diagnostics["atomic_unwind_tickers"] = sorted(unwind)
                         for t in sorted(unwind):
-                            pos = cc_portfolio.get_position(t)
-                            qty = int(getattr(pos, "long", 0) or 0) if pos else 0
+                            qty = (
+                                int(cc_portfolio.long_qty(t) or 0)
+                                if hasattr(cc_portfolio, "long_qty")
+                                else int(getattr(cc_portfolio.get_position(t), "long", 0) or 0)
+                            )
                             if qty <= 0:
                                 continue
                             try:
@@ -1426,12 +1429,14 @@ class TradingPipeline:
                                 )
             except Exception as e:
                 logger.error("Covered call step failed (non-fatal)", error=str(e))
-                cc_results = [{"status": "error", "reason": str(e)}]
+                cc_results.append({"status": "error", "reason": str(e)})
         else:
             if not enable_cc:
                 cc_diagnostics["reason_not_run"] = "covered calls disabled by run config"
             elif not execute:
                 cc_diagnostics["reason_not_run"] = "dry run mode (no execution)"
+            elif not options_window_ok:
+                cc_diagnostics["reason_not_run"] = "options submit window closed"
             elif not self.broker:
                 cc_diagnostics["reason_not_run"] = "broker unavailable"
             elif not cc_lot_tickers:
@@ -1449,11 +1454,13 @@ class TradingPipeline:
         )
 
         # Extra lot filled but CC missed → sell only the uncovered excess (keep covered lot).
+        # Only after a CC pass this session — do not dump extras we never tried to write.
         if (
             wheel_active
             and execute
             and self.broker
             and bool(run_config.get("atomic_cc_lots", True))
+            and bool(cc_diagnostics.get("step_ran"))
         ):
             try:
                 from src.options.covered_calls import apply_underhedge_trims

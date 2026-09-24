@@ -168,8 +168,11 @@ def main() -> int:
                 short_option_underlyings=short_now,
             )
             for t in sorted(unwind):
-                pos = portfolio.get_position(t)
-                qty = int(getattr(pos, "long", 0) or 0) if pos else 0
+                qty = (
+                    int(portfolio.long_qty(t) or 0)
+                    if hasattr(portfolio, "long_qty")
+                    else int(getattr(portfolio.get_position(t), "long", 0) or 0)
+                )
                 if qty <= 0:
                     continue
                 try:

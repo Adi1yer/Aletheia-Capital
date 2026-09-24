@@ -675,7 +675,10 @@ def build_coverage_map(
         if not parsed or parsed.get("option_type") != "call":
             continue
         und = parsed["underlying"]
-        q = int(pos.get("qty") or 1)
+        try:
+            q = abs(int(float(pos.get("qty")))) if pos.get("qty") is not None else 1
+        except (TypeError, ValueError):
+            q = 1
         if und in short_calls:
             short_calls[und]["qty"] = int(short_calls[und].get("qty") or 0) + q
             # Keep nearest-term / lowest strike metadata for display.
@@ -706,7 +709,12 @@ def build_coverage_map(
         qty = int(getattr(pos, "long", 0) or 0)
         if qty < 100:
             continue
-        px = float(current_prices.get(t) or 0.0)
+        try:
+            px = float(current_prices.get(t) or 0.0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px != px or px < 0:  # NaN
+            px = 0.0
         # Always surface ≥100-share lots (including graduated prices) for coverage alerts.
         seen_und.add(t)
         cc = short_calls.get(t)
@@ -752,17 +760,21 @@ def build_coverage_map(
     for und, cc in short_calls.items():
         if und in seen_und:
             continue
-        px = float(current_prices.get(und) or 0.0)
-        pos = None
-        if hasattr(portfolio, "get_position"):
-            try:
-                pos = portfolio.get_position(und)
-            except Exception:
-                pos = None
-        if pos is None:
+        try:
+            px = float(current_prices.get(und) or 0.0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px != px or px < 0:
+            px = 0.0
+        if hasattr(portfolio, "long_qty"):
+            qty = int(portfolio.long_qty(und) or 0)
+        else:
             pos = (getattr(portfolio, "positions", None) or {}).get(und)
-        qty = int(getattr(pos, "long", 0) or 0) if pos else 0
-        short_qty = int(cc.get("qty") or 1)
+            qty = int(getattr(pos, "long", 0) or 0) if pos else 0
+        try:
+            short_qty = abs(int(float(cc.get("qty")))) if cc.get("qty") is not None else 1
+        except (TypeError, ValueError):
+            short_qty = 1
         covered_shares = short_qty * 100
         if covered_shares <= qty:
             continue  # fully covered but below 100-share wheel lot threshold — skip

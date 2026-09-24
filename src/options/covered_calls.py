@@ -35,6 +35,63 @@ def _finite_px(value) -> float:
     return px
 
 
+def _option_qty(op: Optional[Dict]) -> int:
+    """Contract count. Missing qty → 1; explicit 0 stays 0; never negative."""
+    if not op:
+        return 0
+    raw = op.get("qty")
+    if raw is None or raw == "":
+        return 1
+    try:
+        return max(0, abs(int(float(raw))))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _session_short_call_credits(
+    cc_results: Optional[List[Dict]] = None,
+    open_orders: Optional[List[Dict]] = None,
+) -> Dict[str, int]:
+    """Short calls this session already filled or still working (OCC sell-to-open)."""
+    out: Dict[str, int] = {}
+    for r in cc_results or []:
+        st = str(r.get("status") or "")
+        if st not in ("executed", "partial"):
+            continue
+        und = str(r.get("underlying") or "").upper()
+        try:
+            n = int(r.get("contracts") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if und and n > 0:
+            out[und] = out.get(und, 0) + n
+    if open_orders:
+        from src.options.wheel_lifecycle import parse_occ_symbol
+
+        terminal = {
+            "filled",
+            "canceled",
+            "cancelled",
+            "expired",
+            "rejected",
+            "replaced",
+            "done_for_day",
+        }
+        for o in open_orders:
+            if str(o.get("side") or "").lower() not in ("sell", "sell_short"):
+                continue
+            if str(o.get("status") or "").lower() in terminal:
+                continue
+            parsed = parse_occ_symbol(str(o.get("symbol") or ""))
+            if not parsed or parsed.get("option_type") != "call":
+                continue
+            und = str(parsed.get("underlying") or "").upper()
+            q = _option_qty(o)
+            if und and q > 0:
+                out[und] = out.get(und, 0) + q
+    return out
+
+
 def _short_call_strikes(option_positions: Optional[List[Dict]], underlying: str) -> List[float]:
     und = str(underlying or "").upper()
     out: List[float] = []
@@ -129,8 +186,9 @@ def short_call_qty_by_underlying(option_positions: Optional[List[Dict]] = None) 
                 und = str((parse_occ_symbol(sym) or {}).get("underlying") or "").upper()
             except Exception:
                 und = ""
-        if und:
-            out[und] = out.get(und, 0) + int(op.get("qty") or 1)
+        qty = _option_qty(op)
+        if und and qty:
+            out[und] = out.get(und, 0) + qty
     return out
 
 
@@ -245,11 +303,14 @@ class CoveredCallManager:
         """Find positions needing short calls (including underhedged top-ups)."""
         have_by_und = short_call_qty_by_underlying(existing_option_positions)
 
+        flagged = {str(t).upper() for t in cc_lot_tickers if str(t).strip()}
         candidates = []
-        seen = set()
+        seen: Set[str] = set()
         for ticker in list(dict.fromkeys(list(cc_lot_tickers) + list((portfolio.positions or {}).keys()))):
-            if ticker not in cc_lot_tickers:
+            ticker = str(ticker or "").upper()
+            if ticker not in flagged or ticker in seen:
                 continue
+            seen.add(ticker)
             shares = _long_qty(portfolio, ticker)
             if shares < CC_LOT_SIZE:
                 continue
@@ -268,7 +329,6 @@ class CoveredCallManager:
                     "short_calls_have": have,
                 }
             )
-            seen.add(ticker)
 
         logger.info(
             "Callable positions identified",
@@ -383,11 +443,11 @@ class CoveredCallManager:
             existing_options,
         )
 
-        flagged = set(cc_lot_tickers)
+        flagged = {str(t).upper() for t in cc_lot_tickers if str(t).strip()}
         results: List[Dict] = []
         have_by_und = short_call_qty_by_underlying(existing_options)
         for ticker in flagged:
-            if any(c["ticker"] == ticker for c in candidates):
+            if any(str(c["ticker"]).upper() == ticker for c in candidates):
                 continue
             qty = _long_qty(portfolio, ticker)
             if qty < CC_LOT_SIZE:
@@ -430,6 +490,8 @@ class CoveredCallManager:
                 continue
 
             lots = int(cand["callable_lots"])
+            have0 = int(cand.get("short_calls_have") or 0)
+            shares0 = int(cand.get("current_long") or 0)
             existing_strikes = _short_call_strikes(existing_options, ticker)
             # Cap and write one contract at a time; re-select so extra lots can
             # land at a different strike than the open short.
@@ -439,6 +501,10 @@ class CoveredCallManager:
             last_reason = ""
             for _ in range(max(1, lots)):
                 sto_qty = live_coverage_sto_qty(broker, ticker, 1)
+                # Local cap: a stale option snapshot must not let us write past
+                # the lots we already counted as filled this loop.
+                if coverage_sto_qty(shares0, have0 + filled_total, 1) <= 0:
+                    break
                 if sto_qty <= 0:
                     break
                 floor = None
@@ -582,8 +648,17 @@ def uncovered_excess_shares(shares: int, short_call_qty: int) -> int:
 def underhedge_trim_orders(
     portfolio: "Portfolio",
     option_positions: Optional[List[Dict]],
+    extra_short_calls: Optional[Dict[str, int]] = None,
 ) -> List[Tuple[str, int]]:
     have = short_call_qty_by_underlying(option_positions)
+    for k, v in (extra_short_calls or {}).items():
+        und = str(k).upper()
+        try:
+            add = int(v or 0)
+        except (TypeError, ValueError):
+            add = 0
+        if und and add:
+            have[und] = int(have.get(und, 0) or 0) + add
     out: List[Tuple[str, int]] = []
     for t in (getattr(portfolio, "positions", None) or {}):
         qty = _long_qty(portfolio, t)
@@ -607,10 +682,18 @@ def apply_underhedge_trims(
         results.append({"status": "skipped", "reason": "underhedge_trim_positions_unavailable"})
         return results
 
+    open_orders: List[Dict] = []
+    if hasattr(broker, "get_open_orders"):
+        try:
+            open_orders = broker.get_open_orders(limit=100) or []
+        except Exception as e:
+            logger.warning("Open orders unavailable for underhedge credit", error=str(e))
+
+    extra = _session_short_call_credits(results, open_orders)
     from src.portfolio.manager import PortfolioDecision
 
     prices = current_prices or {}
-    for ticker, qty in underhedge_trim_orders(port, opts):
+    for ticker, qty in underhedge_trim_orders(port, opts, extra_short_calls=extra):
         try:
             order = broker.execute_order(
                 ticker,

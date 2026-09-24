@@ -282,6 +282,115 @@ def test_apply_underhedge_trims_sells_excess_only():
     assert results[0]["quantity"] == 100
 
 
+def test_underhedge_trim_credits_session_fill_when_broker_shorts_stale():
+    from src.options.covered_calls import apply_underhedge_trims, underhedge_trim_orders
+
+    port = Portfolio(cash=0, positions={"F": Position(long=200)})
+    stale_opts = [
+        {
+            "symbol": "F260918C00012000",
+            "side": "short",
+            "qty": 1,
+            "option_type": "call",
+            "underlying": "F",
+        }
+    ]
+    # Live book still shows 1 short, but this session already wrote the extra call.
+    assert underhedge_trim_orders(
+        port, stale_opts, extra_short_calls={"F": 1}
+    ) == []
+
+    class StaleBroker:
+        def sync_portfolio(self):
+            return port
+
+        def get_option_positions(self):
+            return stale_opts
+
+        def get_open_orders(self, limit=100):
+            return []
+
+        def execute_order(self, *args, **kwargs):
+            raise AssertionError("must not sell extras already covered this session")
+
+    results = [
+        {
+            "underlying": "F",
+            "status": "executed",
+            "contracts": 1,
+            "contract_symbol": "F260918C00013000",
+        }
+    ]
+    apply_underhedge_trims(StaleBroker(), {"F": 12.0}, results)
+    assert not any(r.get("status") == "underhedge_trim" for r in results)
+
+
+def test_underhedge_trim_credits_working_short_call_order():
+    from src.options.covered_calls import apply_underhedge_trims
+
+    class WorkingBroker:
+        def __init__(self):
+            self.sold = []
+
+        def sync_portfolio(self):
+            return Portfolio(cash=0, positions={"F": Position(long=200)})
+
+        def get_option_positions(self):
+            return [
+                {
+                    "symbol": "F260918C00012000",
+                    "side": "short",
+                    "qty": 1,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def get_open_orders(self, limit=100):
+            return [
+                {
+                    "symbol": "F260918C00013000",
+                    "side": "sell",
+                    "qty": 1,
+                    "status": "new",
+                }
+            ]
+
+        def execute_order(self, ticker, decision, current_price=None):
+            self.sold.append((ticker, decision.quantity))
+            return {"order_id": "x"}
+
+    broker = WorkingBroker()
+    apply_underhedge_trims(broker, {"F": 12.0}, [])
+    assert broker.sold == []
+
+
+def test_short_call_qty_zero_is_not_one():
+    from src.options.covered_calls import short_call_qty_by_underlying
+
+    assert short_call_qty_by_underlying(
+        [{"symbol": "F260918C00012000", "side": "short", "qty": 0, "option_type": "call", "underlying": "F"}]
+    ) == {}
+    assert short_call_qty_by_underlying(
+        [{"symbol": "F260918C00012000", "side": "short", "qty": 2, "option_type": "call", "underlying": "F"}]
+    ) == {"F": 2}
+
+
+def test_identify_callable_normalizes_ticker_case():
+    from src.options.covered_calls import CoveredCallManager
+
+    mgr = CoveredCallManager()
+    portfolio = Portfolio(cash=1000, positions={"F": Position(long=200)})
+    cands = mgr.identify_callable_positions(
+        portfolio,
+        ["f"],
+        [{"symbol": "F261002C00013000", "side": "short", "underlying": "F", "option_type": "call", "qty": 1}],
+    )
+    assert len(cands) == 1
+    assert cands[0]["ticker"] == "F"
+    assert cands[0]["callable_lots"] == 1
+
+
 def test_allocate_unwinds_uncovered_and_respects_preflight():
     portfolio = Portfolio(
         cash=8000.0,
@@ -1038,6 +1147,7 @@ def test_coverage_map_sums_qty_and_flags_overhedged_naked():
     assert by_t["F"]["short_contracts"] == 2
     assert by_t["SOFI"]["coverage"] == "OVERHEDGED"
     assert by_t["ABEV"]["coverage"] == "NAKED_SHORT"
+    assert "ABEV" not in portfolio.positions
 
 
 def test_overflow_lots_stay_cc_eligible():
