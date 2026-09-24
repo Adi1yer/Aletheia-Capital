@@ -239,7 +239,19 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
         elif st == "atomic_unwind":
             lines.append(f"  UNWIND {und}: sold {r.get('quantity')} (CC write failed)")
             action_n += 1
-        elif st in ("skipped", "failed", "atomic_unwind_failed", "partial"):
+        elif st == "underhedge_trim":
+            lines.append(
+                f"  TRIM {und}: sold {r.get('quantity')} uncovered extra "
+                f"(kept covered lot after CC miss)"
+            )
+            action_n += 1
+        elif st in (
+            "skipped",
+            "failed",
+            "atomic_unwind_failed",
+            "underhedge_trim_failed",
+            "partial",
+        ):
             lines.append(f"  CC {st.upper()} {und}: {r.get('reason')}")
             action_n += 1
 
@@ -372,6 +384,8 @@ def manage_results_have_actions(
             "partial",
             "atomic_unwind",
             "atomic_unwind_failed",
+            "underhedge_trim",
+            "underhedge_trim_failed",
             "failed",
         ):
             return True

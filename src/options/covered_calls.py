@@ -564,3 +564,90 @@ def tickers_needing_atomic_unwind(
             continue
         out.add(und)
     return out
+
+
+def uncovered_excess_shares(shares: int, short_call_qty: int) -> int:
+    """Shares to sell so an already-short name is not left with a full uncovered lot.
+
+    Only trims when at least one short call is open (the covered lot stays).
+    200 sh / 1 call → 100; 250 sh / 1 call → 150; 100 sh / 1 call → 0.
+    """
+    sh = int(shares or 0)
+    sc = int(short_call_qty or 0)
+    if sc < 1 or sh < (sc + 1) * CC_LOT_SIZE:
+        return 0
+    return sh - sc * CC_LOT_SIZE
+
+
+def underhedge_trim_orders(
+    portfolio: "Portfolio",
+    option_positions: Optional[List[Dict]],
+) -> List[Tuple[str, int]]:
+    have = short_call_qty_by_underlying(option_positions)
+    out: List[Tuple[str, int]] = []
+    for t in (getattr(portfolio, "positions", None) or {}):
+        qty = _long_qty(portfolio, t)
+        extra = uncovered_excess_shares(qty, int(have.get(str(t).upper(), 0) or 0))
+        if extra >= CC_LOT_SIZE:
+            out.append((str(t).upper(), extra))
+    return out
+
+
+def apply_underhedge_trims(
+    broker: "AlpacaBroker",
+    current_prices: Optional[Dict[str, float]],
+    results: List[Dict],
+) -> List[Dict]:
+    """Sell uncovered extra lots after a CC miss; keep the already-covered lot."""
+    try:
+        port = broker.sync_portfolio()
+        opts = broker.get_option_positions() or []
+    except Exception as e:
+        logger.error("Underhedge trim skipped — option/portfolio sync failed", error=str(e))
+        results.append({"status": "skipped", "reason": "underhedge_trim_positions_unavailable"})
+        return results
+
+    from src.portfolio.manager import PortfolioDecision
+
+    prices = current_prices or {}
+    for ticker, qty in underhedge_trim_orders(port, opts):
+        try:
+            order = broker.execute_order(
+                ticker,
+                PortfolioDecision(
+                    action="sell",
+                    quantity=qty,
+                    confidence=90,
+                    reasoning="Trim uncovered extra lot — CC write missed",
+                ),
+                current_price=_finite_px(prices.get(ticker)) or None,
+            )
+            fill = None
+            ok = False
+            if order and hasattr(broker, "wait_for_order_fill"):
+                oid = str(order.get("order_id") or order.get("id") or "")
+                if oid:
+                    fill = broker.wait_for_order_fill(
+                        oid, timeout_s=60.0, min_filled_qty=qty
+                    )
+                    ok = bool(fill.get("ok"))
+            results.append(
+                {
+                    "underlying": ticker,
+                    "status": "underhedge_trim" if ok else "underhedge_trim_failed",
+                    "quantity": qty,
+                    "order": order,
+                    "fill": fill,
+                    "reason": "uncovered_extra_lot_after_cc",
+                }
+            )
+        except Exception as e:
+            results.append(
+                {
+                    "underlying": ticker,
+                    "status": "underhedge_trim_failed",
+                    "quantity": qty,
+                    "reason": str(e)[:200],
+                }
+            )
+    return results

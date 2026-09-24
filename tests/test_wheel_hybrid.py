@@ -195,6 +195,93 @@ def test_atomic_unwind_tickers_from_cc_skips():
     assert unwind == {"BSBR"}
 
 
+def test_uncovered_excess_shares_trims_only_extra_lot():
+    from src.options.covered_calls import uncovered_excess_shares
+
+    assert uncovered_excess_shares(200, 1) == 100
+    assert uncovered_excess_shares(250, 1) == 150
+    assert uncovered_excess_shares(300, 2) == 100
+    assert uncovered_excess_shares(100, 1) == 0
+    assert uncovered_excess_shares(200, 2) == 0
+    assert uncovered_excess_shares(200, 0) == 0
+    assert uncovered_excess_shares(150, 1) == 0
+
+
+def test_underhedge_trim_orders_keeps_covered_lot():
+    from src.options.covered_calls import underhedge_trim_orders
+
+    port = Portfolio(
+        cash=1000,
+        positions={
+            "F": Position(long=200),
+            "NOK": Position(long=100),
+            "ITUB": Position(long=250),
+            "CPNG": Position(long=200),
+        },
+    )
+    opts = [
+        {"symbol": "F260918C00012000", "side": "short", "qty": 1, "option_type": "call", "underlying": "F"},
+        {"symbol": "NOK260918C00006000", "side": "short", "qty": 1, "option_type": "call", "underlying": "NOK"},
+        {"symbol": "ITUB260918C00007000", "side": "short", "qty": 1, "option_type": "call", "underlying": "ITUB"},
+        # CPNG has extra shares but no short — atomic unwind, not this trim
+    ]
+    orders = dict(underhedge_trim_orders(port, opts))
+    assert orders == {"F": 100, "ITUB": 150}
+    assert "NOK" not in orders
+    assert "CPNG" not in orders
+
+
+def test_apply_underhedge_trims_skips_when_option_fetch_fails():
+    from src.options.covered_calls import apply_underhedge_trims
+
+    class BoomBroker:
+        def sync_portfolio(self):
+            return Portfolio(cash=0, positions={"F": Position(long=200)})
+
+        def get_option_positions(self):
+            raise RuntimeError("broker timeout")
+
+    results: list = []
+    apply_underhedge_trims(BoomBroker(), {"F": 12.0}, results)
+    assert results == [{"status": "skipped", "reason": "underhedge_trim_positions_unavailable"}]
+
+
+def test_apply_underhedge_trims_sells_excess_only():
+    from src.options.covered_calls import apply_underhedge_trims
+
+    class FakeBroker:
+        def __init__(self):
+            self.sold = []
+
+        def sync_portfolio(self):
+            return Portfolio(cash=0, positions={"F": Position(long=200)})
+
+        def get_option_positions(self):
+            return [
+                {
+                    "symbol": "F260918C00012000",
+                    "side": "short",
+                    "qty": 1,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def execute_order(self, ticker, decision, current_price=None):
+            self.sold.append((ticker, decision.action, decision.quantity))
+            return {"order_id": "oid-1"}
+
+        def wait_for_order_fill(self, order_id, timeout_s=60.0, min_filled_qty=0):
+            return {"ok": True, "order_id": order_id}
+
+    broker = FakeBroker()
+    results: list = []
+    apply_underhedge_trims(broker, {"F": 12.0}, results)
+    assert broker.sold == [("F", "sell", 100)]
+    assert results[0]["status"] == "underhedge_trim"
+    assert results[0]["quantity"] == 100
+
+
 def test_allocate_unwinds_uncovered_and_respects_preflight():
     portfolio = Portfolio(
         cash=8000.0,
@@ -1211,6 +1298,10 @@ def test_manage_email_gate_includes_unwind_failed():
     assert manage_results_have_actions(
         [],
         [{"status": "atomic_unwind_failed"}],
+    )
+    assert manage_results_have_actions(
+        [],
+        [{"status": "underhedge_trim", "quantity": 100}],
     )
     assert not manage_results_have_actions(
         [],

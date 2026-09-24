@@ -26,6 +26,7 @@ def main() -> int:
     from src.options.cc_agent import resolve_ambiguous_cc_actions
     from src.options.covered_calls import (
         CoveredCallManager,
+        apply_underhedge_trims,
         tickers_needing_atomic_unwind,
     )
     from src.options.wheel_lifecycle import (
@@ -210,6 +211,10 @@ def main() -> int:
                         }
                     )
 
+        apply_underhedge_trims(broker, prices, cc_results)
+    elif execute:
+        apply_underhedge_trims(broker, prices, cc_results)
+
     portfolio = broker.sync_portfolio()
     coverage_unavailable = False
     try:
@@ -229,6 +234,7 @@ def main() -> int:
     rolls = sum(1 for r in manage_results if r.get("status") == "roll_executed")
     wrote = sum(1 for r in cc_results if r.get("status") == "executed")
     unwound = sum(1 for r in cc_results if r.get("status") == "atomic_unwind")
+    trimmed = sum(1 for r in cc_results if r.get("status") == "underhedge_trim")
     skipped = [r for r in cc_results if r.get("status") == "skipped"]
     logger.info(
         "Daily wheel options manage complete",
@@ -238,6 +244,7 @@ def main() -> int:
         rolls=rolls,
         cc_wrote=wrote,
         unwound=unwound,
+        trimmed=trimmed,
         cc_skipped=len(skipped),
         lots=cc_lots,
         stages=list((state.get("names") or {}).keys()),

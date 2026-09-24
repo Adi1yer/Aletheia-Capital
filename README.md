@@ -154,7 +154,7 @@ Excludes on wheel runs: agent leaderboards, lane diagnostics, Beat-SPY/Phase13 n
 | `cc_target_otm_pct` | 0.05 | Target call OTM |
 | `cc_otm_pct_low` / `high` | 0.03 / 0.08 | Open band |
 | `cc_min_premium_usd` | 15 | Absolute premium floor |
-| `atomic_cc_lots` | true | Unwind if CC write fails |
+| `atomic_cc_lots` | true | Unwind naked first lots; trim extra shares if a 2nd CC misses |
 | `csp_reserve_frac` | 0.20 | Wheel cash reserved for CSP |
 | `execute_cutoff_et` | 15:30 | No new equity DAY orders after this |
 | `options_execute_cutoff_et` | 15:55 | Manage/CC/CSP window (early-close still wins) |

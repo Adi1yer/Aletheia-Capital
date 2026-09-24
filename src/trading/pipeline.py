@@ -1448,6 +1448,20 @@ class TradingPipeline:
             1 for r in cc_results if r.get("status") in ("failed", "error")
         )
 
+        # Extra lot filled but CC missed → sell only the uncovered excess (keep covered lot).
+        if (
+            wheel_active
+            and execute
+            and self.broker
+            and bool(run_config.get("atomic_cc_lots", True))
+        ):
+            try:
+                from src.options.covered_calls import apply_underhedge_trims
+
+                apply_underhedge_trims(self.broker, latest_price_map, cc_results)
+            except Exception as e:
+                logger.warning("Underhedge trim failed", error=str(e))
+
         csp_lot_tickers = getattr(self.portfolio_manager, "_last_csp_tickers", [])
         csp_scores_map = getattr(self.portfolio_manager, "_last_csp_scores", {})
         if enable_csp and execute and options_window_ok and self.broker and csp_lot_tickers:
