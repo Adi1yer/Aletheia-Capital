@@ -63,15 +63,19 @@ class CashSecuredPutManager:
             strike_high = current_price * 0.95
             strike_low = current_price * 0.85
 
-        contracts = broker.get_option_contracts(
-            underlying=underlying,
-            option_type="put",
-            expiry_gte=date.today() + timedelta(days=14),
-            expiry_lte=date.today() + timedelta(days=45),
-            strike_gte=strike_low,
-            strike_lte=strike_high,
-            limit=20,
-        )
+        try:
+            contracts = broker.get_option_contracts(
+                underlying=underlying,
+                option_type="put",
+                expiry_gte=date.today() + timedelta(days=14),
+                expiry_lte=date.today() + timedelta(days=45),
+                strike_gte=strike_low,
+                strike_lte=strike_high,
+                limit=20,
+            )
+        except Exception as e:
+            logger.error("Put chain unavailable", underlying=underlying, error=str(e))
+            return None
         if not contracts:
             logger.info("No suitable put contracts", underlying=underlying)
             return None

@@ -147,6 +147,39 @@ def test_cc_select_reports_skip_reason_and_otm_band():
     assert "no_contracts_in_otm_band" in reason
 
 
+def test_cc_select_chain_fetch_failure_is_not_empty_band():
+    from src.options.covered_calls import CoveredCallManager
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            raise RuntimeError("alpaca 504 timeout")
+
+    mgr = CoveredCallManager()
+    contract, reason = mgr.select_contract("F", 12.0, 55, _Broker())
+    assert contract is None
+    assert reason == "option_chain_unavailable"
+
+
+def test_cc_select_zero_marks_is_quotes_unavailable_not_premium_miss():
+    from src.options.covered_calls import CoveredCallManager
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            return [
+                {
+                    "symbol": "F261016C00012600",
+                    "strike": 12.60,
+                    "expiry": "2026-10-16",
+                    "tradable": True,
+                    "close_price": 0.0,
+                }
+            ]
+
+    mgr = CoveredCallManager(min_premium_usd=15.0, min_premium_pct=0.004)
+    contract, reason = mgr.select_contract("F", 12.0, 55, _Broker())
+    assert contract is None
+    assert reason == "option_quotes_unavailable"
+
 
 def test_parse_occ_and_manage_rules():
     parsed = parse_occ_symbol("F250117C00012000")
@@ -195,6 +228,16 @@ def test_atomic_unwind_tickers_from_cc_skips():
     assert unwind == {"BSBR"}
     assert not tickers_needing_atomic_unwind(
         [{"underlying": "F", "status": "skipped", "reason": "coverage_slots_unavailable"}],
+        held_lot_tickers=["F"],
+        short_call_underlyings=set(),
+    )
+    assert not tickers_needing_atomic_unwind(
+        [{"underlying": "F", "status": "skipped", "reason": "option_chain_unavailable"}],
+        held_lot_tickers=["F"],
+        short_call_underlyings=set(),
+    )
+    assert not tickers_needing_atomic_unwind(
+        [{"underlying": "F", "status": "skipped", "reason": "option_quotes_unavailable"}],
         held_lot_tickers=["F"],
         short_call_underlyings=set(),
     )
@@ -411,6 +454,16 @@ def test_underhedge_trim_skips_when_cc_never_attempted_write():
         FakeBroker(),
         {"F": 12.0},
         [{"status": "error", "reason": "option_positions_unavailable"}],
+    )
+    apply_underhedge_trims(
+        FakeBroker(),
+        {"F": 12.0},
+        [{"underlying": "F", "status": "skipped", "reason": "option_chain_unavailable"}],
+    )
+    apply_underhedge_trims(
+        FakeBroker(),
+        {"F": 12.0},
+        [{"underlying": "F", "status": "skipped", "reason": "option_quotes_unavailable"}],
     )
 
 

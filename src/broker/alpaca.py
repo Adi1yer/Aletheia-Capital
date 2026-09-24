@@ -546,48 +546,111 @@ class AlpacaBroker:
         strike_lte: Optional[float] = None,
         limit: int = 50,
     ) -> List[Dict]:
-        """Discover available option contracts for an underlying symbol."""
-        try:
-            if expiry_gte is None:
-                expiry_gte = date.today() + timedelta(days=7)
-            if expiry_lte is None:
-                expiry_lte = date.today() + timedelta(days=45)
+        """Discover available option contracts for an underlying symbol.
 
-            ct = ContractType.CALL if option_type == "call" else ContractType.PUT
-            req = GetOptionContractsRequest(
-                underlying_symbols=[underlying],
-                type=ct,
-                expiration_date_gte=expiry_gte.isoformat(),
-                expiration_date_lte=expiry_lte.isoformat(),
-                strike_price_gte=str(strike_gte) if strike_gte else None,
-                strike_price_lte=str(strike_lte) if strike_lte else None,
-                limit=limit,
+        Raises BrokerDataError after retries so callers can tell a fetch
+        failure from a truly empty strike/expiry band.
+        """
+        if expiry_gte is None:
+            expiry_gte = date.today() + timedelta(days=7)
+        if expiry_lte is None:
+            expiry_lte = date.today() + timedelta(days=45)
+
+        ct = ContractType.CALL if option_type == "call" else ContractType.PUT
+        req = GetOptionContractsRequest(
+            underlying_symbols=[underlying],
+            type=ct,
+            expiration_date_gte=expiry_gte.isoformat(),
+            expiration_date_lte=expiry_lte.isoformat(),
+            strike_price_gte=str(strike_gte) if strike_gte else None,
+            strike_price_lte=str(strike_lte) if strike_lte else None,
+            limit=limit,
+        )
+        try:
+            resp = alpaca_call_with_retry(
+                lambda: self.client.get_option_contracts(req),
+                op="get_option_contracts",
             )
-            resp = self.client.get_option_contracts(req)
-            contracts = resp.option_contracts if hasattr(resp, "option_contracts") else resp
-            results = []
-            for c in contracts or []:
-                results.append(
-                    {
-                        "symbol": c.symbol,
-                        "underlying": c.underlying_symbol,
-                        "strike": float(c.strike_price) if c.strike_price else 0.0,
-                        "expiry": str(c.expiration_date),
-                        "type": str(c.type) if hasattr(c, "type") else option_type,
-                        "open_interest": int(c.open_interest)
-                        if hasattr(c, "open_interest") and c.open_interest
-                        else 0,
-                        "close_price": float(c.close_price)
-                        if hasattr(c, "close_price") and c.close_price
-                        else 0.0,
-                        "tradable": getattr(c, "tradable", True),
-                    }
-                )
-            logger.info("Option contracts fetched", underlying=underlying, count=len(results))
-            return results
         except Exception as e:
             logger.error("Failed to fetch option contracts", underlying=underlying, error=str(e))
-            return []
+            raise BrokerDataError(f"option chain unavailable for {underlying}: {e}") from e
+
+        contracts = resp.option_contracts if hasattr(resp, "option_contracts") else resp
+        results = []
+        for c in contracts or []:
+            close_px = 0.0
+            for attr in ("close_price", "last_price", "last_trade_price"):
+                raw = getattr(c, attr, None)
+                try:
+                    px = float(raw) if raw is not None else 0.0
+                except (TypeError, ValueError):
+                    px = 0.0
+                if px > 0:
+                    close_px = px
+                    break
+            results.append(
+                {
+                    "symbol": c.symbol,
+                    "underlying": getattr(c, "underlying_symbol", None) or underlying,
+                    "strike": float(c.strike_price) if getattr(c, "strike_price", None) else 0.0,
+                    "expiry": str(c.expiration_date),
+                    "type": str(c.type) if hasattr(c, "type") else option_type,
+                    "open_interest": int(c.open_interest)
+                    if hasattr(c, "open_interest") and c.open_interest
+                    else 0,
+                    "close_price": close_px,
+                    "tradable": getattr(c, "tradable", True),
+                }
+            )
+        logger.info("Option contracts fetched", underlying=underlying, count=len(results))
+        return results
+
+    def enrich_option_quotes(self, contracts: List[Dict]) -> List[Dict]:
+        """Fill bid/ask/mid on contract dicts from latest option quotes (best-effort)."""
+        symbols = [str(c.get("symbol") or "") for c in contracts or [] if c.get("symbol")]
+        symbols = [s for s in symbols if s]
+        if not symbols:
+            return contracts
+        try:
+            from alpaca.data.historical.option import OptionHistoricalDataClient
+            from alpaca.data.requests import OptionLatestQuoteRequest
+
+            key = settings.alpaca_api_key
+            sec = settings.alpaca_secret_key
+            if not key or not sec:
+                return contracts
+            client = OptionHistoricalDataClient(key, sec)
+            quotes = alpaca_call_with_retry(
+                lambda: client.get_option_latest_quote(
+                    OptionLatestQuoteRequest(symbol_or_symbols=symbols[:40])
+                ),
+                op="get_option_latest_quote",
+                attempts=2,
+                base_delay_sec=1.0,
+            )
+            qmap = quotes if isinstance(quotes, dict) else getattr(quotes, "data", None) or {}
+            for c in contracts:
+                q = qmap.get(str(c.get("symbol") or ""))
+                if q is None:
+                    continue
+                try:
+                    bid = float(getattr(q, "bid_price", 0) or 0)
+                except (TypeError, ValueError):
+                    bid = 0.0
+                try:
+                    ask = float(getattr(q, "ask_price", 0) or 0)
+                except (TypeError, ValueError):
+                    ask = 0.0
+                mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else (ask if ask > 0 else bid)
+                if bid > 0:
+                    c["bid_price"] = bid
+                if ask > 0:
+                    c["ask_price"] = ask
+                if mid > 0:
+                    c["mid_price"] = mid
+        except Exception as e:
+            logger.warning("Option quote enrich failed", error=str(e))
+        return contracts
 
     def get_order(self, order_id: str) -> Optional[Dict]:
         """Fetch a single order by id."""

@@ -379,15 +379,19 @@ class CoveredCallManager:
         strike_low = current_price * (1.0 + lo)
         strike_high = current_price * (1.0 + hi)
 
-        contracts = broker.get_option_contracts(
-            underlying=underlying,
-            option_type="call",
-            expiry_gte=date.today() + timedelta(days=int(expiry_gte_days)),
-            expiry_lte=date.today() + timedelta(days=int(expiry_lte_days)),
-            strike_gte=strike_low,
-            strike_lte=strike_high,
-            limit=40,
-        )
+        try:
+            contracts = broker.get_option_contracts(
+                underlying=underlying,
+                option_type="call",
+                expiry_gte=date.today() + timedelta(days=int(expiry_gte_days)),
+                expiry_lte=date.today() + timedelta(days=int(expiry_lte_days)),
+                strike_gte=strike_low,
+                strike_lte=strike_high,
+                limit=40,
+            )
+        except Exception as e:
+            logger.error("Option chain unavailable", underlying=underlying, error=str(e))
+            return None, "option_chain_unavailable"
 
         if not contracts:
             return None, (
@@ -401,8 +405,21 @@ class CoveredCallManager:
         if not tradable:
             return None, f"no_contracts_above_min_otm_{min_strike:.2f}"
 
+        if hasattr(broker, "enrich_option_quotes"):
+            try:
+                broker.enrich_option_quotes(tradable)
+            except Exception:
+                pass
+        if tradable and all(_contract_premium_usd(c) <= 0 for c in tradable):
+            return None, "option_quotes_unavailable"
+
         target_strike = current_price * (1.0 + target)
-        tradable.sort(key=lambda c: (abs(c["strike"] - target_strike), c["expiry"]))
+        tradable.sort(
+            key=lambda c: (
+                abs(float(c.get("strike") or 0) - target_strike),
+                str(c.get("expiry") or ""),
+            )
+        )
 
         best = None
         last_reason = "no_contract_met_premium"
@@ -666,9 +683,12 @@ def tickers_needing_atomic_unwind(
             continue
         if reason.startswith("coverage_slots"):
             continue
-        if reason == "option_positions_unavailable":
-            continue
-        if reason == "order submission failed or no coverage slots":
+        if reason in (
+            "option_positions_unavailable",
+            "option_chain_unavailable",
+            "option_quotes_unavailable",
+            "order submission failed or no coverage slots",
+        ):
             continue
         out.add(und)
     return out
@@ -687,6 +707,8 @@ def cc_write_attempted_tickers(cc_results: Optional[List[Dict]] = None) -> Set[s
         "coverage_slots",
         "cc_score_below_threshold",
         "option_positions_unavailable",
+        "option_chain_unavailable",
+        "option_quotes_unavailable",
         "order submission failed or no coverage slots",
     )
     for r in cc_results or []:
