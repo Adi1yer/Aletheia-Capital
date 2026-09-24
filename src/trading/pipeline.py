@@ -1299,6 +1299,19 @@ class TradingPipeline:
             except Exception as e:
                 logger.error("Wheel manage/roll before CC failed", error=str(e))
 
+        if wheel_active and execute and self.broker:
+            try:
+                live_port = self.broker.sync_portfolio()
+                seen_lots = {str(x).upper() for x in cc_lot_tickers}
+                for t, pos in (getattr(live_port, "positions", None) or {}).items():
+                    tu = str(t).upper()
+                    qty = int(getattr(pos, "long", 0) or 0)
+                    if qty >= 100 and tu not in seen_lots:
+                        cc_lot_tickers.append(tu)
+                        seen_lots.add(tu)
+            except Exception as e:
+                logger.warning("Live lot refresh before CC failed", error=str(e))
+
         if enable_cc and execute and options_window_ok and self.broker and cc_lot_tickers:
             cc_diagnostics["step_ran"] = True
             try:
@@ -1374,10 +1387,14 @@ class TradingPipeline:
                         cc_diagnostics["atomic_unwind_skipped"] = "option_positions_unavailable"
                     else:
                         short_now = short_option_underlyings(opt_now)
+                        try:
+                            unwind_port = self.broker.sync_portfolio()
+                        except Exception:
+                            unwind_port = cc_portfolio
                         held_lots = []
-                        for t, pos in (cc_portfolio.positions or {}).items():
+                        for t, pos in (getattr(unwind_port, "positions", None) or {}).items():
                             if int(getattr(pos, "long", 0) or 0) >= 100:
-                                held_lots.append(t)
+                                held_lots.append(str(t).upper())
                         unwind = tickers_needing_atomic_unwind(
                             cc_results,
                             held_lot_tickers=held_lots,
@@ -1386,9 +1403,9 @@ class TradingPipeline:
                         cc_diagnostics["atomic_unwind_tickers"] = sorted(unwind)
                         for t in sorted(unwind):
                             qty = (
-                                int(cc_portfolio.long_qty(t) or 0)
-                                if hasattr(cc_portfolio, "long_qty")
-                                else int(getattr(cc_portfolio.get_position(t), "long", 0) or 0)
+                                int(unwind_port.long_qty(t) or 0)
+                                if hasattr(unwind_port, "long_qty")
+                                else int(getattr(unwind_port.get_position(t), "long", 0) or 0)
                             )
                             if qty <= 0:
                                 continue
@@ -1399,10 +1416,13 @@ class TradingPipeline:
                                     confidence=90,
                                     reasoning="Atomic CC unwind",
                                 )
+                                unwind_px = _finite_price(
+                                    latest_price_map.get(t) or latest_price_map.get(str(t).upper())
+                                )
                                 order = self.broker.execute_order(
                                     t,
                                     dec,
-                                    current_price=float(latest_price_map.get(t) or 0) or None,
+                                    current_price=unwind_px,
                                 )
                                 fill = None
                                 if order and hasattr(self.broker, "wait_for_order_fill"):

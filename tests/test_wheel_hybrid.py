@@ -193,6 +193,11 @@ def test_atomic_unwind_tickers_from_cc_skips():
     )
     # Chain/premium misses stay for afternoon; only hard write failures unwind.
     assert unwind == {"BSBR"}
+    assert not tickers_needing_atomic_unwind(
+        [{"underlying": "F", "status": "skipped", "reason": "coverage_slots_unavailable"}],
+        held_lot_tickers=["F"],
+        short_call_underlyings=set(),
+    )
 
 
 def test_uncovered_excess_shares_trims_only_extra_lot():
@@ -275,11 +280,13 @@ def test_apply_underhedge_trims_sells_excess_only():
             return {"ok": True, "order_id": order_id}
 
     broker = FakeBroker()
-    results: list = []
+    results: list = [
+        {"underlying": "F", "status": "skipped", "reason": "no_contracts_in_otm_band_x"}
+    ]
     apply_underhedge_trims(broker, {"F": 12.0}, results)
     assert broker.sold == [("F", "sell", 100)]
-    assert results[0]["status"] == "underhedge_trim"
-    assert results[0]["quantity"] == 100
+    assert any(r.get("status") == "underhedge_trim" for r in results)
+    assert next(r for r in results if r.get("status") == "underhedge_trim")["quantity"] == 100
 
 
 def test_underhedge_trim_credits_session_fill_when_broker_shorts_stale():
@@ -369,6 +376,42 @@ def test_underhedge_trim_still_sells_leftover_lot_after_partial_extra_write():
     apply_underhedge_trims(broker, {"F": 12.0}, results)
     # live=2 already includes the session fill; do not double-count to 3.
     assert broker.sold == [("F", 100)]
+
+
+def test_underhedge_trim_skips_when_cc_never_attempted_write():
+    from src.options.covered_calls import apply_underhedge_trims
+
+    class FakeBroker:
+        def __init__(self):
+            self.sold = []
+
+        def sync_portfolio(self):
+            return Portfolio(cash=0, positions={"F": Position(long=200)})
+
+        def get_option_positions(self):
+            return [
+                {
+                    "symbol": "F260918C00012000",
+                    "side": "short",
+                    "qty": 1,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def execute_order(self, *args, **kwargs):
+            raise AssertionError("must not trim when CC never attempted a write")
+
+    apply_underhedge_trims(
+        FakeBroker(),
+        {"F": 12.0},
+        [{"underlying": "F", "status": "skipped", "reason": "coverage_slots_unavailable"}],
+    )
+    apply_underhedge_trims(
+        FakeBroker(),
+        {"F": 12.0},
+        [{"status": "error", "reason": "option_positions_unavailable"}],
+    )
 
 
 def test_underhedge_trim_credits_working_short_call_order():

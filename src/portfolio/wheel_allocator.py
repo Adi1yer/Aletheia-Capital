@@ -195,12 +195,12 @@ def allocate_wheel_hybrid_book(
         nonlocal cash, wheel_spent
         if t in decisions:
             return
-        px = _finite_px(current_prices.get(t))
+        px = _finite_px(current_prices.get(t) or current_prices.get(str(t).upper()))
         if px <= 0 or px > float(max_underlying_price):
             diagnostics["skipped"].append({"ticker": t, "reason": "price"})
             return
         held = held_qty(t)
-        pending_buy = int((pending.get(t) or {}).get("buy_qty", 0) or 0)
+        pending_buy = int((pending.get(str(t).upper()) or pending.get(t) or {}).get("buy_qty", 0) or 0)
         need = max(0, CC_LOT - held - pending_buy)
         if need <= 0:
             if held >= CC_LOT:
@@ -211,12 +211,12 @@ def allocate_wheel_hybrid_book(
         if not top_up_only and held > 0:
             return
         # First lot only: do not buy shares into a naked short option (CSP collateral).
-        if t in short_und:
+        if str(t).upper() in short_und:
             diagnostics["skipped"].append({"ticker": t, "reason": "open_short_option"})
             return
-        if held < CC_LOT and preflight is not None and t not in preflight:
+        if held < CC_LOT and preflight is not None and str(t).upper() not in preflight:
             diagnostics["skipped"].append({"ticker": t, "reason": "preflight_failed"})
-            if t not in short_und:
+            if str(t).upper() not in short_und:
                 diagnostics["csp_candidates"].append(t)
             return
         if max_name_dollars > 0 and (held + need) * px > max_name_dollars + 1e-6:
@@ -224,12 +224,12 @@ def allocate_wheel_hybrid_book(
             return
         cost = need * px
         if wheel_spent + cost > lot_budget:
-            if held < CC_LOT and t not in short_und:
+            if held < CC_LOT and str(t).upper() not in short_und:
                 diagnostics["csp_candidates"].append(t)
             diagnostics["skipped"].append({"ticker": t, "reason": "lot_budget"})
             return
         if cash - cost < min_cash_after_first_lot:
-            if t not in short_und:
+            if str(t).upper() not in short_und:
                 diagnostics["csp_candidates"].append(t)
             diagnostics["skipped"].append({"ticker": t, "reason": "cash_buffer_or_csp_reserve"})
             return
@@ -290,7 +290,7 @@ def allocate_wheel_hybrid_book(
                 }
             )
             continue
-        if preflight is not None and t not in preflight:
+        if preflight is not None and str(t).upper() not in preflight:
             diagnostics["skipped"].append({"ticker": t, "reason": "preflight_failed_extra"})
             continue
         pending_buy = int((pending.get(str(t).upper()) or pending.get(t) or {}).get("buy_qty", 0) or 0)

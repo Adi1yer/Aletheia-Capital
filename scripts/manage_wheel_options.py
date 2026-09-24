@@ -126,7 +126,11 @@ def main() -> int:
         )
 
     portfolio = broker.sync_portfolio()
-    opt_pos = broker.get_option_positions() or []
+    try:
+        opt_pos = broker.get_option_positions() or []
+    except Exception as e:
+        logger.error("Option positions unavailable after manage; continuing fail-closed", error=str(e))
+        opt_pos = []
     state = sync_wheel_assignment_state(
         portfolio,
         opt_pos,
@@ -149,13 +153,17 @@ def main() -> int:
     cc_results: list = []
     if cc_lots and execute:
         scores = {t: int(os.getenv("WHEEL_RULES_SCORE", "55")) for t in cc_lots}
-        cc_results = mgr.execute_covered_calls(
-            broker=broker,
-            portfolio=portfolio,
-            cc_lot_tickers=cc_lots,
-            cc_scores=scores,
-            current_prices=prices,
-        )
+        try:
+            cc_results = mgr.execute_covered_calls(
+                broker=broker,
+                portfolio=portfolio,
+                cc_lot_tickers=cc_lots,
+                cc_scores=scores,
+                current_prices=prices,
+            )
+        except Exception as e:
+            logger.error("Afternoon covered-call execute failed", error=str(e))
+            cc_results.append({"status": "error", "reason": str(e)})
         try:
             short_now = short_option_underlyings(broker.get_option_positions() or [])
         except Exception as e:

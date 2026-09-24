@@ -462,7 +462,11 @@ class CoveredCallManager:
             except (TypeError, ValueError):
                 scores[str(k).upper()] = 0
 
-        existing_options = broker.get_option_positions()
+        try:
+            existing_options = broker.get_option_positions()
+        except Exception as e:
+            logger.error("CC execute aborted — option positions unavailable", error=str(e))
+            return [{"status": "error", "reason": "option_positions_unavailable"}]
 
         candidates = self.identify_callable_positions(
             portfolio,
@@ -531,8 +535,12 @@ class CoveredCallManager:
                 # Local cap: a stale option snapshot must not let us write past
                 # the lots we already counted as filled this loop.
                 if coverage_sto_qty(shares0, have0 + filled_total, 1) <= 0:
+                    if filled_total == 0 and not last_reason:
+                        last_reason = "coverage_slots_unavailable"
                     break
                 if sto_qty <= 0:
+                    if not last_reason:
+                        last_reason = "coverage_slots_unavailable"
                     break
                 floor = None
                 if existing_strikes:
@@ -656,6 +664,40 @@ def tickers_needing_atomic_unwind(
             continue
         if reason.startswith("premium_below_"):
             continue
+        if reason.startswith("coverage_slots"):
+            continue
+        if reason == "option_positions_unavailable":
+            continue
+        if reason == "order submission failed or no coverage slots":
+            continue
+        out.add(und)
+    return out
+
+
+def cc_write_attempted_tickers(cc_results: Optional[List[Dict]] = None) -> Set[str]:
+    """Names we actually tried to write (or missed on chain/premium).
+
+    Fail-closed coverage fetches and already-covered skips are excluded so
+    extras are not sold when we never attempted a hedge.
+    """
+    out: Set[str] = set()
+    skip_reasons = (
+        "insufficient_shares_for_lot",
+        "already_has_short_call",
+        "coverage_slots",
+        "cc_score_below_threshold",
+        "option_positions_unavailable",
+        "order submission failed or no coverage slots",
+    )
+    for r in cc_results or []:
+        und = str(r.get("underlying") or "").upper()
+        if not und:
+            continue
+        if str(r.get("status") or "") not in ("executed", "partial", "skipped", "failed"):
+            continue
+        reason = str(r.get("reason") or "")
+        if any(reason == s or reason.startswith(s) for s in skip_reasons):
+            continue
         out.add(und)
     return out
 
@@ -678,8 +720,10 @@ def underhedge_trim_orders(
     option_positions: Optional[List[Dict]],
     extra_short_calls: Optional[Dict[str, int]] = None,
     working_short_calls: Optional[Dict[str, int]] = None,
+    only_tickers: Optional[Set[str]] = None,
 ) -> List[Tuple[str, int]]:
     have = short_call_qty_by_underlying(option_positions)
+    allowed = {str(x).upper() for x in only_tickers} if only_tickers is not None else None
     for k, v in (extra_short_calls or {}).items():
         und = str(k).upper()
         try:
@@ -698,10 +742,13 @@ def underhedge_trim_orders(
             have[und] = int(have.get(und, 0) or 0) + add
     out: List[Tuple[str, int]] = []
     for t in (getattr(portfolio, "positions", None) or {}):
+        und = str(t).upper()
+        if allowed is not None and und not in allowed:
+            continue
         qty = _long_qty(portfolio, t)
-        extra = uncovered_excess_shares(qty, int(have.get(str(t).upper(), 0) or 0))
+        extra = uncovered_excess_shares(qty, int(have.get(und, 0) or 0))
         if extra > 0:
-            out.append((str(t).upper(), extra))
+            out.append((und, extra))
     return out
 
 
@@ -728,11 +775,18 @@ def apply_underhedge_trims(
 
     inferred = _inferred_short_floors(results)
     working = _working_short_calls(open_orders)
+    attempted = cc_write_attempted_tickers(results)
+    if not attempted:
+        return results
     from src.portfolio.manager import PortfolioDecision
 
     prices = {str(k).upper(): v for k, v in (current_prices or {}).items()}
     for ticker, qty in underhedge_trim_orders(
-        port, opts, extra_short_calls=inferred, working_short_calls=working
+        port,
+        opts,
+        extra_short_calls=inferred,
+        working_short_calls=working,
+        only_tickers=attempted,
     ):
         try:
             order = broker.execute_order(
