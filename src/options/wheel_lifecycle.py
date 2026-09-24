@@ -289,7 +289,7 @@ def manage_or_roll_short_calls(
     - profit-take: credit-only
     Puts are BTC-only.
     """
-    from src.options.covered_calls import _contract_premium_usd
+    from src.options.covered_calls import _contract_premium_usd, _finite_px
 
     base = manage_short_options(
         broker,
@@ -318,7 +318,7 @@ def manage_or_roll_short_calls(
         if not is_call_threat and not is_profit_take:
             continue
 
-        px = float(current_prices.get(und) or 0.0)
+        px = _finite_px(current_prices.get(und) or current_prices.get(str(und).upper()))
         qty = int(row.get("qty") or 1)
         if px <= 0:
             results.append(
@@ -383,12 +383,11 @@ def manage_or_roll_short_calls(
             # Dry-run: assume BTC clears this short; cap by share slots only.
             try:
                 port = broker.sync_portfolio()
-                pos = None
-                if hasattr(port, "get_position"):
-                    pos = port.get_position(und)
-                if pos is None:
+                if hasattr(port, "long_qty"):
+                    shares = int(port.long_qty(und) or 0)
+                else:
                     pos = (getattr(port, "positions", None) or {}).get(und)
-                shares = int(getattr(pos, "long", 0) or 0) if pos else 0
+                    shares = int(getattr(pos, "long", 0) or 0) if pos else 0
                 sto_qty = coverage_sto_qty(shares, 0, qty)
             except Exception:
                 sto_qty = 0
@@ -655,7 +654,23 @@ def short_option_underlyings(option_positions: List[Dict[str, Any]]) -> set:
         parsed = parse_occ_symbol(str(pos.get("symbol") or ""))
         und = (parsed or {}).get("underlying") or str(pos.get("underlying") or "").upper()
         if und:
-            out.add(und)
+            out.add(str(und).upper())
+    return out
+
+
+def short_put_underlyings(option_positions: List[Dict[str, Any]]) -> set:
+    """Underlyings with an open short put (CSP) — do not add extra stock into those."""
+    out = set()
+    for pos in option_positions or []:
+        if str(pos.get("side") or "").lower() != "short":
+            continue
+        parsed = parse_occ_symbol(str(pos.get("symbol") or ""))
+        otype = str((parsed or {}).get("option_type") or pos.get("option_type") or "").lower()
+        if otype != "put":
+            continue
+        und = (parsed or {}).get("underlying") or str(pos.get("underlying") or "").upper()
+        if und:
+            out.add(str(und).upper())
     return out
 
 

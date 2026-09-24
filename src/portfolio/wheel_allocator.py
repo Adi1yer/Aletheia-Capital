@@ -44,6 +44,7 @@ def allocate_wheel_hybrid_book(
     add_lot_min_score: float = 0.55,
     pending_orders_by_symbol: Optional[Dict[str, Dict[str, Any]]] = None,
     short_option_underlyings: Optional[Set[str]] = None,
+    short_put_underlyings: Optional[Set[str]] = None,
     preflight_ok: Optional[Set[str]] = None,
     uncovered_unwind: Optional[Set[str]] = None,
     csp_reserve_frac: float = 0.20,
@@ -66,8 +67,9 @@ def allocate_wheel_hybrid_book(
     if eq <= 0:
         eq = float(getattr(portfolio, "cash", 0) or 0)
     cash = float(getattr(portfolio, "cash", 0) or 0)
-    pending = pending_orders_by_symbol or {}
+    pending = {str(k).upper(): (v or {}) for k, v in (pending_orders_by_symbol or {}).items()}
     short_und = {str(x).upper() for x in (short_option_underlyings or set())}
+    short_puts = {str(x).upper() for x in (short_put_underlyings or set())}
 
     # Pending equity buys already commit cash/BP — do not double-spend.
     pending_buy_notional = 0.0
@@ -260,12 +262,16 @@ def allocate_wheel_hybrid_book(
             continue
         if act0 == "buy" and "add-on" not in str(getattr(decisions.get(t), "reasoning", "") or ""):
             continue
-        px = _finite_px(current_prices.get(t))
+        px = _finite_px(current_prices.get(t) or current_prices.get(str(t).upper()))
         if px <= 0 or px > float(max_underlying_price):
             continue
         held = held_qty(t)
+        pending_sell = int((pending.get(str(t).upper()) or pending.get(t) or {}).get("sell_qty", 0) or 0)
         # Add-on only after a lot is already on the book (not the same-session first buy).
-        if held < CC_LOT:
+        if held - pending_sell < CC_LOT:
+            continue
+        if str(t).upper() in short_puts:
+            diagnostics["skipped"].append({"ticker": t, "reason": "add_lot_blocked_short_put"})
             continue
         raw_score = score_by_ticker.get(str(t).upper())
         try:
@@ -287,11 +293,11 @@ def allocate_wheel_hybrid_book(
         if preflight is not None and t not in preflight:
             diagnostics["skipped"].append({"ticker": t, "reason": "preflight_failed_extra"})
             continue
-        pending_buy = int((pending.get(t) or {}).get("buy_qty", 0) or 0)
+        pending_buy = int((pending.get(str(t).upper()) or pending.get(t) or {}).get("buy_qty", 0) or 0)
         planned = 0
         added_here = 0
         while True:
-            have = held + pending_buy + planned
+            have = held + pending_buy + planned - pending_sell
             if have + CC_LOT > max_shares:
                 if added_here == 0:
                     diagnostics["skipped"].append({"ticker": t, "reason": "max_lots_per_name"})

@@ -204,7 +204,7 @@ def test_uncovered_excess_shares_trims_only_extra_lot():
     assert uncovered_excess_shares(100, 1) == 0
     assert uncovered_excess_shares(200, 2) == 0
     assert uncovered_excess_shares(200, 0) == 0
-    assert uncovered_excess_shares(150, 1) == 0
+    assert uncovered_excess_shares(150, 1) == 50
 
 
 def test_underhedge_trim_orders_keeps_covered_lot():
@@ -295,9 +295,9 @@ def test_underhedge_trim_credits_session_fill_when_broker_shorts_stale():
             "underlying": "F",
         }
     ]
-    # Live book still shows 1 short, but this session already wrote the extra call.
+    # Inferred floor is prior + filled (1+1), not live + filled.
     assert underhedge_trim_orders(
-        port, stale_opts, extra_short_calls={"F": 1}
+        port, stale_opts, extra_short_calls={"F": 2}
     ) == []
 
     class StaleBroker:
@@ -318,11 +318,57 @@ def test_underhedge_trim_credits_session_fill_when_broker_shorts_stale():
             "underlying": "F",
             "status": "executed",
             "contracts": 1,
+            "prior_short_calls": 1,
             "contract_symbol": "F260918C00013000",
         }
     ]
     apply_underhedge_trims(StaleBroker(), {"F": 12.0}, results)
     assert not any(r.get("status") == "underhedge_trim" for r in results)
+
+
+def test_underhedge_trim_still_sells_leftover_lot_after_partial_extra_write():
+    from src.options.covered_calls import apply_underhedge_trims
+
+    class LiveBroker:
+        def __init__(self):
+            self.sold = []
+
+        def sync_portfolio(self):
+            return Portfolio(cash=0, positions={"F": Position(long=300)})
+
+        def get_option_positions(self):
+            return [
+                {
+                    "symbol": "F260918C00012000",
+                    "side": "short",
+                    "qty": 2,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def get_open_orders(self, limit=100):
+            return []
+
+        def execute_order(self, ticker, decision, current_price=None):
+            self.sold.append((ticker, decision.quantity))
+            return {"order_id": "oid-2"}
+
+        def wait_for_order_fill(self, order_id, timeout_s=60.0, min_filled_qty=0):
+            return {"ok": True, "order_id": order_id}
+
+    broker = LiveBroker()
+    results = [
+        {
+            "underlying": "F",
+            "status": "partial",
+            "contracts": 1,
+            "prior_short_calls": 1,
+        }
+    ]
+    apply_underhedge_trims(broker, {"F": 12.0}, results)
+    # live=2 already includes the session fill; do not double-count to 3.
+    assert broker.sold == [("F", 100)]
 
 
 def test_underhedge_trim_credits_working_short_call_order():
@@ -859,6 +905,82 @@ def test_allocate_adds_second_lot_when_score_high():
     assert "F" in (diag.get("extra_lot_adds") or [])
     assert decisions["SOFI"].action == "buy"
     assert decisions["SOFI"].quantity == 100
+
+
+def test_allocate_blocks_extra_lot_when_short_put_open():
+    portfolio = Portfolio(
+        cash=5000.0,
+        positions={"F": Position(long=100, long_cost_basis=12.0)},
+    )
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 11.0},
+        wheel_candidates=[WheelCandidate("F", 11.0, 80_000_000, 500, 0.80)],
+        directional_candidates=[],
+        equity=10000.0,
+        add_lot_min_score=0.55,
+        short_option_underlyings={"F"},
+        short_put_underlyings={"F"},
+        preflight_ok={"F"},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert getattr(decisions.get("F"), "action", None) != "buy"
+    assert any(s.get("reason") == "add_lot_blocked_short_put" for s in diag.get("skipped") or [])
+
+
+def test_allocate_extra_lot_skips_when_pending_sell_breaks_lot():
+    portfolio = Portfolio(
+        cash=5000.0,
+        positions={"F": Position(long=200, long_cost_basis=12.0)},
+    )
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 11.0},
+        wheel_candidates=[WheelCandidate("F", 11.0, 80_000_000, 500, 0.80)],
+        directional_candidates=[],
+        equity=10000.0,
+        add_lot_min_score=0.55,
+        preflight_ok={"F"},
+        pending_orders_by_symbol={"F": {"buy_qty": 0, "sell_qty": 120}},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert "F" not in (diag.get("extra_lot_adds") or [])
+    assert getattr(decisions.get("F"), "action", None) != "buy"
+
+
+def test_select_contract_widens_band_when_floor_above_hi():
+    from src.options.covered_calls import CoveredCallManager
+
+    mgr = CoveredCallManager(
+        min_premium_usd=1.0,
+        min_premium_pct=0.0,
+        otm_pct_low=0.03,
+        otm_pct_high=0.08,
+        target_otm_pct=0.05,
+    )
+    captured = {}
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            captured.update(kwargs)
+            return [
+                {
+                    "symbol": "F261016C00013320",
+                    "strike": 13.32,
+                    "expiry": "2026-10-16",
+                    "tradable": True,
+                    "mid_price": 0.20,
+                }
+            ]
+
+    contract, reason = mgr.select_contract(
+        "F", 12.0, 55, _Broker(), strike_floor_otm=0.10
+    )
+    assert contract is not None, reason
+    assert captured["strike_gte"] > 12.0 * 1.08
+    assert captured["strike_lte"] >= 12.0 * 1.12
 
 
 def test_allocate_extra_lot_uses_full_wheel_sleeve_not_csp_reserve():

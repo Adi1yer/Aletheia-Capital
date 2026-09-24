@@ -48,11 +48,8 @@ def _option_qty(op: Optional[Dict]) -> int:
         return 1
 
 
-def _session_short_call_credits(
-    cc_results: Optional[List[Dict]] = None,
-    open_orders: Optional[List[Dict]] = None,
-) -> Dict[str, int]:
-    """Short calls this session already filled or still working (OCC sell-to-open)."""
+def _inferred_short_floors(cc_results: Optional[List[Dict]] = None) -> Dict[str, int]:
+    """Min shorts implied by this session's writes: prior + filled (not live + filled)."""
     out: Dict[str, int] = {}
     for r in cc_results or []:
         st = str(r.get("status") or "")
@@ -61,34 +58,42 @@ def _session_short_call_credits(
         und = str(r.get("underlying") or "").upper()
         try:
             n = int(r.get("contracts") or 0)
+            prior = int(r.get("prior_short_calls") or 0)
         except (TypeError, ValueError):
-            n = 0
-        if und and n > 0:
-            out[und] = out.get(und, 0) + n
-    if open_orders:
-        from src.options.wheel_lifecycle import parse_occ_symbol
+            n, prior = 0, 0
+        if und:
+            out[und] = max(out.get(und, 0), prior + max(0, n))
+    return out
 
-        terminal = {
-            "filled",
-            "canceled",
-            "cancelled",
-            "expired",
-            "rejected",
-            "replaced",
-            "done_for_day",
-        }
-        for o in open_orders:
-            if str(o.get("side") or "").lower() not in ("sell", "sell_short"):
-                continue
-            if str(o.get("status") or "").lower() in terminal:
-                continue
-            parsed = parse_occ_symbol(str(o.get("symbol") or ""))
-            if not parsed or parsed.get("option_type") != "call":
-                continue
-            und = str(parsed.get("underlying") or "").upper()
-            q = _option_qty(o)
-            if und and q > 0:
-                out[und] = out.get(und, 0) + q
+
+def _working_short_calls(open_orders: Optional[List[Dict]] = None) -> Dict[str, int]:
+    """Unfilled sell-to-open calls still working (do not trim under those)."""
+    out: Dict[str, int] = {}
+    if not open_orders:
+        return out
+    from src.options.wheel_lifecycle import parse_occ_symbol
+
+    terminal = {
+        "filled",
+        "canceled",
+        "cancelled",
+        "expired",
+        "rejected",
+        "replaced",
+        "done_for_day",
+    }
+    for o in open_orders:
+        if str(o.get("side") or "").lower() not in ("sell", "sell_short"):
+            continue
+        if str(o.get("status") or "").lower() in terminal:
+            continue
+        parsed = parse_occ_symbol(str(o.get("symbol") or ""))
+        if not parsed or parsed.get("option_type") != "call":
+            continue
+        und = str(parsed.get("underlying") or "").upper()
+        q = _option_qty(o)
+        if und and q > 0:
+            out[und] = out.get(und, 0) + q
     return out
 
 
@@ -283,7 +288,10 @@ class CoveredCallManager:
             ticker = str(t).upper().strip()
             if not ticker:
                 continue
-            px = float(current_prices.get(ticker) or 0.0)
+            px = _finite_px(
+                current_prices.get(ticker)
+                or current_prices.get(str(ticker).upper())
+            )
             if px <= 0:
                 fails[ticker] = "invalid_price"
                 continue
@@ -361,7 +369,12 @@ class CoveredCallManager:
             target = self.target_otm_pct
 
         if strike_floor_otm is not None:
-            lo = max(lo, float(strike_floor_otm))
+            floor = max(0.0, float(strike_floor_otm))
+            lo = max(lo, floor)
+            # Existing extra-lot shorts often sit near the top of the 3–8% band.
+            # Without widening, lo>hi → empty chain → skip → trim the new shares.
+            if lo > hi + 1e-12:
+                hi = lo + max(0.02, float(self.otm_pct_high) - float(self.otm_pct_low))
 
         strike_low = current_price * (1.0 + lo)
         strike_high = current_price * (1.0 + hi)
@@ -435,6 +448,20 @@ class CoveredCallManager:
         current_prices: Dict[str, float],
     ) -> List[Dict]:
         """End-to-end: identify positions, select contracts, submit sell-to-open orders."""
+        try:
+            live_port = broker.sync_portfolio()
+            if live_port is not None:
+                portfolio = live_port
+        except Exception:
+            pass
+        prices = {str(k).upper(): v for k, v in (current_prices or {}).items()}
+        scores = {}
+        for k, v in (cc_scores or {}).items():
+            try:
+                scores[str(k).upper()] = int(v or 0)
+            except (TypeError, ValueError):
+                scores[str(k).upper()] = 0
+
         existing_options = broker.get_option_positions()
 
         candidates = self.identify_callable_positions(
@@ -471,9 +498,9 @@ class CoveredCallManager:
                 )
 
         for cand in candidates:
-            ticker = cand["ticker"]
-            price = _finite_px(current_prices.get(ticker))
-            score = int(cc_scores.get(ticker, 0) or 0)
+            ticker = str(cand["ticker"] or "").upper()
+            price = _finite_px(prices.get(ticker))
+            score = int(scores.get(ticker, 0) or 0)
             if price <= 0:
                 results.append(
                     {"underlying": ticker, "status": "skipped", "reason": "invalid_price"}
@@ -553,6 +580,7 @@ class CoveredCallManager:
                         **decision.to_dict(),
                         "status": status,
                         "requested_contracts": lots,
+                        "prior_short_calls": have0,
                         "order": last_order,
                     }
                 )
@@ -640,7 +668,7 @@ def uncovered_excess_shares(shares: int, short_call_qty: int) -> int:
     """
     sh = int(shares or 0)
     sc = int(short_call_qty or 0)
-    if sc < 1 or sh < (sc + 1) * CC_LOT_SIZE:
+    if sc < 1 or sh <= sc * CC_LOT_SIZE:
         return 0
     return sh - sc * CC_LOT_SIZE
 
@@ -649,9 +677,18 @@ def underhedge_trim_orders(
     portfolio: "Portfolio",
     option_positions: Optional[List[Dict]],
     extra_short_calls: Optional[Dict[str, int]] = None,
+    working_short_calls: Optional[Dict[str, int]] = None,
 ) -> List[Tuple[str, int]]:
     have = short_call_qty_by_underlying(option_positions)
     for k, v in (extra_short_calls or {}).items():
+        und = str(k).upper()
+        try:
+            floor = int(v or 0)
+        except (TypeError, ValueError):
+            floor = 0
+        if und and floor:
+            have[und] = max(int(have.get(und, 0) or 0), floor)
+    for k, v in (working_short_calls or {}).items():
         und = str(k).upper()
         try:
             add = int(v or 0)
@@ -663,7 +700,7 @@ def underhedge_trim_orders(
     for t in (getattr(portfolio, "positions", None) or {}):
         qty = _long_qty(portfolio, t)
         extra = uncovered_excess_shares(qty, int(have.get(str(t).upper(), 0) or 0))
-        if extra >= CC_LOT_SIZE:
+        if extra > 0:
             out.append((str(t).upper(), extra))
     return out
 
@@ -689,11 +726,14 @@ def apply_underhedge_trims(
         except Exception as e:
             logger.warning("Open orders unavailable for underhedge credit", error=str(e))
 
-    extra = _session_short_call_credits(results, open_orders)
+    inferred = _inferred_short_floors(results)
+    working = _working_short_calls(open_orders)
     from src.portfolio.manager import PortfolioDecision
 
-    prices = current_prices or {}
-    for ticker, qty in underhedge_trim_orders(port, opts, extra_short_calls=extra):
+    prices = {str(k).upper(): v for k, v in (current_prices or {}).items()}
+    for ticker, qty in underhedge_trim_orders(
+        port, opts, extra_short_calls=inferred, working_short_calls=working
+    ):
         try:
             order = broker.execute_order(
                 ticker,
@@ -707,7 +747,9 @@ def apply_underhedge_trims(
             )
             fill = None
             ok = False
-            if order and hasattr(broker, "wait_for_order_fill"):
+            if isinstance(order, dict) and order.get("success") is False:
+                oid = ""
+            elif order and hasattr(broker, "wait_for_order_fill"):
                 oid = str(order.get("order_id") or order.get("id") or "")
                 if oid:
                     fill = broker.wait_for_order_fill(

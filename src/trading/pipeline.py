@@ -189,10 +189,11 @@ class TradingPipeline:
         # Build pending order quantities per symbol (for portfolio manager)
         pending_orders_by_symbol: Dict[str, Dict[str, int]] = {}
         for o in open_orders:
-            sym = (o.get("symbol") or "").strip()
+            sym = (o.get("symbol") or "").strip().upper()
             side = (o.get("side") or "").lower()
             qty = int(o.get("qty") or 0)
-            if not sym or qty <= 0:
+            # Equity pending only — OCC option symbols must not cap share adds.
+            if not sym or qty <= 0 or len(sym.replace(" ", "")) > 10:
                 continue
             if sym not in pending_orders_by_symbol:
                 pending_orders_by_symbol[sym] = {"buy_qty": 0, "sell_qty": 0}
@@ -717,6 +718,7 @@ class TradingPipeline:
                 from src.options.covered_calls import CoveredCallManager
                 from src.options.wheel_lifecycle import (
                     short_option_underlyings,
+                    short_put_underlyings,
                     sync_wheel_assignment_state,
                 )
                 from src.options.wheel_universe import screen_wheel_candidates
@@ -745,6 +747,7 @@ class TradingPipeline:
                     execute = False
                 else:
                     short_und = short_option_underlyings(opt_pos)
+                    short_puts = short_put_underlyings(opt_pos)
 
                     # Naked lots are fixed by CC write → atomic unwind (not pre-CC force sells).
                     uncovered_now: set = set()
@@ -848,6 +851,7 @@ class TradingPipeline:
                             max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
                             pending_orders_by_symbol=pending_orders_by_symbol,
                             short_option_underlyings=short_und,
+                            short_put_underlyings=short_puts,
                             preflight_ok=preflight_ok,
                             uncovered_unwind=uncovered_now,
                             csp_reserve_frac=float(run_config.get("csp_reserve_frac", 0.20)),
