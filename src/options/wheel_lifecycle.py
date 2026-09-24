@@ -682,6 +682,66 @@ def short_option_underlyings(option_positions: List[Dict[str, Any]]) -> set:
     return out
 
 
+def build_short_put_map(
+    portfolio: "Portfolio",
+    option_positions: List[Dict[str, Any]],
+    current_prices: Optional[Dict[str, float]] = None,
+) -> List[Dict[str, Any]]:
+    """Open short puts (CSPs): cash is the collateral until assignment."""
+    prices = current_prices or {}
+    rows: List[Dict[str, Any]] = []
+    for pos in option_positions or []:
+        if str(pos.get("side") or "").lower() != "short":
+            continue
+        parsed = parse_occ_symbol(str(pos.get("symbol") or ""))
+        if not parsed or parsed.get("option_type") != "put":
+            continue
+        und = str(parsed.get("underlying") or "").upper()
+        if not und:
+            continue
+        try:
+            q = abs(int(float(pos.get("qty")))) if pos.get("qty") is not None else 0
+        except (TypeError, ValueError):
+            q = 0
+        if q <= 0:
+            continue
+        try:
+            strike = float(parsed.get("strike") or 0.0)
+        except (TypeError, ValueError):
+            strike = 0.0
+        if strike != strike or strike <= 0:
+            continue
+        if hasattr(portfolio, "long_qty"):
+            shares = int(portfolio.long_qty(und) or 0)
+        else:
+            eq = (getattr(portfolio, "positions", None) or {}).get(und)
+            shares = int(getattr(eq, "long", 0) or 0) if eq else 0
+        try:
+            px = float(prices.get(und) or prices.get(str(und).upper()) or 0.0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px != px or px < 0:
+            px = 0.0
+        otm = ((px - strike) / px) * 100.0 if px > 0 else None
+        rows.append(
+            {
+                "ticker": und,
+                "contract": parsed.get("symbol"),
+                "strike": strike,
+                "expiry": parsed.get("expiry"),
+                "dte": dte_from_expiry(str(parsed.get("expiry") or "")),
+                "qty": q,
+                "collateral_usd": round(strike * 100.0 * q, 2),
+                "shares": shares,
+                "price": px,
+                "otm_pct": round(otm, 2) if otm is not None else None,
+                "coverage": "cash_secured" if shares < 100 else "shares_and_short_put",
+            }
+        )
+    rows.sort(key=lambda r: str(r.get("ticker") or ""))
+    return rows
+
+
 def short_put_underlyings(option_positions: List[Dict[str, Any]]) -> set:
     """Underlyings with an open short put (CSP) — do not add extra stock into those."""
     out = set()

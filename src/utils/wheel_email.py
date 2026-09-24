@@ -29,6 +29,21 @@ def _otm_label(row: dict) -> str:
     return f"{v}%"
 
 
+def _put_moneyness_label(row: dict) -> str:
+    """Puts: positive otm_pct is stock above strike (OTM); negative is ITM."""
+    if _f(row.get("price")) <= 0:
+        return "n/a"
+    otm = row.get("otm_pct")
+    if otm is None:
+        return "n/a"
+    v = _f(otm, default=float("nan"))
+    if not math.isfinite(v):
+        return "n/a"
+    if v >= 0:
+        return f"OTM={v}%"
+    return f"ITM={abs(v)}%"
+
+
 def _sleeve_mix(results: dict) -> Dict[str, Any]:
     port = results.get("portfolio") or {}
     prices = {}
@@ -337,6 +352,26 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
                 lines.append(f"      also {', '.join(bits)}")
     lines.append("")
 
+    # Open CSPs — cash is the hedge, not shares.
+    lines.append("OPEN SHORT PUTS (cash-secured)")
+    lines.append("-" * 40)
+    puts = results.get("short_put_map") or ws.get("short_put_map") or []
+    if results.get("coverage_unavailable") or ws.get("coverage_unavailable"):
+        lines.append("  (option positions unavailable — open puts not listed)")
+    elif not puts:
+        lines.append("  (none)")
+    for row in puts:
+        t = row.get("ticker")
+        shares = int(row.get("shares") or 0)
+        hedge = "cash (no shares)" if shares < 100 else f"{shares} sh also held"
+        lines.append(
+            f"  {t}: {int(row.get('qty') or 1)}x {row.get('contract')} "
+            f"strike ${_f(row.get('strike')):.2f} DTE={row.get('dte')} "
+            f"collateral ${_f(row.get('collateral_usd')):,.0f} | {hedge} "
+            f"{_put_moneyness_label(row)}"
+        )
+    lines.append("")
+
     # Directional compact
     lines.append("DIRECTIONAL SLEEVE")
     lines.append("-" * 40)
@@ -369,7 +404,7 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
 
     # Minimal HTML
     html_body = "<br>".join(
-        f"<b>{line}</b>" if line.startswith("ACTIONS") or line.startswith("COVERAGE") or line.startswith("DIRECTIONAL") or line.startswith("ALETHEIA") else line
+        f"<b>{line}</b>" if line.startswith("ACTIONS") or line.startswith("COVERAGE") or line.startswith("OPEN SHORT") or line.startswith("DIRECTIONAL") or line.startswith("ALETHEIA") else line
         for line in lines
     )
     html = f"""<!DOCTYPE html>

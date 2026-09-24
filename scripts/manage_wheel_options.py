@@ -31,6 +31,7 @@ def main() -> int:
     )
     from src.options.wheel_lifecycle import (
         build_coverage_map,
+        build_short_put_map,
         manage_or_roll_short_calls,
         short_option_underlyings,
         sync_wheel_assignment_state,
@@ -271,6 +272,9 @@ def main() -> int:
         prices,
         max_underlying_price=max_px,
     )
+    short_puts = [] if coverage_unavailable else build_short_put_map(
+        portfolio, opt_pos, prices
+    )
 
     btc = sum(1 for r in manage_results if r.get("status") == "btc_executed")
     rolls = sum(1 for r in manage_results if r.get("status") == "roll_executed")
@@ -324,9 +328,11 @@ def main() -> int:
             "wheel_manage_results": manage_results,
             "covered_call_results": cc_results,
             "coverage_map": coverage,
+            "short_put_map": short_puts,
             "coverage_unavailable": coverage_unavailable,
             "wheel_scorecard": {
                 "coverage_map": coverage,
+                "short_put_map": short_puts,
                 "coverage_unavailable": coverage_unavailable,
             },
             "decisions": {},

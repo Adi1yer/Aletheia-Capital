@@ -622,6 +622,8 @@ def test_wheel_daily_email_has_coverage_omits_agent_noise():
     assert "warren_buffett" not in text.lower()
     assert "Lane contributions" not in text
     assert "ALETHEIA DAILY WHEEL" in text
+    assert "OPEN SHORT PUTS" in text
+    assert "(none)" in text
 
 
 def test_wheel_daily_email_shows_multi_lot_calls_and_strips_enum():
@@ -669,6 +671,21 @@ def test_wheel_daily_email_shows_multi_lot_calls_and_strips_enum():
             "execution_results": {
                 "NTNX": {"status": "OrderStatus.PENDING_NEW"},
             },
+            "short_put_map": [
+                {
+                    "ticker": "NU",
+                    "contract": "NU261030P00013000",
+                    "strike": 13.0,
+                    "expiry": "2026-10-30",
+                    "dte": 36,
+                    "qty": 1,
+                    "collateral_usd": 1300.0,
+                    "shares": 0,
+                    "price": 13.8,
+                    "otm_pct": 5.8,
+                    "coverage": "cash_secured",
+                }
+            ],
             "wheel_scorecard": {"premium_ledger_usd": 281},
         }
     )
@@ -676,6 +693,10 @@ def test_wheel_daily_email_shows_multi_lot_calls_and_strips_enum():
     assert "also $12.50 10-23 x2" in text
     assert "pending_new" in text
     assert "OrderStatus" not in text
+    assert "OPEN SHORT PUTS" in text
+    assert "NU261030P00013000" in text
+    assert "cash (no shares)" in text
+    assert "collateral $1,300" in text
 
 
 def test_wheel_daily_email_ignores_nan_prices():
@@ -1482,6 +1503,23 @@ def test_coverage_map_sums_qty_and_flags_overhedged_naked():
     assert by_t["SOFI"]["coverage"] == "OVERHEDGED"
     assert by_t["ABEV"]["coverage"] == "NAKED_SHORT"
     assert "ABEV" not in portfolio.positions
+
+
+def test_short_put_map_lists_cash_secured_puts():
+    from src.options.wheel_lifecycle import build_short_put_map
+
+    portfolio = Portfolio(cash=5000.0, positions={})
+    rows = build_short_put_map(
+        portfolio,
+        [{"symbol": "NU261030P00013000", "side": "short", "qty": 1}],
+        {"NU": 13.8},
+    )
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "NU"
+    assert rows[0]["coverage"] == "cash_secured"
+    assert rows[0]["collateral_usd"] == 1300.0
+    assert rows[0]["shares"] == 0
+    assert rows[0]["otm_pct"] is not None and rows[0]["otm_pct"] > 0
 
 
 def test_overflow_lots_stay_cc_eligible():

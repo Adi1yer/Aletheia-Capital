@@ -1933,6 +1933,7 @@ class TradingPipeline:
 
         wheel_scorecard: Dict[str, Any] = {}
         coverage_map: List[Dict[str, Any]] = []
+        short_put_map: List[Dict[str, Any]] = []
         coverage_unavailable = False
         if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
             try:
@@ -1946,7 +1947,7 @@ class TradingPipeline:
             except Exception as e:
                 logger.warning("Wheel scorecard failed", error=str(e))
             try:
-                from src.options.wheel_lifecycle import build_coverage_map
+                from src.options.wheel_lifecycle import build_coverage_map, build_short_put_map
 
                 cov_prices = dict(latest_price_map or {})
                 cov_prices.update(current_prices or {})
@@ -1969,6 +1970,7 @@ class TradingPipeline:
                     coverage_unavailable = True
                 if coverage_unavailable:
                     coverage_map = []
+                    short_put_map = []
                     wheel_scorecard["coverage_unavailable"] = True
                 else:
                     for t, pos in (getattr(cov_port, "positions", None) or {}).items():
@@ -1983,7 +1985,9 @@ class TradingPipeline:
                         cov_prices,
                         max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
                     )
+                    short_put_map = build_short_put_map(cov_port, cov_opts, cov_prices)
                     wheel_scorecard["coverage_map"] = coverage_map
+                    wheel_scorecard["short_put_map"] = short_put_map
                     uncovered_n = sum(1 for r in coverage_map if r.get("coverage") == "UNCOVERED")
                     underhedged_n = sum(1 for r in coverage_map if r.get("coverage") == "UNDERHEDGED")
                     overhedged_n = sum(
@@ -2031,6 +2035,7 @@ class TradingPipeline:
             "wheel_state": wheel_state,
             "wheel_scorecard": wheel_scorecard,
             "coverage_map": coverage_map,
+            "short_put_map": short_put_map,
             "coverage_unavailable": coverage_unavailable,
             "execute_skipped_reason": run_config.get("execute_skipped_reason"),
             "wheel_mode": bool(run_config.get("wheel_mode")),
