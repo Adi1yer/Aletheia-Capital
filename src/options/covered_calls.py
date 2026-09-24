@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 
@@ -17,12 +18,16 @@ CC_LOT_SIZE = 100
 
 
 def _long_qty(portfolio: "Portfolio", ticker: str) -> int:
+    key = str(ticker or "").upper()
     if hasattr(portfolio, "long_qty"):
-        return int(portfolio.long_qty(ticker) or 0)
-    pos = (getattr(portfolio, "positions", None) or {}).get(ticker)
-    if pos is None:
-        pos = (getattr(portfolio, "positions", None) or {}).get(str(ticker).upper())
-    return int(getattr(pos, "long", 0) or 0) if pos else 0
+        qty = int(portfolio.long_qty(ticker) or 0)
+        if qty:
+            return qty
+        return int(portfolio.long_qty(key) or 0)
+    for k, pos in (getattr(portfolio, "positions", None) or {}).items():
+        if str(k).upper() == key:
+            return int(getattr(pos, "long", 0) or 0)
+    return 0
 
 
 def _finite_px(value) -> float:
@@ -30,7 +35,7 @@ def _finite_px(value) -> float:
         px = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if px != px or px <= 0:  # NaN != NaN
+    if not math.isfinite(px) or px <= 0:
         return 0.0
     return px
 
@@ -356,7 +361,11 @@ class CoveredCallManager:
         expiry_lte_days: int = 45,
         strike_floor_otm: Optional[float] = None,
     ) -> Tuple[Optional[Dict], str]:
-        if current_price <= 0:
+        try:
+            current_price = float(current_price)
+        except (TypeError, ValueError):
+            return None, "invalid_price"
+        if not math.isfinite(current_price) or current_price <= 0:
             return None, "invalid_price"
 
         if cc_score >= 55:
@@ -521,7 +530,10 @@ class CoveredCallManager:
         for cand in candidates:
             ticker = str(cand["ticker"] or "").upper()
             price = _finite_px(prices.get(ticker))
-            score = int(scores.get(ticker, 0) or 0)
+            try:
+                score = int(scores.get(ticker, 0) or 0)
+            except (TypeError, ValueError):
+                score = 0
             if price <= 0:
                 results.append(
                     {"underlying": ticker, "status": "skipped", "reason": "invalid_price"}
@@ -709,6 +721,7 @@ def cc_write_attempted_tickers(cc_results: Optional[List[Dict]] = None) -> Set[s
         "option_positions_unavailable",
         "option_chain_unavailable",
         "option_quotes_unavailable",
+        "invalid_price",
         "order submission failed or no coverage slots",
     )
     for r in cc_results or []:

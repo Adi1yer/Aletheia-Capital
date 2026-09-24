@@ -56,25 +56,38 @@ def main() -> int:
             v = float(value)
         except (TypeError, ValueError):
             return 0.0
-        if v != v or v <= 0:
+        if v != v or v <= 0 or v == float("inf") or v == float("-inf"):
             return 0.0
         return v
 
     prices: dict[str, float] = {}
     for t, p in positions.items():
+        tu = str(t).upper()
         qty = _px((p or {}).get("qty"))
         mv = _px((p or {}).get("market_value"))
         if qty > 0 and mv:
-            prices[t] = abs(mv) / qty
+            prices[tu] = abs(mv) / qty
         else:
             entry = _px((p or {}).get("avg_entry_price"))
             if entry > 0:
-                prices[t] = entry
+                prices[tu] = entry
     for t, pos in (portfolio.positions or {}).items():
-        if _px(prices.get(t)) <= 0:
+        tu = str(t).upper()
+        if _px(prices.get(tu)) <= 0:
             basis = _px(getattr(pos, "long_cost_basis", 0))
             if basis > 0:
-                prices[t] = basis
+                prices[tu] = basis
+    try:
+        from src.options.wheel_lifecycle import short_option_underlyings
+
+        opt_early = broker.get_option_positions() or []
+        need_px = [
+            u for u in short_option_underlyings(opt_early) if _px(prices.get(u)) <= 0
+        ]
+        if need_px and hasattr(broker, "get_last_equity_prices"):
+            prices.update(broker.get_last_equity_prices(need_px) or {})
+    except Exception as e:
+        logger.warning("Could not backfill prices for short-option underlyings", error=str(e))
 
     mgr = CoveredCallManager(
         min_premium_usd=float(os.getenv("CC_MIN_PREMIUM_USD", "15")),
@@ -85,17 +98,21 @@ def main() -> int:
         wait_fill=True,
     )
 
-    manage_results = manage_or_roll_short_calls(
-        broker,
-        prices,
-        mgr,
-        manage_dte_threshold=int(os.getenv("MANAGE_DTE_THRESHOLD", "7")),
-        manage_itm_pct=float(os.getenv("MANAGE_ITM_PCT", "0.02")),
-        profit_take_pct=float(os.getenv("CC_PROFIT_TAKE_PCT", "0.60")),
-        prefer_roll=True,
-        execute=execute,
-        cc_score=int(os.getenv("WHEEL_RULES_SCORE", "55")),
-    )
+    try:
+        manage_results = manage_or_roll_short_calls(
+            broker,
+            prices,
+            mgr,
+            manage_dte_threshold=int(os.getenv("MANAGE_DTE_THRESHOLD", "7")),
+            manage_itm_pct=float(os.getenv("MANAGE_ITM_PCT", "0.02")),
+            profit_take_pct=float(os.getenv("CC_PROFIT_TAKE_PCT", "0.60")),
+            prefer_roll=True,
+            execute=execute,
+            cc_score=int(os.getenv("WHEEL_RULES_SCORE", "55")),
+        )
+    except Exception as e:
+        logger.error("Afternoon manage/roll failed; continuing to CC", error=str(e))
+        manage_results = [{"status": "error", "reason": str(e)}]
     amb = [r for r in manage_results if r.get("status") == "ambiguous"]
     if amb:
         cands = {}
@@ -142,11 +159,11 @@ def main() -> int:
     cc_lots = []
     for t, pos in (portfolio.positions or {}).items():
         qty = int(getattr(pos, "long", 0) or 0)
-        px = _px(prices.get(t))
+        px = _px(prices.get(str(t).upper()) or prices.get(t))
         # Include every ≥100 lot so afternoon can cover an extra lot even if the
         # mark is missing (select_contract will skip if still unpriced).
         if qty >= 100:
-            cc_lots.append(t)
+            cc_lots.append(str(t).upper())
             if px <= 0:
                 logger.warning("Afternoon CC lot has no mark; still attempting write", ticker=t)
 
@@ -170,16 +187,30 @@ def main() -> int:
             logger.error("Option positions unavailable; skipping atomic unwind", error=str(e))
             short_now = None
         if short_now is not None:
+            try:
+                unwind_port = broker.sync_portfolio()
+            except Exception:
+                unwind_port = portfolio
             unwind = tickers_needing_atomic_unwind(
                 cc_results,
-                held_lot_tickers=cc_lots,
+                held_lot_tickers=[str(x).upper() for x in cc_lots],
                 short_option_underlyings=short_now,
             )
             for t in sorted(unwind):
                 qty = (
-                    int(portfolio.long_qty(t) or 0)
-                    if hasattr(portfolio, "long_qty")
-                    else int(getattr(portfolio.get_position(t), "long", 0) or 0)
+                    int(unwind_port.long_qty(t) or 0)
+                    if hasattr(unwind_port, "long_qty")
+                    else int(
+                        getattr(
+                            (getattr(unwind_port, "positions", None) or {}).get(t)
+                            or (getattr(unwind_port, "positions", None) or {}).get(
+                                str(t).upper()
+                            ),
+                            "long",
+                            0,
+                        )
+                        or 0
+                    )
                 )
                 if qty <= 0:
                     continue
@@ -192,7 +223,7 @@ def main() -> int:
                             confidence=90,
                             reasoning="Atomic CC unwind",
                         ),
-                        current_price=prices.get(t),
+                        current_price=_px(prices.get(t) or prices.get(str(t).upper())) or None,
                     )
                     fill = None
                     ok = False
@@ -277,7 +308,7 @@ def main() -> int:
 
         equity = float(getattr(portfolio, "cash", 0) or 0)
         for t, pos in (portfolio.positions or {}).items():
-            px = float(prices.get(t) or 0)
+            px = _px(prices.get(str(t).upper()) or prices.get(t))
             equity += int(getattr(pos, "long", 0) or 0) * px
         results = {
             "wheel_mode": True,

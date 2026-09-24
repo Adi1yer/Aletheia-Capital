@@ -27,7 +27,10 @@ def outstanding_short_put_collateral_usd(
         if not parsed or parsed.get("option_type") != "put":
             continue
         strike = float(parsed.get("strike") or 0.0)
-        qty = int(pos.get("qty") or 1)
+        try:
+            qty = int(pos.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
         if strike > 0 and qty > 0:
             total += strike * 100.0 * qty
     return total
@@ -53,7 +56,11 @@ class CashSecuredPutManager:
         csp_score: int,
         broker: "AlpacaBroker",
     ) -> Optional[Dict]:
-        if current_price <= 0:
+        try:
+            current_price = float(current_price)
+        except (TypeError, ValueError):
+            return None
+        if current_price != current_price or current_price <= 0 or current_price == float("inf"):
             return None
 
         if csp_score >= 55:
@@ -81,13 +88,23 @@ class CashSecuredPutManager:
             return None
 
         tradable = [c for c in contracts if c.get("tradable", True)] or contracts
+        if hasattr(broker, "enrich_option_quotes"):
+            try:
+                broker.enrich_option_quotes(tradable)
+            except Exception:
+                pass
+        from src.options.covered_calls import _contract_premium_usd
+
+        if tradable and all(_contract_premium_usd(c) <= 0 for c in tradable):
+            logger.info("Put quotes unavailable", underlying=underlying)
+            return None
         target = current_price * (0.94 if csp_score >= 55 else 0.91)
-        tradable.sort(key=lambda c: (abs(c["strike"] - target), c["expiry"]))
+        tradable.sort(key=lambda c: (abs(float(c.get("strike") or 0) - target), str(c.get("expiry") or "")))
 
         today = date.today()
         for best in tradable:
-            collateral = best["strike"] * 100
-            est_prem = float(best.get("close_price", 0.0) or 0.0) * 100
+            collateral = float(best.get("strike") or 0) * 100
+            est_prem = _contract_premium_usd(best)
             if est_prem < self.min_premium_usd:
                 continue
             try:
@@ -122,24 +139,38 @@ class CashSecuredPutManager:
         option_positions: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         results: List[Dict] = []
-        seeded = float(collateral_already_used_usd or 0.0)
+        try:
+            seeded = float(collateral_already_used_usd or 0.0)
+        except (TypeError, ValueError):
+            seeded = 0.0
+        if seeded != seeded or seeded < 0 or seeded == float("inf"):
+            seeded = 0.0
         if option_positions is not None and seeded <= 0:
             seeded = outstanding_short_put_collateral_usd(option_positions)
         collateral_used = seeded
         for underlying in csp_tickers:
-            price = float(current_prices.get(underlying) or 0.0)
-            score = int(csp_scores.get(underlying, 0))
+            und = str(underlying or "").upper()
+            try:
+                price = float(current_prices.get(und) or current_prices.get(underlying) or 0.0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price != price or price <= 0 or price == float("inf"):
+                price = 0.0
+            try:
+                score = int(csp_scores.get(und, csp_scores.get(underlying, 0)) or 0)
+            except (TypeError, ValueError):
+                score = 0
             if price <= 0 or score < 40:
                 continue
-            contract = self.select_put_contract(underlying, price, score, broker)
+            contract = self.select_put_contract(und, price, score, broker)
             if not contract:
-                results.append({"underlying": underlying, "status": "skipped", "reason": "no contract"})
+                results.append({"underlying": und, "status": "skipped", "reason": "no contract"})
                 continue
             needed = float(contract["strike"]) * 100.0
             if max_collateral_usd is not None and collateral_used + needed > float(max_collateral_usd):
                 results.append(
                     {
-                        "underlying": underlying,
+                        "underlying": und,
                         "status": "skipped",
                         "reason": f"csp_collateral_cap_{collateral_used + needed:.0f}>{max_collateral_usd:.0f}",
                     }
@@ -156,7 +187,9 @@ class CashSecuredPutManager:
             ok = bool(order) and order.get("fill_ok") is True
             if ok:
                 collateral_used += needed
-                est_prem = float(contract.get("close_price") or 0.0) * 100.0
+                from src.options.covered_calls import _contract_premium_usd
+
+                est_prem = _contract_premium_usd(contract)
                 try:
                     fill = (order or {}).get("fill") or {}
                     avg = float(fill.get("filled_avg_price") or order.get("filled_avg_price") or 0.0)
@@ -165,7 +198,7 @@ class CashSecuredPutManager:
                 except (TypeError, ValueError):
                     pass
                 results.append({
-                    "underlying": underlying,
+                    "underlying": und,
                     "status": "executed",
                     "contract_symbol": contract["symbol"],
                     "strike": contract["strike"],
@@ -178,7 +211,7 @@ class CashSecuredPutManager:
             else:
                 results.append(
                     {
-                        "underlying": underlying,
+                        "underlying": und,
                         "status": "failed",
                         "reason": "order_or_fill",
                         "order": order,

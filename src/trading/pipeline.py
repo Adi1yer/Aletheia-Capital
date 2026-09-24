@@ -37,7 +37,7 @@ def _prices_from_risk(risk_analysis: Dict[str, Any]) -> Dict[str, float]:
             continue
         px = _finite_price(row.get("current_price"))
         if px is not None:
-            out[t] = px
+            out[str(t).upper()] = px
     return out
 
 
@@ -191,7 +191,15 @@ class TradingPipeline:
         for o in open_orders:
             sym = (o.get("symbol") or "").strip().upper()
             side = (o.get("side") or "").lower()
-            qty = int(o.get("qty") or 0)
+            try:
+                qty = int(float(o.get("qty") or 0))
+            except (TypeError, ValueError):
+                qty = 0
+            try:
+                filled = int(float(o.get("filled_qty") or 0))
+            except (TypeError, ValueError):
+                filled = 0
+            qty = max(0, qty - max(0, filled))
             # Equity pending only — OCC option symbols must not cap share adds.
             if not sym or qty <= 0 or len(sym.replace(" ", "")) > 10:
                 continue
@@ -780,6 +788,13 @@ class TradingPipeline:
                         if self.broker and wheel_cands:
                             try:
                                 probe = [c.ticker for c in wheel_cands]
+                                seen_probe = {str(x).upper() for x in probe}
+                                for t, pos in (getattr(portfolio, "positions", None) or {}).items():
+                                    if int(getattr(pos, "long", 0) or 0) >= 100:
+                                        tu = str(t).upper()
+                                        if tu and tu not in seen_probe:
+                                            probe.append(tu)
+                                            seen_probe.add(tu)
                                 preflight_ok, preflight_fails = cc_mgr_for_roll.preflight_tickers(
                                     probe,
                                     current_prices,
@@ -823,16 +838,31 @@ class TradingPipeline:
                             equity_now = float(getattr(portfolio, "_broker_equity", 0) or 0)
                         except Exception:
                             equity_now = 0.0
-                        if equity_now <= 0 and hasattr(portfolio, "get_equity"):
+                        if not math.isfinite(equity_now) or equity_now <= 0:
+                            if hasattr(portfolio, "get_equity"):
+                                try:
+                                    equity_now = float(portfolio.get_equity(current_prices) or 0)
+                                except Exception:
+                                    equity_now = 0.0
+                        if not math.isfinite(equity_now) or equity_now <= 0:
+                            cash_now = 0.0
                             try:
-                                equity_now = float(portfolio.get_equity(current_prices) or 0)
-                            except Exception:
-                                equity_now = 0.0
-                        if equity_now <= 0:
-                            equity_now = float(getattr(portfolio, "cash", 0) or 0) + sum(
-                                int(getattr(pos, "long", 0) or 0) * float(current_prices.get(t) or 0)
-                                for t, pos in (portfolio.positions or {}).items()
-                            )
+                                cash_now = float(getattr(portfolio, "cash", 0) or 0)
+                            except (TypeError, ValueError):
+                                cash_now = 0.0
+                            if not math.isfinite(cash_now):
+                                cash_now = 0.0
+                            mv = 0.0
+                            for t, pos in (portfolio.positions or {}).items():
+                                px = _finite_price(
+                                    current_prices.get(t) or current_prices.get(str(t).upper())
+                                )
+                                if px is None:
+                                    continue
+                                mv += int(getattr(pos, "long", 0) or 0) * px
+                            equity_now = cash_now + mv
+                        if not math.isfinite(equity_now) or equity_now <= 0:
+                            equity_now = 0.0
 
                         decisions, wheel_diag = allocate_wheel_hybrid_book(
                             portfolio=portfolio,
@@ -1125,10 +1155,18 @@ class TradingPipeline:
                         oid = str(res.get("order_id") or res.get("id") or "")
                         if not oid:
                             continue
+                        need_fill = int(getattr(dec, "quantity", 0) or 0)
+                        prev_fill = res.get("fill") if isinstance(res.get("fill"), dict) else {}
+                        try:
+                            prev_qty = int(prev_fill.get("filled_qty") or 0)
+                        except (TypeError, ValueError):
+                            prev_qty = 0
+                        if prev_fill.get("ok") and (not need_fill or prev_qty >= need_fill):
+                            continue
                         fill = self.broker.wait_for_order_fill(
                             oid,
                             timeout_s=float(run_config.get("lot_fill_timeout_s", 60)),
-                            min_filled_qty=int(getattr(dec, "quantity", 0) or 0) or None,
+                            min_filled_qty=need_fill or None,
                         )
                         res["fill"] = fill
                         if not fill.get("ok"):
@@ -1179,7 +1217,11 @@ class TradingPipeline:
 
         latest_price_map = _prices_from_risk(risk_analysis)
         try:
-            for t in latest_price_map.keys():
+            for t in list(latest_price_map.keys()):
+                # Fill gaps only. Overwriting a live mark with the last daily
+                # close (often yesterday at 10:30 ET) mis-strikes CCs / BTC.
+                if _finite_price(latest_price_map.get(t)) is not None:
+                    continue
                 px = self.data_provider.get_prices(
                     t,
                     (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
@@ -1190,6 +1232,13 @@ class TradingPipeline:
                     latest_price_map[t] = close_px
         except Exception:
             pass
+        for raw_t, pos in (getattr(portfolio, "positions", None) or {}).items():
+            tu = str(raw_t).upper()
+            if _finite_price(latest_price_map.get(tu) or latest_price_map.get(raw_t)) is not None:
+                continue
+            basis = _finite_price(getattr(pos, "long_cost_basis", 0))
+            if basis is not None:
+                latest_price_map[tu] = basis
 
         # 8b. Covered call execution (after equity trades settle)
         cc_results: List[Dict] = []
@@ -1245,9 +1294,15 @@ class TradingPipeline:
                         target_otm_pct=float(run_config.get("cc_target_otm_pct", 0.05)),
                         wait_fill=True,
                     )
+                    px_manage: Dict[str, float] = {}
+                    for src in (current_prices, latest_price_map):
+                        for k, v in (src or {}).items():
+                            fv = _finite_price(v)
+                            if fv is not None:
+                                px_manage[str(k).upper()] = fv
                     wheel_manage_results = manage_or_roll_short_calls(
                         self.broker,
-                        latest_price_map or current_prices,
+                        px_manage,
                         cc_mgr_roll,
                         manage_dte_threshold=int(run_config.get("manage_dte_threshold", 7)),
                         manage_itm_pct=float(run_config.get("manage_itm_pct", 0.02)),
@@ -1287,11 +1342,13 @@ class TradingPipeline:
                         except Exception as e:
                             logger.warning("CC agent overlay failed", error=str(e))
                     # Ensure BTCed names are CC-eligible this session.
+                    seen_cc = {str(x).upper() for x in cc_lot_tickers}
                     for r in wheel_manage_results:
                         if str(r.get("status") or "") == "btc_executed":
                             und = str(r.get("underlying") or "").upper()
-                            if und and und not in cc_lot_tickers:
+                            if und and und not in seen_cc:
                                 cc_lot_tickers.append(und)
+                                seen_cc.add(und)
                     try:
                         self.broker.sync_portfolio()
                     except Exception as e:
@@ -1405,7 +1462,17 @@ class TradingPipeline:
                             qty = (
                                 int(unwind_port.long_qty(t) or 0)
                                 if hasattr(unwind_port, "long_qty")
-                                else int(getattr(unwind_port.get_position(t), "long", 0) or 0)
+                                else int(
+                                    getattr(
+                                        (getattr(unwind_port, "positions", None) or {}).get(t)
+                                        or (getattr(unwind_port, "positions", None) or {}).get(
+                                            str(t).upper()
+                                        ),
+                                        "long",
+                                        0,
+                                    )
+                                    or 0
+                                )
                             )
                             if qty <= 0:
                                 continue
@@ -1510,21 +1577,36 @@ class TradingPipeline:
                     ),
                 )
                 wd = run_config.get("wheel_diagnostics") or {}
-                eq = float(wd.get("equity") or 0.0)
-                if eq <= 0 and self.broker:
-                    try:
-                        eq = float((self.broker.get_account() or {}).get("equity") or 0.0)
-                    except Exception:
-                        eq = 0.0
+                try:
+                    eq = float(wd.get("equity") or 0.0)
+                except (TypeError, ValueError):
+                    eq = 0.0
+                if not math.isfinite(eq) or eq <= 0:
+                    if self.broker:
+                        try:
+                            eq = float((self.broker.get_account() or {}).get("equity") or 0.0)
+                        except Exception:
+                            eq = 0.0
+                if not math.isfinite(eq) or eq <= 0:
+                    eq = 0.0
                 pct = float(run_config.get("max_csp_collateral_pct", 0.45))
+                if not math.isfinite(pct) or pct <= 0:
+                    pct = 0.0
                 pct_cap = eq * pct if eq > 0 and pct > 0 else 0.0
-                reserve_cap = float(wd.get("csp_collateral_reserve") or 0.0)
+                try:
+                    reserve_cap = float(wd.get("csp_collateral_reserve") or 0.0)
+                except (TypeError, ValueError):
+                    reserve_cap = 0.0
+                if not math.isfinite(reserve_cap):
+                    reserve_cap = 0.0
                 if reserve_cap <= 0 and eq > 0:
                     reserve_cap = eq * float(run_config.get("wheel_pct", 0.70)) * float(
                         run_config.get("csp_reserve_frac", 0.20)
                     )
                 # Policy max is equity × max_csp_collateral_pct (not the thin reserve floor).
                 csp_cap_f = pct_cap if pct_cap > 0 else reserve_cap
+                if not math.isfinite(csp_cap_f) or csp_cap_f < 0:
+                    csp_cap_f = 0.0
                 opt_now = []
                 try:
                     opt_now = self.broker.get_option_positions() or []
@@ -1564,15 +1646,23 @@ class TradingPipeline:
                         run_config["wheel_diagnostics"]["csp_outstanding_collateral_usd"] = round(
                             float(outstanding or 0), 2
                         )
-                    csp_results = csp_mgr.execute_cash_secured_puts(
-                        broker=self.broker,
-                        csp_tickers=csp_lot_tickers,
-                        csp_scores=csp_scores_map,
-                        current_prices=latest_price_map,
-                        max_collateral_usd=csp_cap_f if csp_cap_f > 0 else None,
-                        wait_fill=True,
-                        option_positions=opt_now,
-                    )
+                    if csp_cap_f <= 0:
+                        csp_results = [
+                            {
+                                "status": "skipped",
+                                "reason": "csp_collateral_cap_unknown_or_zero",
+                            }
+                        ]
+                    else:
+                        csp_results = csp_mgr.execute_cash_secured_puts(
+                            broker=self.broker,
+                            csp_tickers=csp_lot_tickers,
+                            csp_scores=csp_scores_map,
+                            current_prices=latest_price_map,
+                            max_collateral_usd=csp_cap_f,
+                            wait_fill=True,
+                            option_positions=opt_now,
+                        )
             except Exception as e:
                 logger.error("CSP step failed (non-fatal)", error=str(e))
                 csp_results = [{"status": "error", "reason": str(e)}]
@@ -1782,17 +1872,35 @@ class TradingPipeline:
             else portfolio.model_dump()
         )
         # Prefer broker equity (not BP-haircut cash) for sleeve % and email.
-        broker_eq = float(getattr(portfolio, "_broker_equity", 0) or 0)
-        raw_cash = float(getattr(portfolio, "_raw_cash", 0) or 0)
+        try:
+            broker_eq = float(getattr(portfolio, "_broker_equity", 0) or 0)
+        except (TypeError, ValueError):
+            broker_eq = 0.0
+        if not math.isfinite(broker_eq):
+            broker_eq = 0.0
+        try:
+            raw_cash = float(getattr(portfolio, "_raw_cash", 0) or 0)
+        except (TypeError, ValueError):
+            raw_cash = 0.0
+        if not math.isfinite(raw_cash):
+            raw_cash = 0.0
         if broker_eq > 0:
             equity = broker_eq
         else:
-            equity = float(port_dict.get("cash", 0))
+            try:
+                equity = float(port_dict.get("cash", 0) or 0)
+            except (TypeError, ValueError):
+                equity = 0.0
+            if not math.isfinite(equity):
+                equity = 0.0
             for ticker, pos in (port_dict.get("positions") or {}).items():
-                price = _finite_price((risk_analysis.get(ticker) or {}).get("current_price"))
+                ra = (risk_analysis.get(ticker) or risk_analysis.get(str(ticker).upper()) or {})
+                price = _finite_price(ra.get("current_price"))
                 if price is None:
                     price = _finite_price(pos.get("long_cost_basis") or pos.get("short_cost_basis")) or 0.0
                 equity += (pos.get("long", 0) * price) - (pos.get("short", 0) * price)
+            if not math.isfinite(equity):
+                equity = 0.0
         port_dict["equity"] = round(equity, 2)
         if broker_eq > 0:
             port_dict["broker_equity"] = round(broker_eq, 2)

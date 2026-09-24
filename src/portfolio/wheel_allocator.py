@@ -58,15 +58,30 @@ def allocate_wheel_hybrid_book(
     - ``preflight_ok``: only open *new* lots for tickers that passed option preflight.
     - ``uncovered_unwind``: force-sell 100-share lots that failed CC write (atomic rule).
     """
-    eq = float(equity if equity is not None else 0.0)
-    if eq <= 0 and hasattr(portfolio, "get_equity"):
+    try:
+        eq = float(equity if equity is not None else 0.0)
+    except (TypeError, ValueError):
+        eq = 0.0
+    if not math.isfinite(eq) or eq <= 0:
+        if hasattr(portfolio, "get_equity"):
+            try:
+                eq = float(portfolio.get_equity(current_prices) or 0.0)
+            except Exception:
+                eq = 0.0
+    if not math.isfinite(eq) or eq <= 0:
         try:
-            eq = float(portfolio.get_equity(current_prices) or 0.0)
-        except Exception:
+            eq = float(getattr(portfolio, "cash", 0) or 0)
+        except (TypeError, ValueError):
             eq = 0.0
-    if eq <= 0:
-        eq = float(getattr(portfolio, "cash", 0) or 0)
-    cash = float(getattr(portfolio, "cash", 0) or 0)
+    if not math.isfinite(eq) or eq <= 0:
+        eq = 0.0
+    try:
+        cash = float(getattr(portfolio, "cash", 0) or 0)
+    except (TypeError, ValueError):
+        cash = 0.0
+    if not math.isfinite(cash):
+        cash = 0.0
+    cash = max(0.0, cash)
     pending = {str(k).upper(): (v or {}) for k, v in (pending_orders_by_symbol or {}).items()}
     short_und = {str(x).upper() for x in (short_option_underlyings or set())}
     short_puts = {str(x).upper() for x in (short_put_underlyings or set())}
@@ -128,7 +143,7 @@ def allocate_wheel_hybrid_book(
                 {"ticker": t, "reason": "unwind_blocked_open_short_option"}
             )
             continue
-        px = _finite_px(current_prices.get(t))
+        px = _finite_px(current_prices.get(t) or current_prices.get(str(t).upper()))
         decisions[t] = PortfolioDecision(
             action="sell",
             quantity=qty,
@@ -144,13 +159,19 @@ def allocate_wheel_hybrid_book(
     soft_max = float(max_underlying_price) * 1.25
     existing_wheel: List[str] = []
     graduated_lots: List[str] = []  # ≥100 shares above soft max — still CC-eligible, never orphan
-    for t, pos in list((portfolio.positions or {}).items()):
+    for raw_t, pos in list((portfolio.positions or {}).items()):
+        t = str(raw_t).upper()
         if t in unwind_set or t in decisions:
             continue
         qty = int(getattr(pos, "long", 0) or 0)
-        px = _finite_px(current_prices.get(t))
-        if qty >= CC_LOT and px > 0:
-            if px <= soft_max:
+        px = _finite_px(current_prices.get(t) or current_prices.get(raw_t))
+        if px <= 0:
+            px = _finite_px(getattr(pos, "long_cost_basis", 0))
+        if qty >= CC_LOT:
+            # Missing mark must not drop a 100-lot out of keep (orphan-sell).
+            if px <= 0:
+                existing_wheel.append(t)
+            elif px <= soft_max:
                 existing_wheel.append(t)
             else:
                 graduated_lots.append(t)
@@ -163,7 +184,12 @@ def allocate_wheel_hybrid_book(
             continue
         if math.isfinite(sc):
             score_by_ticker[str(c.ticker).upper()] = sc
-    ranked_new = [c.ticker for c in wheel_candidates if c.ticker not in existing_wheel]
+    existing_u = {str(x).upper() for x in existing_wheel}
+    ranked_new = [
+        str(c.ticker).upper()
+        for c in wheel_candidates
+        if str(c.ticker).upper() not in existing_u
+    ]
     if preflight is not None:
         ranked_new = [t for t in ranked_new if t in preflight]
     # Name count is not a hard stop — fill the 70% sleeve. Prefer existing lots, then score rank.
@@ -179,7 +205,12 @@ def allocate_wheel_hybrid_book(
 
     wheel_spent = 0.0
     for t in existing_wheel + graduated_lots:
-        px = _finite_px(current_prices.get(t))
+        px = _finite_px(current_prices.get(t) or current_prices.get(str(t).upper()))
+        if px <= 0:
+            pos = (getattr(portfolio, "positions", None) or {}).get(t) or (
+                getattr(portfolio, "positions", None) or {}
+            ).get(str(t).upper())
+            px = _finite_px(getattr(pos, "long_cost_basis", 0)) if pos else 0.0
         qty = held_qty(t)
         wheel_spent += qty * px
 
@@ -344,7 +375,7 @@ def allocate_wheel_hybrid_book(
         if held_qty(t) >= CC_LOT:
             diagnostics["cc_lot_tickers"].append(t)
             continue
-        if t in short_und:
+        if str(t).upper() in short_und:
             continue
         if t not in diagnostics["csp_candidates"]:
             diagnostics["csp_candidates"].append(t)
@@ -367,7 +398,11 @@ def allocate_wheel_hybrid_book(
 
     # Directional sleeve: residual cash only after wheel buys + buffer + CSP reserve.
     wheel_set = set(wheel_targets) | set(diagnostics["cc_lot_tickers"])
-    dir_names = [t for t in directional_candidates if t not in wheel_set][: int(max_directional_names)]
+    dir_names = [
+        str(t).upper()
+        for t in directional_candidates
+        if str(t).upper() not in {str(x).upper() for x in wheel_set}
+    ][: int(max_directional_names)]
     diagnostics["directional_targets"] = list(dir_names)
     csp_cash_reserve = wheel_budget * reserve
     cash_after_wheel = cash
@@ -403,7 +438,7 @@ def allocate_wheel_hybrid_book(
             if delta >= 1 and delta * px >= 50:
                 if t in decisions:
                     continue
-                if t in short_und:
+                if str(t).upper() in short_und:
                     diagnostics["skipped"].append(
                         {"ticker": t, "reason": "directional_blocked_open_short_option"}
                     )
@@ -429,9 +464,11 @@ def allocate_wheel_hybrid_book(
     # Exit orphan holdings left from prior broken runs / off-mandate names.
     keep = set(wheel_targets) | set(dir_names) | set(diagnostics["cc_lot_tickers"])
     orphans: List[str] = []
-    for t, pos in list((portfolio.positions or {}).items()):
+    keep_u = {str(x).upper() for x in keep}
+    for raw_t, pos in list((portfolio.positions or {}).items()):
+        t = str(raw_t).upper()
         qty = int(getattr(pos, "long", 0) or 0)
-        if qty <= 0 or t in keep or t in decisions:
+        if qty <= 0 or t in keep_u or t in decisions or str(raw_t) in decisions:
             continue
         # Never sell shares while a short option is open on this name (BTC first).
         if t in short_und:
@@ -464,7 +501,7 @@ def allocate_wheel_hybrid_book(
         1
         for d in decisions.values()
         if getattr(d, "action", "") == "buy"
-        and "Wheel lot" in str(getattr(d, "reasoning", ""))
+        and "Wheel lot build" in str(getattr(d, "reasoning", ""))
     )
     diagnostics["cc_held_lot_count"] = len(diagnostics["cc_lot_tickers"])
     diagnostics["cc_lot_build_count"] = lot_builds

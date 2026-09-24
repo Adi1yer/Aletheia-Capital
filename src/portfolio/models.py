@@ -1,5 +1,6 @@
 """Portfolio data models"""
 
+import math
 from typing import Dict, Optional
 from pydantic import BaseModel
 
@@ -30,20 +31,35 @@ class Portfolio(BaseModel):
     def long_qty(self, ticker: str) -> int:
         """Read long shares without creating an empty position."""
         pos = (self.positions or {}).get(ticker)
-        if pos is None and ticker:
-            pos = (self.positions or {}).get(str(ticker).upper())
+        key = str(ticker or "").upper()
+        if pos is None and key:
+            pos = (self.positions or {}).get(key)
+        if pos is None and key:
+            for k, p in (self.positions or {}).items():
+                if str(k).upper() == key:
+                    pos = p
+                    break
         return int(getattr(pos, "long", 0) or 0) if pos else 0
     
     def get_equity(self, current_prices: Dict[str, float]) -> float:
         """Calculate total equity (cash + market value of positions)"""
-        equity = self.cash
+        equity = float(self.cash or 0)
+        if not math.isfinite(equity):
+            equity = 0.0
+        prices = {}
+        for k, v in (current_prices or {}).items():
+            try:
+                px = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(px) and px > 0:
+                prices[str(k).upper()] = px
         
         for ticker, position in self.positions.items():
-            if ticker in current_prices:
-                price = current_prices[ticker]
-                long_value = position.long * price
-                short_value = position.short * price
-                equity += long_value - short_value
+            price = prices.get(str(ticker).upper())
+            if price is None:
+                continue
+            equity += position.long * price - position.short * price
         
-        return equity
+        return equity if math.isfinite(equity) else 0.0
 

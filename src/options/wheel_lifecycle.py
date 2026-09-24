@@ -82,10 +82,10 @@ def short_option_profit_pct(pos: Dict[str, Any]) -> Optional[float]:
         )
     except (TypeError, ValueError):
         return None
-    if entry <= 0:
+    if entry != entry or entry <= 0 or entry == float("inf"):
         return None
     # Require a real mark — zero/missing must not look like 100% profit.
-    if cur <= 0:
+    if cur != cur or cur <= 0 or cur == float("inf"):
         return None
     # Marks from AlpacaBroker.get_option_positions are already per-share.
     # Do NOT ÷100 here: that turns a losing ITM short (mark ≫ entry) into a
@@ -152,7 +152,13 @@ def manage_short_options(
 ) -> List[Dict[str, Any]]:
     """Buy-to-close short options that are near expiry, near ITM, or profit-taken."""
     results: List[Dict[str, Any]] = []
-    positions = broker.get_option_positions() if broker else []
+    try:
+        positions = broker.get_option_positions() if broker else []
+    except Exception as e:
+        logger.error("Option positions unavailable; skip manage/BTC", error=str(e))
+        return [{"status": "error", "reason": "option_positions_unavailable"}]
+    from src.options.covered_calls import _finite_px
+
     for pos in positions or []:
         if str(pos.get("side") or "").lower() != "short":
             continue
@@ -170,7 +176,7 @@ def manage_short_options(
             )
             continue
         und = parsed["underlying"]
-        px = float(current_prices.get(und) or 0.0)
+        px = _finite_px(current_prices.get(und) or current_prices.get(str(und).upper()))
         dte = dte_from_expiry(parsed["expiry"])
         profit_pct = short_option_profit_pct(pos)
         manage, reason = should_manage_short(
@@ -195,7 +201,12 @@ def manage_short_options(
                 }
             )
             continue
-        qty = int(pos.get("qty") or 1)
+        try:
+            qty = int(pos.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
         # Capture mark before close for roll net-credit checks (per-share × 100).
         mark = 0.0
         try:
@@ -319,7 +330,12 @@ def manage_or_roll_short_calls(
             continue
 
         px = _finite_px(current_prices.get(und) or current_prices.get(str(und).upper()))
-        qty = int(row.get("qty") or 1)
+        try:
+            qty = int(row.get("qty") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
         if px <= 0:
             results.append(
                 {
@@ -600,13 +616,13 @@ def sync_wheel_assignment_state(
             short_by_und[und] = otype or short_by_und.get(und, "")
 
     # Scan equity positions for wheel lots.
-    for t, pos in list((getattr(portfolio, "positions", None) or {}).items()):
+    for raw_t, pos in list((getattr(portfolio, "positions", None) or {}).items()):
+        t = str(raw_t).upper()
         qty = int(getattr(pos, "long", 0) or 0)
-        px = float(prices.get(t) or getattr(pos, "cost_basis", 0) or 0)
         if qty < 100:
             continue
         # Keep tagging graduated (≥ soft-max) lots — they remain wheel CC inventory.
-        prev = dict(names.get(t) or {})
+        prev = dict(names.get(t) or names.get(raw_t) or {})
         otype = short_by_und.get(t, "")
         if otype == "call":
             stage = "short_call"
@@ -631,9 +647,15 @@ def sync_wheel_assignment_state(
 
     # Called away: had short_call / long_shares, now no shares and no short call.
     for t, row in list(names.items()):
-        pos = (getattr(portfolio, "positions", None) or {}).get(t)
-        qty = int(getattr(pos, "long", 0) or 0) if pos else 0
-        if row.get("stage") in ("short_call", "long_shares") and qty < 100 and t not in short_by_und:
+        tu = str(t).upper()
+        if hasattr(portfolio, "long_qty"):
+            qty = int(portfolio.long_qty(tu) or 0)
+        else:
+            pos = (getattr(portfolio, "positions", None) or {}).get(tu) or (
+                getattr(portfolio, "positions", None) or {}
+            ).get(t)
+            qty = int(getattr(pos, "long", 0) or 0) if pos else 0
+        if row.get("stage") in ("short_call", "long_shares") and qty < 100 and tu not in short_by_und:
             names[t] = {
                 **row,
                 "stage": "cash",
@@ -691,9 +713,11 @@ def build_coverage_map(
             continue
         und = parsed["underlying"]
         try:
-            q = abs(int(float(pos.get("qty")))) if pos.get("qty") is not None else 1
+            q = abs(int(float(pos.get("qty")))) if pos.get("qty") is not None else 0
         except (TypeError, ValueError):
-            q = 1
+            q = 0
+        if q <= 0:
+            continue
         if und in short_calls:
             short_calls[und]["qty"] = int(short_calls[und].get("qty") or 0) + q
             # Keep nearest-term / lowest strike metadata for display.
@@ -720,12 +744,17 @@ def build_coverage_map(
 
     rows: List[Dict[str, Any]] = []
     seen_und: set = set()
-    for t, pos in list((getattr(portfolio, "positions", None) or {}).items()):
+    for raw_t, pos in list((getattr(portfolio, "positions", None) or {}).items()):
+        t = str(raw_t).upper()
         qty = int(getattr(pos, "long", 0) or 0)
         if qty < 100:
             continue
         try:
-            px = float(current_prices.get(t) or 0.0)
+            px = float(
+                current_prices.get(t)
+                or current_prices.get(raw_t)
+                or 0.0
+            )
         except (TypeError, ValueError):
             px = 0.0
         if px != px or px < 0:  # NaN
@@ -747,7 +776,10 @@ def build_coverage_map(
         strike = float(cc.get("strike") or 0)
         dte = dte_from_expiry(str(cc.get("expiry") or ""))
         otm = ((strike / px) - 1.0) * 100.0 if px > 0 and strike > 0 else None
-        short_qty = int(cc.get("qty") or 1)
+        try:
+            short_qty = int(cc.get("qty") or 0)
+        except (TypeError, ValueError):
+            short_qty = 0
         covered_shares = short_qty * 100
         if covered_shares < qty:
             coverage = "UNDERHEDGED"
@@ -787,9 +819,9 @@ def build_coverage_map(
             pos = (getattr(portfolio, "positions", None) or {}).get(und)
             qty = int(getattr(pos, "long", 0) or 0) if pos else 0
         try:
-            short_qty = abs(int(float(cc.get("qty")))) if cc.get("qty") is not None else 1
+            short_qty = abs(int(float(cc.get("qty")))) if cc.get("qty") is not None else 0
         except (TypeError, ValueError):
-            short_qty = 1
+            short_qty = 0
         covered_shares = short_qty * 100
         if covered_shares <= qty:
             continue  # fully covered but below 100-share wheel lot threshold — skip

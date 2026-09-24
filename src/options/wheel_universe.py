@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -26,9 +27,11 @@ def _f(d: Dict[str, Any], *keys: str, default: float = 0.0) -> float:
         if v is None:
             continue
         try:
-            return float(v)
+            x = float(v)
         except (TypeError, ValueError):
             continue
+        if math.isfinite(x):
+            return x
     return default
 
 
@@ -39,9 +42,17 @@ def extract_price_adv(
     dossiers: Optional[Dict[str, Any]] = None,
 ) -> tuple[float, float]:
     """Return (last_price, dollar_ADV) from prices map and/or ticker dossiers."""
-    px = float((prices or {}).get(ticker) or 0.0)
+    raw = (prices or {}).get(ticker)
+    if raw is None:
+        raw = (prices or {}).get(str(ticker).upper())
+    try:
+        px = float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        px = 0.0
+    if not math.isfinite(px) or px < 0:
+        px = 0.0
     adv = 0.0
-    d = (dossiers or {}).get(ticker) or {}
+    d = (dossiers or {}).get(ticker) or (dossiers or {}).get(str(ticker).upper()) or {}
     if not isinstance(d, dict):
         d = {}
     prices_block = d.get("prices") if isinstance(d.get("prices"), dict) else {}

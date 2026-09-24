@@ -159,6 +159,49 @@ class AlpacaBroker:
             logger.error("Error fetching positions", error=str(e))
             raise
 
+    def get_last_equity_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """Latest bid/ask for underlyings we may not hold (CSP near-ITM checks)."""
+        out: Dict[str, float] = {}
+        syms = [str(s).upper().strip() for s in symbols if str(s or "").strip()]
+        if not syms:
+            return out
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestQuoteRequest
+
+            key = settings.alpaca_api_key
+            sec = settings.alpaca_secret_key
+            if not key or not sec:
+                return out
+            client = StockHistoricalDataClient(key, sec)
+            quotes = alpaca_call_with_retry(
+                lambda: client.get_stock_latest_quote(
+                    StockLatestQuoteRequest(symbol_or_symbols=syms)
+                ),
+                op="get_stock_latest_quote",
+                attempts=2,
+                base_delay_sec=1.0,
+            )
+            qmap = quotes if isinstance(quotes, dict) else getattr(quotes, "data", None) or {}
+            for s in syms:
+                q = qmap.get(s)
+                if q is None:
+                    continue
+                for val in (
+                    getattr(q, "ask_price", None),
+                    getattr(q, "bid_price", None),
+                ):
+                    try:
+                        px = float(val)
+                    except (TypeError, ValueError):
+                        continue
+                    if px == px and px > 0:
+                        out[s] = px
+                        break
+        except Exception as e:
+            logger.warning("Equity quote backfill failed", error=str(e))
+        return out
+
     def get_open_orders(self, limit: int = 50) -> List[Dict]:
         """Get open (pending) orders from Alpaca."""
         try:
@@ -170,6 +213,9 @@ class AlpacaBroker:
                     "symbol": o.symbol,
                     "side": getattr(o.side, "value", str(o.side)).lower(),
                     "qty": int(float(o.qty)) if o.qty else 0,
+                    "filled_qty": int(float(o.filled_qty))
+                    if getattr(o, "filled_qty", None) is not None
+                    else 0,
                     "status": getattr(o.status, "value", str(o.status)).lower(),
                     "submitted_at": str(o.submitted_at)
                     if hasattr(o, "submitted_at") and o.submitted_at
@@ -444,21 +490,34 @@ class AlpacaBroker:
                     st_dec = non_hold_decisions.get(st_ticker)
                     if not st_dec or st_dec.action not in ("sell", "short", "cover"):
                         continue
+                    # Tiny leftover / directional sells must not block 100-share lot buys.
+                    try:
+                        sell_qty = int(getattr(st_dec, "quantity", 0) or 0)
+                    except (TypeError, ValueError):
+                        sell_qty = 0
+                    sell_reason = str(getattr(st_dec, "reasoning", "") or "")
+                    material_sell = sell_qty >= 100 or "Atomic" in sell_reason
                     if not isinstance(st_res, dict) or not st_res.get("success", True):
                         logger.warning(
-                            "Wheel sell submit failed; blocking subsequent buys",
+                            "Wheel sell submit failed; blocking subsequent buys"
+                            if material_sell
+                            else "Wheel leftover sell submit failed; buys still allowed",
                             ticker=st_ticker,
                             result=st_res,
                         )
-                        sell_failed = True
+                        if material_sell:
+                            sell_failed = True
                         continue
                     oid = str(st_res.get("order_id") or st_res.get("id") or "")
                     if not oid:
                         logger.warning(
-                            "Wheel sell missing order_id; blocking subsequent buys",
+                            "Wheel sell missing order_id; blocking subsequent buys"
+                            if material_sell
+                            else "Wheel leftover sell missing order_id; buys still allowed",
                             ticker=st_ticker,
                         )
-                        sell_failed = True
+                        if material_sell:
+                            sell_failed = True
                         continue
                     if not st_res.get("fill"):
                         fill = self.wait_for_order_fill(
@@ -470,11 +529,14 @@ class AlpacaBroker:
                     fill = st_res.get("fill") or {}
                     if not fill.get("ok"):
                         logger.warning(
-                            "Wheel sell not filled; blocking subsequent buys",
+                            "Wheel sell not filled; blocking subsequent buys"
+                            if material_sell
+                            else "Wheel leftover sell not filled; buys still allowed",
                             ticker=st_ticker,
                             fill=fill,
                         )
-                        sell_failed = True
+                        if material_sell:
+                            sell_failed = True
                 sell_phase_done = True
                 if sell_failed:
                     # Skip remaining buys — do not spend BP that never freed.
@@ -487,6 +549,16 @@ class AlpacaBroker:
                     break
 
             px = prices.get(ticker)
+            if px is None:
+                px = prices.get(str(ticker).upper())
+            px_f = None
+            try:
+                if px is not None:
+                    cand = float(px)
+                    if cand == cand and cand > 0:
+                        px_f = cand
+            except (TypeError, ValueError):
+                px_f = None
             tactic = None
             try:
                 from src.trading.execution_tactics import select_execution_tactic
@@ -494,20 +566,84 @@ class AlpacaBroker:
                 tactic = select_execution_tactic(
                     ticker=ticker,
                     action=decision.action,
-                    current_price=float(px) if px is not None else None,
+                    current_price=px_f,
                     run_config=run_config or {"use_limit_orders": use_limit_orders, "limit_slippage_pct": limit_slippage_pct},
                 )
             except Exception:
                 tactic = None
-            result = self.execute_order(
-                ticker,
-                decision,
-                current_price=float(px) if px is not None else None,
-                stop_loss_pct=stop_loss_pct,
-                use_limit_order=use_limit_orders,
-                limit_slippage_pct=limit_slippage_pct,
-                execution_tactic=tactic,
+            reason_txt = str(getattr(decision, "reasoning", "") or "")
+            try:
+                dec_qty = int(decision.quantity)
+            except (TypeError, ValueError):
+                dec_qty = 0
+            clip_lots = (
+                wheel_fill_wait
+                and decision.action == "buy"
+                and dec_qty >= 200
+                and dec_qty % 100 == 0
+                and ("Wheel lot" in reason_txt or "Wheel add-on" in reason_txt)
             )
+            if clip_lots:
+                filled_total = 0
+                last_result: Optional[Dict] = None
+                from src.portfolio.manager import PortfolioDecision as _PD
+
+                n_clips = dec_qty // 100
+                for clip_i in range(n_clips):
+                    clip_dec = _PD(
+                        action="buy",
+                        quantity=100,
+                        confidence=decision.confidence,
+                        reasoning=decision.reasoning,
+                    )
+                    last_result = self.execute_order(
+                        ticker,
+                        clip_dec,
+                        current_price=px_f,
+                        stop_loss_pct=stop_loss_pct,
+                        use_limit_order=use_limit_orders,
+                        limit_slippage_pct=limit_slippage_pct,
+                        execution_tactic=tactic,
+                    )
+                    if not last_result or last_result.get("success") is False:
+                        break
+                    oid = str(last_result.get("order_id") or last_result.get("id") or "")
+                    clip_fill: Dict[str, Any] = {"ok": False}
+                    if oid:
+                        clip_fill = self.wait_for_order_fill(
+                            oid,
+                            timeout_s=float(cfg.get("lot_fill_timeout_s", 60)),
+                            min_filled_qty=100,
+                        )
+                    last_result["fill"] = clip_fill
+                    if not clip_fill.get("ok"):
+                        break
+                    try:
+                        filled_total += int(clip_fill.get("filled_qty") or 100)
+                    except (TypeError, ValueError):
+                        filled_total += 100
+                    if clip_i + 1 < n_clips:
+                        time.sleep(delay_seconds)
+                result = last_result or {"success": False, "error": "clip_submit_failed"}
+                result["filled_qty"] = filled_total
+                result["requested_qty"] = dec_qty
+                result["fill"] = {
+                    "ok": filled_total >= dec_qty,
+                    "filled_qty": filled_total,
+                    "qty": dec_qty,
+                }
+                if filled_total <= 0:
+                    result["success"] = False
+            else:
+                result = self.execute_order(
+                    ticker,
+                    decision,
+                    current_price=px_f,
+                    stop_loss_pct=stop_loss_pct,
+                    use_limit_order=use_limit_orders,
+                    limit_slippage_pct=limit_slippage_pct,
+                    execution_tactic=tactic,
+                )
             results[ticker] = result
 
             if result and result.get("success", True):
@@ -766,6 +902,13 @@ class AlpacaBroker:
         fill_timeout_s: float = 45.0,
     ) -> Optional[Dict]:
         """Submit an options order (e.g. sell-to-open for covered calls)."""
+        try:
+            qty = int(qty)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            logger.warning("Refusing option order with non-positive qty", contract=contract_symbol, qty=qty)
+            return None
         try:
             order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
 

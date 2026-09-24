@@ -4,7 +4,7 @@ from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from src.options.wheel_lifecycle import parse_occ_symbol, should_manage_short
-from src.options.wheel_universe import WheelCandidate, screen_wheel_candidates
+from src.options.wheel_universe import WheelCandidate, extract_price_adv, screen_wheel_candidates
 from src.portfolio.models import Portfolio, Position
 from src.portfolio.wheel_allocator import allocate_wheel_hybrid_book
 from src.portfolio.wheel_policy import apply_wheel_defaults
@@ -1431,6 +1431,44 @@ def test_profile_llm_budget_not_clobbered_by_entrypoint_defaults():
     assert int(merged.get("max_csp_tickers") or 0) == 3
 
 
+def test_csp_nan_seed_does_not_lift_collateral_cap():
+    from src.options.cash_secured_puts import CashSecuredPutManager
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            return [
+                {
+                    "symbol": "SOFI261016P00014000",
+                    "strike": 14.0,
+                    "expiry": "2026-10-16",
+                    "tradable": True,
+                    "close_price": 0.80,
+                }
+            ]
+
+        def submit_option_order(self, **kwargs):
+            raise AssertionError("nan seed must not allow uncapped CSP")
+
+    mgr = CashSecuredPutManager(min_premium_usd=25.0, min_annualized_yield_pct=1.0)
+    results = mgr.execute_cash_secured_puts(
+        _Broker(),
+        ["SOFI"],
+        {"SOFI": 60},
+        {"SOFI": 15.0},
+        max_collateral_usd=1000.0,
+        collateral_already_used_usd=float("nan"),
+        option_positions=[
+            {
+                "symbol": "F261016P00012000",
+                "side": "short",
+                "qty": 1,
+            }
+        ],
+    )
+    assert results and results[0]["status"] == "skipped"
+    assert "csp_collateral_cap" in str(results[0].get("reason") or "")
+
+
 def test_csp_cap_headroom_includes_outstanding():
     """Spendable is net of open puts; total cap must be outstanding + spendable."""
     outstanding = 2000.0
@@ -1707,3 +1745,151 @@ def test_roll_sto_writes_one_lot_at_a_time():
     assert len(sto) == 2
     assert all(int(s.get("qty") or 0) == 1 for s in sto)
     assert any(r.get("status") == "roll_executed" for r in results)
+
+
+def test_allocate_does_not_orphan_mixed_case_lot():
+    portfolio = Portfolio(
+        cash=2000.0,
+        positions={"f": Position(long=100, long_cost_basis=12.0)},
+    )
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 12.0},
+        wheel_candidates=[WheelCandidate("F", 12.0, 80_000_000, 500, 0.9)],
+        directional_candidates=[],
+        equity=10000.0,
+        max_wheel_names=1,
+        csp_reserve_frac=0.0,
+    )
+    assert "F" in (diag.get("cc_lot_tickers") or [])
+    assert "F" not in (diag.get("orphan_exits") or [])
+    assert "f" not in (diag.get("orphan_exits") or [])
+    act = getattr(decisions.get("F") or decisions.get("f"), "action", "")
+    assert act != "sell"
+
+
+def test_underhedge_trim_skips_invalid_price():
+    from src.options.covered_calls import apply_underhedge_trims
+
+    class FakeBroker:
+        def sync_portfolio(self):
+            return Portfolio(cash=0, positions={"F": Position(long=200)})
+
+        def get_option_positions(self):
+            return [
+                {
+                    "symbol": "F260918C00012000",
+                    "side": "short",
+                    "qty": 1,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def execute_order(self, *args, **kwargs):
+            raise AssertionError("must not trim when mark is missing")
+
+    apply_underhedge_trims(
+        FakeBroker(),
+        {"F": 12.0},
+        [{"underlying": "F", "status": "skipped", "reason": "invalid_price"}],
+    )
+
+
+def test_select_contract_rejects_nan_price():
+    from src.options.covered_calls import CoveredCallManager
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            raise AssertionError("must not fetch chain on invalid mark")
+
+    contract, reason = CoveredCallManager().select_contract("F", float("nan"), 55, _Broker())
+    assert contract is None
+    assert reason == "invalid_price"
+
+
+def test_manage_skips_zero_qty_short():
+    from src.options.wheel_lifecycle import manage_short_options
+
+    class _Broker:
+        def get_option_positions(self):
+            return [
+                {
+                    "symbol": "F261016C00013000",
+                    "side": "short",
+                    "qty": 0,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def submit_option_order(self, **kwargs):
+            raise AssertionError("must not BTC a zero-qty short")
+
+    results = manage_short_options(_Broker(), {"F": 12.0}, execute=True)
+    assert not any(r.get("status") == "btc_executed" for r in results)
+
+
+def test_coverage_map_matches_mixed_case_keys():
+    from src.options.wheel_lifecycle import build_coverage_map
+
+    portfolio = Portfolio(
+        cash=1000.0,
+        positions={"f": Position(long=100, long_cost_basis=12.0)},
+    )
+    opts = [
+        {
+            "symbol": "F261016C00013000",
+            "side": "short",
+            "qty": 1,
+            "option_type": "call",
+            "underlying": "F",
+        }
+    ]
+    rows = build_coverage_map(portfolio, opts, {"F": 12.0})
+    assert rows and rows[0]["coverage"] == "covered"
+    assert rows[0]["ticker"] == "F"
+
+
+def test_long_qty_and_equity_are_case_and_nan_safe():
+    portfolio = Portfolio(
+        cash=1000.0,
+        positions={"f": Position(long=100, long_cost_basis=12.0)},
+    )
+    assert portfolio.long_qty("F") == 100
+    assert portfolio.get_equity({"F": 12.0}) == 2200.0
+    assert portfolio.get_equity({"f": float("nan"), "F": 12.0}) == 2200.0
+
+
+def test_allocate_keeps_unpriced_hundred_lot():
+    portfolio = Portfolio(
+        cash=2000.0,
+        positions={"F": Position(long=100, long_cost_basis=12.0)},
+    )
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={},
+        wheel_candidates=[],
+        directional_candidates=[],
+        equity=10000.0,
+        csp_reserve_frac=0.0,
+    )
+    assert "F" in (diag.get("cc_lot_tickers") or [])
+    assert "F" not in (diag.get("orphan_exits") or [])
+    assert decisions.get("F") is None or decisions["F"].action != "sell"
+
+
+def test_screen_ignores_nan_price_and_uses_dossier():
+    dossiers = {"F": {"prices": {"last_close": 11.5, "avg_volume": 5_000_000}}}
+    px, adv = extract_price_adv("F", prices={"F": float("nan")}, dossiers=dossiers)
+    assert px == 11.5
+    assert adv == 5_000_000 * 11.5
+    cands = screen_wheel_candidates(
+        ["F"],
+        prices={"F": float("nan")},
+        dossiers=dossiers,
+        max_price=35.0,
+        min_adv_usd=5_000_000,
+        allow_missing_adv=False,
+    )
+    assert [c.ticker for c in cands] == ["F"]

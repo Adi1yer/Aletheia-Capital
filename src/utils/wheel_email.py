@@ -42,7 +42,11 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
     }
     for t, pos in (port.get("positions") or {}).items():
         # Prefer risk_analysis prices when present; ignore NaN so we fall back.
-        ra = (results.get("risk_analysis") or {}).get(t) or {}
+        ra = (
+            (results.get("risk_analysis") or {}).get(t)
+            or (results.get("risk_analysis") or {}).get(str(t).upper())
+            or {}
+        )
         px = _f(ra.get("current_price"))
         if px <= 0:
             px = coverage_prices.get(str(t).upper(), 0.0)
@@ -50,7 +54,7 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
             px = _f(pos.get("market_value")) / max(int(pos.get("long") or 0), 1)
         if px <= 0:
             px = _f(pos.get("long_cost_basis"))
-        prices[t] = px
+        prices[str(t).upper()] = px
 
     equity = _f(port.get("equity"))
     if equity <= 0:
@@ -70,7 +74,7 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
     dir_mv = 0.0
     for t, pos in (port.get("positions") or {}).items():
         qty = int(pos.get("long") or 0)
-        px = prices.get(t) or 0.0
+        px = prices.get(str(t).upper()) or prices.get(t) or 0.0
         mv = qty * px
         if str(t).upper() in wheel_tickers:
             wheel_mv += mv
@@ -320,9 +324,9 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
         qty = int(pos.get("long") or 0)
         if qty <= 0:
             continue
-        if coverage and any(str(r.get("ticker")) == t for r in coverage):
+        if coverage and any(str(r.get("ticker") or "").upper() == str(t).upper() for r in coverage):
             continue
-        if dir_targets and t not in dir_targets and qty >= 100:
+        if dir_targets and str(t).upper() not in dir_targets and qty >= 100:
             continue
         ra = (results.get("risk_analysis") or {}).get(t) or {}
         px = _f(ra.get("current_price"))
