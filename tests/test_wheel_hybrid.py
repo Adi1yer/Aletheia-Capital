@@ -617,6 +617,9 @@ def test_wheel_daily_email_has_coverage_omits_agent_noise():
     }
     subject, text, html = build_wheel_daily_email(results)
     assert "daily wheel" in subject.lower()
+    assert "cash+stocks" in subject.lower()
+    assert "Cash + stocks $5,800.00" in text
+    assert "Alpaca equity $10,000.00" in text
     assert "COVERAGE MAP" in text
     assert "F261002C00013000" in text
     assert "warren_buffett" not in text.lower()
@@ -686,6 +689,7 @@ def test_wheel_daily_email_shows_multi_lot_calls_and_strips_enum():
                     "coverage": "cash_secured",
                 }
             ],
+            "option_mtm_usd": -170.0,
             "wheel_scorecard": {"premium_ledger_usd": 281},
         }
     )
@@ -697,6 +701,9 @@ def test_wheel_daily_email_shows_multi_lot_calls_and_strips_enum():
     assert "NU261030P00013000" in text
     assert "cash (no shares)" in text
     assert "collateral $1,300" in text
+    assert "Cash + stocks $8,264.00" in text
+    assert "Open option marks $-170.00" in text
+    assert "Premium collected (ledger): $281.00" in text
 
 
 def test_wheel_daily_email_ignores_nan_prices():
@@ -740,7 +747,8 @@ def test_wheel_daily_email_ignores_nan_prices():
     assert "OTM=n/a" in text
     assert "wheel $1,200.00" in text
     assert "CTSH: 2 sh MV $118.76" in text
-    assert "equity $9,870.35" in subject.lower()
+    assert "alpaca $9,870.35" in subject.lower()
+    assert "Cash + stocks $6,393.96" in text
 
 
 def test_manage_or_roll_would_roll_on_near_itm():

@@ -1934,6 +1934,7 @@ class TradingPipeline:
         wheel_scorecard: Dict[str, Any] = {}
         coverage_map: List[Dict[str, Any]] = []
         short_put_map: List[Dict[str, Any]] = []
+        option_mtm_usd: Optional[float] = None
         coverage_unavailable = False
         if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
             try:
@@ -1986,8 +1987,16 @@ class TradingPipeline:
                         max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
                     )
                     short_put_map = build_short_put_map(cov_port, cov_opts, cov_prices)
+                    opt_mtm = 0.0
+                    for op in cov_opts or []:
+                        try:
+                            opt_mtm += float((op or {}).get("market_value") or 0.0)
+                        except (TypeError, ValueError):
+                            pass
+                    option_mtm_usd = round(opt_mtm, 2)
                     wheel_scorecard["coverage_map"] = coverage_map
                     wheel_scorecard["short_put_map"] = short_put_map
+                    wheel_scorecard["option_mtm_usd"] = option_mtm_usd
                     uncovered_n = sum(1 for r in coverage_map if r.get("coverage") == "UNCOVERED")
                     underhedged_n = sum(1 for r in coverage_map if r.get("coverage") == "UNDERHEDGED")
                     overhedged_n = sum(
@@ -2036,6 +2045,7 @@ class TradingPipeline:
             "wheel_scorecard": wheel_scorecard,
             "coverage_map": coverage_map,
             "short_put_map": short_put_map,
+            "option_mtm_usd": option_mtm_usd,
             "coverage_unavailable": coverage_unavailable,
             "execute_skipped_reason": run_config.get("execute_skipped_reason"),
             "wheel_mode": bool(run_config.get("wheel_mode")),

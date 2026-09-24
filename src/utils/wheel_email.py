@@ -96,15 +96,35 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
         else:
             dir_mv += mv
 
-    # Option shorts: small MV (negative)
-    opt_mv = 0.0
-    for row in coverage:
-        if row.get("coverage") == "covered":
-            # Not always in portfolio equity the same way; leave 0 unless we have marks
-            pass
+    stock_mv = wheel_mv + dir_mv
+    # Premium received is already in cash. Alpaca NAV then subtracts the
+    # remaining short-option mark. Cash+stocks is the "keep the premium"
+    # book without that mark-to-market drag.
+    cash_plus_stocks = cash + stock_mv
+
+    option_mtm = None
+    ws = results.get("wheel_scorecard") or {}
+    if "option_mtm_usd" in results or "option_mtm_usd" in ws:
+        option_mtm = _f(
+            results.get("option_mtm_usd")
+            if results.get("option_mtm_usd") is not None
+            else ws.get("option_mtm_usd")
+        )
+    else:
+        found = False
+        total = 0.0
+        for pos in results.get("option_positions") or []:
+            if isinstance(pos, dict) and "market_value" in pos:
+                total += _f(pos.get("market_value"))
+                found = True
+        if found:
+            option_mtm = total
 
     if equity <= 0:
-        equity = cash + wheel_mv + dir_mv
+        if option_mtm is not None:
+            equity = cash_plus_stocks + option_mtm
+        else:
+            equity = cash_plus_stocks
     return {
         "equity": round(equity, 2),
         "cash": round(cash, 2),
@@ -116,7 +136,10 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
         "directional_pct": round(100.0 * dir_mv / equity, 1) if equity > 0 else 0.0,
         "target_wheel_pct": 70.0,
         "target_directional_pct": 30.0,
-        "option_mv": opt_mv,
+        "stock_mv": round(stock_mv, 2),
+        "cash_plus_stocks": round(cash_plus_stocks, 2),
+        "option_mtm": None if option_mtm is None else round(option_mtm, 2),
+        "premium_ledger": round(_f(ws.get("premium_ledger_usd")), 2),
     }
 
 
@@ -142,15 +165,27 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
         except Exception:
             spy_part = ""
     subject = (
-        f"Aletheia daily wheel — {day_label} — equity ${mix['equity']:,.2f}{spy_part}"
+        f"Aletheia daily wheel — {day_label} — "
+        f"cash+stocks ${mix['cash_plus_stocks']:,.2f} "
+        f"(Alpaca ${mix['equity']:,.2f}){spy_part}"
     )
 
     lines: List[str] = []
     lines.append(f"ALETHEIA DAILY WHEEL — {day_label}")
     lines.append("=" * 72)
     lines.append(
-        f"Equity ${mix['equity']:,.2f} | Cash ${mix['cash']:,.2f} ({mix['cash_pct']:.1f}%)"
+        f"Cash + stocks ${mix['cash_plus_stocks']:,.2f} "
+        f"(premium sits in cash; open shorts not subtracted)"
     )
+    lines.append(
+        f"Alpaca equity ${mix['equity']:,.2f} | Cash ${mix['cash']:,.2f} "
+        f"({mix['cash_pct']:.1f}%)"
+    )
+    if mix.get("option_mtm") is not None:
+        lines.append(
+            f"Open option marks ${mix['option_mtm']:,.2f} "
+            f"(Alpaca subtracts this from NAV)"
+        )
     lines.append(
         f"Sleeves actual: wheel ${mix['wheel_mv']:,.2f} ({mix['wheel_pct']:.1f}% / target "
         f"{mix['target_wheel_pct']:.0f}%) | "
@@ -165,7 +200,7 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
             f"maxDD={ws.get('max_drawdown')}"
         )
     lines.append(
-        f"Premium ledger: ${ _f(ws.get('premium_ledger_usd')):,.2f}"
+        f"Premium collected (ledger): ${mix['premium_ledger']:,.2f}"
     )
     lines.append("")
 

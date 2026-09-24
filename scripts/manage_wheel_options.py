@@ -275,6 +275,15 @@ def main() -> int:
     short_puts = [] if coverage_unavailable else build_short_put_map(
         portfolio, opt_pos, prices
     )
+    option_mtm = None
+    if not coverage_unavailable:
+        opt_mtm = 0.0
+        for op in opt_pos or []:
+            try:
+                opt_mtm += float((op or {}).get("market_value") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        option_mtm = round(opt_mtm, 2)
 
     btc = sum(1 for r in manage_results if r.get("status") == "btc_executed")
     rolls = sum(1 for r in manage_results if r.get("status") == "roll_executed")
@@ -329,10 +338,12 @@ def main() -> int:
             "covered_call_results": cc_results,
             "coverage_map": coverage,
             "short_put_map": short_puts,
+            "option_mtm_usd": option_mtm,
             "coverage_unavailable": coverage_unavailable,
             "wheel_scorecard": {
                 "coverage_map": coverage,
                 "short_put_map": short_puts,
+                "option_mtm_usd": option_mtm,
                 "coverage_unavailable": coverage_unavailable,
             },
             "decisions": {},
