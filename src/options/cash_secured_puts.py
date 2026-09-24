@@ -147,6 +147,13 @@ class CashSecuredPutManager:
             seeded = 0.0
         if option_positions is not None and seeded <= 0:
             seeded = outstanding_short_put_collateral_usd(option_positions)
+        already_short_puts: set = set()
+        if option_positions is not None:
+            from src.options.wheel_lifecycle import short_put_underlyings
+
+            already_short_puts = {
+                str(x).upper() for x in short_put_underlyings(option_positions)
+            }
         collateral_used = seeded
         for underlying in csp_tickers:
             und = str(underlying or "").upper()
@@ -161,6 +168,15 @@ class CashSecuredPutManager:
             except (TypeError, ValueError):
                 score = 0
             if price <= 0 or score < 40:
+                continue
+            if und in already_short_puts:
+                results.append(
+                    {
+                        "underlying": und,
+                        "status": "skipped",
+                        "reason": "already_has_short_put",
+                    }
+                )
                 continue
             contract = self.select_put_contract(und, price, score, broker)
             if not contract:
@@ -209,11 +225,22 @@ class CashSecuredPutManager:
                     "order": order,
                 })
             else:
+                fill = (order or {}).get("fill") if isinstance(order, dict) else {}
+                detail = ""
+                if isinstance(order, dict):
+                    detail = str(
+                        order.get("error")
+                        or (fill or {}).get("status")
+                        or order.get("status")
+                        or ""
+                    )[:80]
+                if not order:
+                    detail = detail or "submit_failed"
                 results.append(
                     {
                         "underlying": und,
                         "status": "failed",
-                        "reason": "order_or_fill",
+                        "reason": f"order_or_fill_{detail}" if detail else "order_or_fill",
                         "order": order,
                     }
                 )

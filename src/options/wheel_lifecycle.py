@@ -97,6 +97,8 @@ def _order_fill_confirmed(order: Optional[Dict[str, Any]], broker: Any = None) -
     """True only when fill is explicitly confirmed (never assume missing == ok)."""
     if not order:
         return False
+    if order.get("submitted") is False:
+        return False
     if order.get("fill_ok") is True:
         return True
     fill = order.get("fill")
@@ -720,6 +722,14 @@ def build_coverage_map(
             continue
         if und in short_calls:
             short_calls[und]["qty"] = int(short_calls[und].get("qty") or 0) + q
+            short_calls[und].setdefault("contracts", []).append(
+                {
+                    "symbol": parsed.get("symbol"),
+                    "strike": parsed.get("strike"),
+                    "expiry": parsed.get("expiry"),
+                    "qty": q,
+                }
+            )
             # Keep nearest-term / lowest strike metadata for display.
             try:
                 old_exp = str(short_calls[und].get("expiry") or "")
@@ -740,6 +750,14 @@ def build_coverage_map(
                 "qty": q,
                 "avg_entry_price": pos.get("avg_entry_price") or pos.get("avg_entry"),
                 "current_price": pos.get("current_price") or pos.get("mark_price"),
+                "contracts": [
+                    {
+                        "symbol": parsed.get("symbol"),
+                        "strike": parsed.get("strike"),
+                        "expiry": parsed.get("expiry"),
+                        "qty": q,
+                    }
+                ],
             }
 
     rows: List[Dict[str, Any]] = []
@@ -800,6 +818,7 @@ def build_coverage_map(
                 "dte": dte,
                 "otm_pct": round(otm, 2) if otm is not None else None,
                 "short_contracts": short_qty,
+                "contracts": list(cc.get("contracts") or []),
             }
         )
 
@@ -842,6 +861,7 @@ def build_coverage_map(
                 "dte": dte,
                 "otm_pct": round(otm, 2) if otm is not None else None,
                 "short_contracts": short_qty,
+                "contracts": list(cc.get("contracts") or []),
             }
         )
     return rows

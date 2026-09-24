@@ -624,6 +624,60 @@ def test_wheel_daily_email_has_coverage_omits_agent_noise():
     assert "ALETHEIA DAILY WHEEL" in text
 
 
+def test_wheel_daily_email_shows_multi_lot_calls_and_strips_enum():
+    from src.utils.wheel_email import build_wheel_daily_email
+
+    _, text, _ = build_wheel_daily_email(
+        {
+            "timestamp": "2026-09-24T14:00:00-04:00",
+            "portfolio": {
+                "cash": 5075.0,
+                "equity": 9814.0,
+                "positions": {"NOK": {"long": 300, "long_cost_basis": 10.0}},
+            },
+            "coverage_map": [
+                {
+                    "ticker": "NOK",
+                    "shares": 300,
+                    "price": 10.63,
+                    "coverage": "covered",
+                    "contract": "NOK261009C00011500",
+                    "strike": 11.50,
+                    "expiry": "2026-10-09",
+                    "dte": 15,
+                    "otm_pct": 8.18,
+                    "short_contracts": 3,
+                    "contracts": [
+                        {
+                            "symbol": "NOK261009C00011500",
+                            "strike": 11.50,
+                            "expiry": "2026-10-09",
+                            "qty": 1,
+                        },
+                        {
+                            "symbol": "NOK261023C00012500",
+                            "strike": 12.50,
+                            "expiry": "2026-10-23",
+                            "qty": 2,
+                        },
+                    ],
+                }
+            ],
+            "decisions": {
+                "NTNX": {"action": "buy", "quantity": 1, "reasoning": "Directional"},
+            },
+            "execution_results": {
+                "NTNX": {"status": "OrderStatus.PENDING_NEW"},
+            },
+            "wheel_scorecard": {"premium_ledger_usd": 281},
+        }
+    )
+    assert "300 sh / 3 calls" in text
+    assert "also $12.50 10-23 x2" in text
+    assert "pending_new" in text
+    assert "OrderStatus" not in text
+
+
 def test_wheel_daily_email_ignores_nan_prices():
     from src.utils.wheel_email import build_wheel_daily_email
 
@@ -1314,6 +1368,67 @@ def test_csp_seeds_outstanding_put_collateral():
     assert "csp_collateral_cap" in str(results[0].get("reason") or "")
 
 
+def test_csp_skips_underlying_that_already_has_short_put():
+    from src.options.cash_secured_puts import CashSecuredPutManager
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            raise AssertionError("should not scan chain when put already open")
+
+        def submit_option_order(self, **kwargs):
+            raise AssertionError("should not submit second put on same name")
+
+    mgr = CashSecuredPutManager(min_premium_usd=10.0, min_annualized_yield_pct=1.0)
+    results = mgr.execute_cash_secured_puts(
+        broker=_Broker(),
+        csp_tickers=["NU"],
+        csp_scores={"NU": 60},
+        current_prices={"NU": 13.5},
+        max_collateral_usd=5000.0,
+        option_positions=[
+            {"symbol": "NU261030P00013000", "side": "short", "qty": 1}
+        ],
+    )
+    assert results and results[0]["status"] == "skipped"
+    assert results[0]["reason"] == "already_has_short_put"
+
+
+def test_csp_fail_reason_includes_submit_error():
+    from src.options.cash_secured_puts import CashSecuredPutManager
+
+    class _Broker:
+        def get_option_contracts(self, **kwargs):
+            return [
+                {
+                    "symbol": "LI261030P00020000",
+                    "strike": 20.0,
+                    "expiry": "2026-10-30",
+                    "tradable": True,
+                    "close_price": 0.90,
+                }
+            ]
+
+        def submit_option_order(self, **kwargs):
+            return {
+                "error": "insufficient buying power",
+                "fill_ok": False,
+                "submitted": False,
+                "status": "submit_failed",
+            }
+
+    mgr = CashSecuredPutManager(min_premium_usd=10.0, min_annualized_yield_pct=1.0)
+    results = mgr.execute_cash_secured_puts(
+        broker=_Broker(),
+        csp_tickers=["LI"],
+        csp_scores={"LI": 60},
+        current_prices={"LI": 22.0},
+        max_collateral_usd=5000.0,
+        option_positions=[],
+    )
+    assert results and results[0]["status"] == "failed"
+    assert "insufficient buying power" in str(results[0].get("reason") or "")
+
+
 def test_coverage_map_sums_qty_and_flags_overhedged_naked():
     from src.options.wheel_lifecycle import build_coverage_map
 
@@ -1363,6 +1478,7 @@ def test_coverage_map_sums_qty_and_flags_overhedged_naked():
     by_t = {r["ticker"]: r for r in rows}
     assert by_t["F"]["coverage"] == "covered"  # 200 sh / 2 contracts
     assert by_t["F"]["short_contracts"] == 2
+    assert len(by_t["F"].get("contracts") or []) == 2
     assert by_t["SOFI"]["coverage"] == "OVERHEDGED"
     assert by_t["ABEV"]["coverage"] == "NAKED_SHORT"
     assert "ABEV" not in portfolio.positions

@@ -591,6 +591,10 @@ class CoveredCallManager:
                     fill_timeout_s=self.fill_timeout_s,
                 )
                 last_order = order
+                if order and order.get("submitted") is False:
+                    last_reason = "order submission failed or no coverage slots"
+                    last_order = None
+                    break
                 if order and (not self.wait_fill or order.get("fill_ok") is True):
                     filled_total += 1
                     existing_strikes.append(_finite_px(contract.get("strike")))

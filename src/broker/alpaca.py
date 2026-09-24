@@ -943,6 +943,7 @@ class AlpacaBroker:
                 "symbol": order.symbol,
                 "qty": int(order.qty) if order.qty else qty,
                 "side": side,
+                "submitted": True,
                 "status": str(order.status)
                 if hasattr(order.status, "value")
                 else str(order.status),
@@ -963,7 +964,12 @@ class AlpacaBroker:
             return result
         except Exception as e:
             logger.error("Option order failed", contract=contract_symbol, error=str(e))
-            return None
+            return {
+                "error": str(e)[:200],
+                "fill_ok": False,
+                "submitted": False,
+                "status": "submit_failed",
+            }
 
     def get_option_positions(self) -> List[Dict]:
         """Return current option positions (contracts whose symbol length > 10).

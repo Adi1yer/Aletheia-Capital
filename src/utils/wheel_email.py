@@ -175,7 +175,10 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
             if isinstance(fill, dict) and "ok" in fill:
                 st = " [filled]" if fill.get("ok") else " [fill_failed]"
             else:
-                st = f" [{er.get('status') or 'submitted'}]"
+                raw = str(er.get("status") or "submitted")
+                if raw.startswith("OrderStatus."):
+                    raw = raw.split(".", 1)[-1]
+                st = f" [{raw.lower()}]"
         elif er:
             st = " [submitted]"
         lines.append(f"  {t}: {act} {qty}{st} — {reason}")
@@ -306,11 +309,32 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
                 )
             )
         else:
+            ncall = int(row.get("short_contracts") or 1)
+            extra = ""
+            if ncall > 1:
+                extra = f" / {ncall} calls"
             lines.append(
-                f"  {t}: {row.get('shares')} sh | {row.get('contract')} "
+                f"  {t}: {row.get('shares')} sh{extra} | {row.get('contract')} "
                 f"strike ${_f(row.get('strike')):.2f} DTE={row.get('dte')} "
                 f"OTM={_otm_label(row)}"
             )
+            extras = [
+                c
+                for c in (row.get("contracts") or [])
+                if str(c.get("symbol") or "") != str(row.get("contract") or "")
+            ]
+            if extras:
+                bits = []
+                for c in extras:
+                    try:
+                        cq = int(c.get("qty") or 1)
+                    except (TypeError, ValueError):
+                        cq = 1
+                    bit = f"${_f(c.get('strike')):.2f} {str(c.get('expiry') or '')[5:]}"
+                    if cq > 1:
+                        bit += f" x{cq}"
+                    bits.append(bit)
+                lines.append(f"      also {', '.join(bits)}")
     lines.append("")
 
     # Directional compact

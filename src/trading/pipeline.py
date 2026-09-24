@@ -1142,8 +1142,9 @@ class TradingPipeline:
                             continue
                         act = getattr(dec, "action", "")
                         reason = str(getattr(dec, "reasoning", "") or "")
-                        # Always confirm sells; confirm first-lot and add-on wheel buys
-                        # ("Wheel add-on lot" does not contain the substring "Wheel lot").
+                        # Confirm sells and wheel lot/add-on buys only. Waiting on
+                        # tiny directional leftovers would cancel them on timeout
+                        # (default cancel_on_timeout) and delay CC/CSP.
                         if act not in ("sell", "cover") and not (
                             act == "buy"
                             and (
