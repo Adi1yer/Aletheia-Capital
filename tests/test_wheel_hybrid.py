@@ -659,7 +659,7 @@ def test_allocate_adds_second_lot_when_score_high():
         cash_buffer_pct=0.0,
     )
     assert decisions["F"].action == "buy"
-    assert decisions["F"].quantity == 100
+    assert decisions["F"].quantity == 200
     assert "F" in (diag.get("extra_lot_adds") or [])
     assert decisions["SOFI"].action == "buy"
     assert decisions["SOFI"].quantity == 100
@@ -737,6 +737,78 @@ def test_allocate_prefers_extra_lot_over_new_name():
     assert decisions["F"].action == "buy"
     assert decisions["F"].quantity == 100
     assert "SOFI" not in decisions or decisions["SOFI"].action != "buy"
+
+
+def test_portfolio_long_qty_does_not_create_empty_position():
+    p = Portfolio(cash=100.0, positions={})
+    assert p.long_qty("ZZZ") == 0
+    assert "ZZZ" not in p.positions
+    p.get_position("ZZZ")
+    assert "ZZZ" in p.positions
+
+
+def test_allocate_does_not_inject_empty_probe_positions():
+    portfolio = Portfolio(cash=8000.0, positions={})
+    allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 10.0, "SOFI": 12.0},
+        wheel_candidates=[
+            WheelCandidate("F", 10.0, 80_000_000, 500, 0.9),
+            WheelCandidate("SOFI", 12.0, 80_000_000, 400, 0.8),
+        ],
+        directional_candidates=["NVDA"],
+        equity=10000.0,
+        preflight_ok={"F"},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert "SOFI" not in portfolio.positions
+    assert "NVDA" not in portfolio.positions
+
+
+def test_allocate_rejects_nan_add_lot_score():
+    portfolio = Portfolio(
+        cash=5000.0,
+        positions={"F": Position(long=100, long_cost_basis=12.0)},
+    )
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 11.0},
+        wheel_candidates=[WheelCandidate("F", 11.0, 80_000_000, 500, float("nan"))],
+        directional_candidates=[],
+        equity=10000.0,
+        add_lot_min_score=0.55,
+        short_option_underlyings={"F"},
+        preflight_ok={"F"},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert getattr(decisions.get("F"), "action", "hold") != "buy"
+    assert any("add_lot_score" in str(s.get("reason") or "") for s in diag.get("skipped") or [])
+
+
+def test_allocate_can_add_two_lots_same_session():
+    portfolio = Portfolio(
+        cash=4000.0,
+        positions={"F": Position(long=100, long_cost_basis=10.0)},
+    )
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices={"F": 10.0},
+        wheel_candidates=[WheelCandidate("F", 10.0, 80_000_000, 500, 0.90)],
+        directional_candidates=[],
+        equity=10000.0,
+        max_lots_per_name=3,
+        max_position_pct=0.40,
+        add_lot_min_score=0.55,
+        short_option_underlyings={"F"},
+        preflight_ok={"F"},
+        csp_reserve_frac=0.0,
+        cash_buffer_pct=0.0,
+    )
+    assert decisions["F"].action == "buy"
+    assert decisions["F"].quantity == 200
+    assert "F" in (diag.get("extra_lot_adds") or [])
 
 
 def test_allocate_skips_extra_lot_when_score_low():

@@ -16,6 +16,44 @@ logger = structlog.get_logger()
 CC_LOT_SIZE = 100
 
 
+def _long_qty(portfolio: "Portfolio", ticker: str) -> int:
+    if hasattr(portfolio, "long_qty"):
+        return int(portfolio.long_qty(ticker) or 0)
+    pos = (getattr(portfolio, "positions", None) or {}).get(ticker)
+    if pos is None:
+        pos = (getattr(portfolio, "positions", None) or {}).get(str(ticker).upper())
+    return int(getattr(pos, "long", 0) or 0) if pos else 0
+
+
+def _finite_px(value) -> float:
+    try:
+        px = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if px != px or px <= 0:  # NaN != NaN
+        return 0.0
+    return px
+
+
+def _short_call_strikes(option_positions: Optional[List[Dict]], underlying: str) -> List[float]:
+    und = str(underlying or "").upper()
+    out: List[float] = []
+    from src.options.wheel_lifecycle import parse_occ_symbol
+
+    for op in option_positions or []:
+        if str(op.get("side") or "").lower() != "short":
+            continue
+        parsed = parse_occ_symbol(str(op.get("symbol") or ""))
+        if not parsed or parsed.get("option_type") != "call":
+            continue
+        if str(parsed.get("underlying") or "").upper() != und:
+            continue
+        strike = _finite_px(parsed.get("strike"))
+        if strike > 0:
+            out.append(strike)
+    return out
+
+
 class CoveredCallDecision:
     """One covered-call write decision."""
 
@@ -127,12 +165,7 @@ def live_coverage_sto_qty(broker: "AlpacaBroker", underlying: str, requested: in
         return 0
     try:
         portfolio = broker.sync_portfolio()
-        pos = None
-        if hasattr(portfolio, "get_position"):
-            pos = portfolio.get_position(und)
-        if pos is None:
-            pos = (getattr(portfolio, "positions", None) or {}).get(und)
-        shares = int(getattr(pos, "long", 0) or 0) if pos else 0
+        shares = _long_qty(portfolio, und)
     except Exception:
         return 0
     try:
@@ -217,10 +250,10 @@ class CoveredCallManager:
         for ticker in list(dict.fromkeys(list(cc_lot_tickers) + list((portfolio.positions or {}).keys()))):
             if ticker not in cc_lot_tickers:
                 continue
-            pos = portfolio.get_position(ticker)
-            if not pos or pos.long < CC_LOT_SIZE:
+            shares = _long_qty(portfolio, ticker)
+            if shares < CC_LOT_SIZE:
                 continue
-            need_lots = int(pos.long) // CC_LOT_SIZE
+            need_lots = int(shares) // CC_LOT_SIZE
             have = int(have_by_und.get(ticker, 0) or 0)
             extra = need_lots - have
             if extra <= 0:
@@ -231,7 +264,7 @@ class CoveredCallManager:
                 {
                     "ticker": ticker,
                     "callable_lots": extra,
-                    "current_long": pos.long,
+                    "current_long": shares,
                     "short_calls_have": have,
                 }
             )
@@ -356,8 +389,7 @@ class CoveredCallManager:
         for ticker in flagged:
             if any(c["ticker"] == ticker for c in candidates):
                 continue
-            pos = portfolio.get_position(ticker)
-            qty = int(getattr(pos, "long", 0) or 0) if pos else 0
+            qty = _long_qty(portfolio, ticker)
             if qty < CC_LOT_SIZE:
                 results.append(
                     {
@@ -380,7 +412,7 @@ class CoveredCallManager:
 
         for cand in candidates:
             ticker = cand["ticker"]
-            price = float(current_prices.get(ticker, 0.0) or 0.0)
+            price = _finite_px(current_prices.get(ticker))
             score = int(cc_scores.get(ticker, 0) or 0)
             if price <= 0:
                 results.append(
@@ -397,25 +429,29 @@ class CoveredCallManager:
                 )
                 continue
 
-            contract, reason = self.select_contract(ticker, price, score, broker)
-            if contract is None:
-                results.append(
-                    {
-                        "underlying": ticker,
-                        "status": "skipped",
-                        "reason": reason or "no suitable contract",
-                    }
-                )
-                continue
-
             lots = int(cand["callable_lots"])
-            # Cap and write one contract at a time so partial fills cannot over-hedge.
+            existing_strikes = _short_call_strikes(existing_options, ticker)
+            # Cap and write one contract at a time; re-select so extra lots can
+            # land at a different strike than the open short.
             filled_total = 0
             last_order = None
+            last_contract = None
+            last_reason = ""
             for _ in range(max(1, lots)):
                 sto_qty = live_coverage_sto_qty(broker, ticker, 1)
                 if sto_qty <= 0:
                     break
+                floor = None
+                if existing_strikes:
+                    mx = max(existing_strikes)
+                    floor = max(0.0, (mx / price) - 1.0 + 0.005)
+                contract, reason = self.select_contract(
+                    ticker, price, score, broker, strike_floor_otm=floor
+                )
+                last_reason = reason or last_reason
+                if contract is None:
+                    break
+                last_contract = contract
                 order = broker.submit_option_order(
                     contract_symbol=contract["symbol"],
                     qty=1,
@@ -427,16 +463,20 @@ class CoveredCallManager:
                 last_order = order
                 if order and (not self.wait_fill or order.get("fill_ok") is True):
                     filled_total += 1
+                    existing_strikes.append(_finite_px(contract.get("strike")))
                 else:
                     break
 
-            prem = float(contract.get("estimated_premium_usd") or _contract_premium_usd(contract))
-            if filled_total > 0:
+            if filled_total > 0 and last_contract:
+                prem = float(
+                    last_contract.get("estimated_premium_usd")
+                    or _contract_premium_usd(last_contract)
+                )
                 decision = CoveredCallDecision(
                     underlying=ticker,
-                    contract_symbol=contract["symbol"],
-                    strike=contract["strike"],
-                    expiry=contract["expiry"],
+                    contract_symbol=last_contract["symbol"],
+                    strike=last_contract["strike"],
+                    expiry=last_contract["expiry"],
                     contracts=filled_total,
                     estimated_premium=prem * filled_total,
                     cc_score=score,
@@ -454,7 +494,7 @@ class CoveredCallManager:
                 results.append(
                     {
                         "underlying": ticker,
-                        "contract_symbol": contract["symbol"],
+                        "contract_symbol": (last_contract or {}).get("symbol"),
                         "status": "failed",
                         "reason": f"sto_not_filled_{last_order.get('status') or (last_order.get('fill') or {}).get('status')}",
                         "order": last_order,
@@ -464,9 +504,9 @@ class CoveredCallManager:
                 results.append(
                     {
                         "underlying": ticker,
-                        "contract_symbol": contract["symbol"],
-                        "status": "failed",
-                        "reason": "order submission failed or no coverage slots",
+                        "contract_symbol": (last_contract or {}).get("symbol"),
+                        "status": "skipped" if last_reason else "failed",
+                        "reason": last_reason or "order submission failed or no coverage slots",
                     }
                 )
 

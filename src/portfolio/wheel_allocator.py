@@ -101,9 +101,11 @@ def allocate_wheel_hybrid_book(
     }
 
     def held_qty(t: str) -> int:
-        pos = portfolio.get_position(t) if hasattr(portfolio, "get_position") else None
+        if hasattr(portfolio, "long_qty"):
+            return int(portfolio.long_qty(t) or 0)
+        pos = (getattr(portfolio, "positions", None) or {}).get(t)
         if pos is None:
-            pos = (portfolio.positions or {}).get(t)
+            pos = (getattr(portfolio, "positions", None) or {}).get(str(t).upper())
         if not pos:
             return 0
         return int(getattr(pos, "long", 0) or 0)
@@ -151,7 +153,14 @@ def allocate_wheel_hybrid_book(
             else:
                 graduated_lots.append(t)
 
-    score_by_ticker = {str(c.ticker).upper(): float(c.score) for c in wheel_candidates}
+    score_by_ticker: Dict[str, float] = {}
+    for c in wheel_candidates:
+        try:
+            sc = float(c.score)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(sc):
+            score_by_ticker[str(c.ticker).upper()] = sc
     ranked_new = [c.ticker for c in wheel_candidates if c.ticker not in existing_wheel]
     if preflight is not None:
         ranked_new = [t for t in ranked_new if t in preflight]
@@ -208,6 +217,9 @@ def allocate_wheel_hybrid_book(
             if t not in short_und:
                 diagnostics["csp_candidates"].append(t)
             return
+        if max_name_dollars > 0 and (held + need) * px > max_name_dollars + 1e-6:
+            diagnostics["skipped"].append({"ticker": t, "reason": "max_position_pct"})
+            return
         cost = need * px
         if wheel_spent + cost > lot_budget:
             if held < CC_LOT and t not in short_und:
@@ -243,59 +255,77 @@ def allocate_wheel_hybrid_book(
         reverse=True,
     )
     for t in extra_ranked:
-        if t in decisions and getattr(decisions[t], "action", "") != "hold":
+        act0 = str(getattr(decisions.get(t), "action", "") or "")
+        if act0 and act0 not in ("hold", "buy"):
+            continue
+        if act0 == "buy" and "add-on" not in str(getattr(decisions.get(t), "reasoning", "") or ""):
             continue
         px = _finite_px(current_prices.get(t))
         if px <= 0 or px > float(max_underlying_price):
             continue
         held = held_qty(t)
-        pending_buy = int((pending.get(t) or {}).get("buy_qty", 0) or 0)
-        planned = int(getattr(decisions.get(t), "quantity", 0) or 0) if (
-            t in decisions and getattr(decisions.get(t), "action", "") == "buy"
-        ) else 0
-        have = held + pending_buy + planned
         # Add-on only after a lot is already on the book (not the same-session first buy).
         if held < CC_LOT:
             continue
-        score = float(score_by_ticker.get(str(t).upper(), 0.0) or 0.0)
-        if score + 1e-9 < float(add_lot_min_score):
+        raw_score = score_by_ticker.get(str(t).upper())
+        try:
+            score = float(raw_score) if raw_score is not None else 0.0
+        except (TypeError, ValueError):
+            score = 0.0
+        if not math.isfinite(score) or score + 1e-9 < float(add_lot_min_score):
             diagnostics["skipped"].append(
-                {"ticker": t, "reason": f"add_lot_score_{score:.2f}<{float(add_lot_min_score):.2f}"}
+                {
+                    "ticker": t,
+                    "reason": (
+                        f"add_lot_score_{score:.2f}<{float(add_lot_min_score):.2f}"
+                        if math.isfinite(score)
+                        else "add_lot_score_nan"
+                    ),
+                }
             )
-            continue
-        if have + CC_LOT > max_shares:
-            diagnostics["skipped"].append({"ticker": t, "reason": "max_lots_per_name"})
-            continue
-        cost = CC_LOT * px
-        if max_name_dollars > 0 and (have + CC_LOT) * px > max_name_dollars + 1e-6:
-            diagnostics["skipped"].append({"ticker": t, "reason": "max_position_pct"})
-            continue
-        # Extra lots fill the 70% wheel sleeve (not the thinner first-lot/CSP split).
-        if wheel_spent + cost > wheel_budget:
-            diagnostics["skipped"].append({"ticker": t, "reason": "wheel_budget_extra"})
-            continue
-        if cash - cost < buffer_cash:
-            diagnostics["skipped"].append({"ticker": t, "reason": "cash_buffer_extra"})
             continue
         if preflight is not None and t not in preflight:
             diagnostics["skipped"].append({"ticker": t, "reason": "preflight_failed_extra"})
             continue
-        prev = decisions.get(t)
-        prev_qty = int(getattr(prev, "quantity", 0) or 0) if prev and getattr(prev, "action", "") == "buy" else 0
-        decisions[t] = PortfolioDecision(
-            action="buy",
-            quantity=prev_qty + CC_LOT,
-            confidence=75,
-            reasoning=(
-                f"Wheel add-on lot (score {score:.2f}, "
-                f"{(have + CC_LOT) // CC_LOT} lots, {wheel_pct:.0%} sleeve)"
-            ),
-        )
-        wheel_spent += cost
-        cash -= cost
-        extra_adds.append(t)
-        if t not in diagnostics["cc_lot_tickers"]:
-            diagnostics["cc_lot_tickers"].append(t)
+        pending_buy = int((pending.get(t) or {}).get("buy_qty", 0) or 0)
+        planned = 0
+        added_here = 0
+        while True:
+            have = held + pending_buy + planned
+            if have + CC_LOT > max_shares:
+                if added_here == 0:
+                    diagnostics["skipped"].append({"ticker": t, "reason": "max_lots_per_name"})
+                break
+            cost = CC_LOT * px
+            if max_name_dollars > 0 and (have + CC_LOT) * px > max_name_dollars + 1e-6:
+                if added_here == 0:
+                    diagnostics["skipped"].append({"ticker": t, "reason": "max_position_pct"})
+                break
+            if wheel_spent + cost > wheel_budget:
+                if added_here == 0:
+                    diagnostics["skipped"].append({"ticker": t, "reason": "wheel_budget_extra"})
+                break
+            if cash - cost < buffer_cash:
+                if added_here == 0:
+                    diagnostics["skipped"].append({"ticker": t, "reason": "cash_buffer_extra"})
+                break
+            planned += CC_LOT
+            wheel_spent += cost
+            cash -= cost
+            added_here += 1
+            decisions[t] = PortfolioDecision(
+                action="buy",
+                quantity=planned,
+                confidence=75,
+                reasoning=(
+                    f"Wheel add-on lot (score {score:.2f}, "
+                    f"{(have + CC_LOT) // CC_LOT} lots, {wheel_pct:.0%} sleeve)"
+                ),
+            )
+            if t not in diagnostics["cc_lot_tickers"]:
+                diagnostics["cc_lot_tickers"].append(t)
+        if added_here:
+            extra_adds.append(t)
     diagnostics["extra_lot_adds"] = extra_adds
 
     for t in wheel_targets:

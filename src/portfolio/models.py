@@ -26,6 +26,13 @@ class Portfolio(BaseModel):
         if ticker not in self.positions:
             self.positions[ticker] = Position()
         return self.positions[ticker]
+
+    def long_qty(self, ticker: str) -> int:
+        """Read long shares without creating an empty position."""
+        pos = (self.positions or {}).get(ticker)
+        if pos is None and ticker:
+            pos = (self.positions or {}).get(str(ticker).upper())
+        return int(getattr(pos, "long", 0) or 0) if pos else 0
     
     def get_equity(self, current_prices: Dict[str, float]) -> float:
         """Calculate total equity (cash + market value of positions)"""

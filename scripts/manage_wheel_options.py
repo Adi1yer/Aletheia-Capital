@@ -50,17 +50,30 @@ def main() -> int:
     broker = AlpacaBroker()
     portfolio = broker.sync_portfolio()
     positions = broker.get_positions() or {}
+    def _px(value) -> float:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if v != v or v <= 0:
+            return 0.0
+        return v
+
     prices: dict[str, float] = {}
     for t, p in positions.items():
-        qty = float((p or {}).get("qty") or 0)
-        mv = float((p or {}).get("market_value") or 0)
+        qty = _px((p or {}).get("qty"))
+        mv = _px((p or {}).get("market_value"))
         if qty > 0 and mv:
             prices[t] = abs(mv) / qty
         else:
-            prices[t] = float((p or {}).get("avg_entry_price") or 0)
+            entry = _px((p or {}).get("avg_entry_price"))
+            if entry > 0:
+                prices[t] = entry
     for t, pos in (portfolio.positions or {}).items():
-        if prices.get(t, 0) <= 0:
-            prices[t] = float(getattr(pos, "long_cost_basis", 0) or 0)
+        if _px(prices.get(t)) <= 0:
+            basis = _px(getattr(pos, "long_cost_basis", 0))
+            if basis > 0:
+                prices[t] = basis
 
     mgr = CoveredCallManager(
         min_premium_usd=float(os.getenv("CC_MIN_PREMIUM_USD", "15")),
@@ -124,10 +137,13 @@ def main() -> int:
     cc_lots = []
     for t, pos in (portfolio.positions or {}).items():
         qty = int(getattr(pos, "long", 0) or 0)
-        px = float(prices.get(t) or 0)
-        # Include graduated lots (price > soft max) — same as morning allocator.
-        if qty >= 100 and px > 0:
+        px = _px(prices.get(t))
+        # Include every ≥100 lot so afternoon can cover an extra lot even if the
+        # mark is missing (select_contract will skip if still unpriced).
+        if qty >= 100:
             cc_lots.append(t)
+            if px <= 0:
+                logger.warning("Afternoon CC lot has no mark; still attempting write", ticker=t)
 
     cc_results: list = []
     if cc_lots and execute:
