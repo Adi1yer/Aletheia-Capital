@@ -129,6 +129,7 @@ jobs:
         run: poetry run python preflight.py --skip-biotech --deepseek-timeout 30 --soft-fail-deepseek
 
       - name: Run daily wheel scan & rebalance
+        id: scan
         if: github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true'
         env:
           SCAN_CACHE_KEEP_WEEKS: "26"
@@ -175,6 +176,16 @@ jobs:
         run: |
           echo "Skipping full wheel rebalance: ${{ steps.once.outputs.reason }}"
           echo "Manual workflow_dispatch still forces a re-run."
+
+      - name: MISSED RUN email if scan failed
+        if: failure() && steps.scan.outcome == 'failure'
+        env:
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        run: poetry run python scripts/check_wheel_missed_run.py --force-missed
 
       - name: Post-run ops orchestrator
         if: always() && (github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true')

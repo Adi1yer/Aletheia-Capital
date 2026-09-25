@@ -533,6 +533,12 @@ def main() -> None:
             sent = get_email_notifier().send_trading_results(recipient, results)
             if sent:
                 logger.info("Weekly email sent", recipient=recipient, run_id=results.get("run_id"))
+                try:
+                    from src.performance.official_track import mark_successful_run
+
+                    mark_successful_run()
+                except Exception as me:
+                    logger.warning("Could not write official last-success marker", error=str(me))
             else:
                 logger.warning("Weekly email not sent (SMTP/send failed)", recipient=recipient)
         except Exception as e:

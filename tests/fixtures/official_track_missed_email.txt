@@ -1,0 +1,15 @@
+ALETHEIA DAILY WHEEL — MISSED RUN — 2026-09-28
+========================================================================
+TRACK RECORD (see last successful snapshot; no session NAV today)
+----------------------------------------
+  Last successful morning: 2026-09-25
+  Reason: forced
+
+OPS HEALTH
+----------------------------------------
+  Morning FAIL | Afternoon SKIP
+  Clock: no successful email this NYSE session
+  Alerts: morning job missed on an open weekday
+
+Track wheel-10k-paper-v1 · start 2026-09-21 · official NAV=Alpaca equity
+This is an automated missed-run alert. Paper state was not reset.

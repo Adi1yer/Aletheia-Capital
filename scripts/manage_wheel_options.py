@@ -310,6 +310,22 @@ def main() -> int:
         f"manage execute={execute} btc={btc} rolls={rolls} cc_wrote={wrote} "
         f"unwind={unwound} cc_skipped={len(skipped)} lots={cc_lots}"
     )
+    try:
+        from src.performance.official_track import load_snapshots, save_snapshot
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+
+        today = _dt.now(tz=_ZI("America/New_York")).date().isoformat()
+        snaps = load_snapshots()
+        for s in snaps:
+            if s.get("date") == today:
+                job = dict(s.get("job") or {})
+                job["afternoon"] = "ok" if execute else "skip"
+                s["job"] = job
+                save_snapshot(s)
+                break
+    except Exception:
+        pass
 
     # Email on changes only (default for this script when recipient set).
     changes_only = os.getenv("EMAIL_ON_CHANGES_ONLY", "1").strip() not in ("0", "false", "False")

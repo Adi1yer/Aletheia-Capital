@@ -17,6 +17,19 @@ def _f(x: Any, default: float = 0.0) -> float:
     return v
 
 
+def _pct_label(value: Any, digits: int = 1) -> str:
+    v = _f(value, default=float("nan"))
+    if not math.isfinite(v):
+        return "n/a"
+    return f"{v:.{digits}f}%"
+
+
+def _signed_pct(value: Optional[float]) -> str:
+    if value is None or not math.isfinite(_f(value, default=float("nan"))):
+        return "n/a"
+    return f"{float(value):+.2f}%"
+
+
 def _otm_label(row: dict) -> str:
     if _f(row.get("price")) <= 0:
         return "n/a"
@@ -129,11 +142,23 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
         "equity": round(equity, 2),
         "cash": round(cash, 2),
         "spendable_cash": round(spendable, 2),
-        "cash_pct": round(100.0 * cash / equity, 1) if equity > 0 else 0.0,
+        "cash_pct": (
+            round(100.0 * cash / equity, 1)
+            if equity > 0 and math.isfinite(cash)
+            else None
+        ),
         "wheel_mv": round(wheel_mv, 2),
-        "wheel_pct": round(100.0 * wheel_mv / equity, 1) if equity > 0 else 0.0,
+        "wheel_pct": (
+            round(100.0 * wheel_mv / equity, 1)
+            if equity > 0 and math.isfinite(wheel_mv)
+            else None
+        ),
         "directional_mv": round(dir_mv, 2),
-        "directional_pct": round(100.0 * dir_mv / equity, 1) if equity > 0 else 0.0,
+        "directional_pct": (
+            round(100.0 * dir_mv / equity, 1)
+            if equity > 0 and math.isfinite(dir_mv)
+            else None
+        ),
         "target_wheel_pct": 70.0,
         "target_directional_pct": 30.0,
         "stock_mv": round(stock_mv, 2),
@@ -141,6 +166,118 @@ def _sleeve_mix(results: dict) -> Dict[str, Any]:
         "option_mtm": None if option_mtm is None else round(option_mtm, 2),
         "premium_ledger": round(_f(ws.get("premium_ledger_usd")), 2),
     }
+
+
+def _na(value: Any, fmt: str = "{}") -> str:
+    if value is None:
+        return "n/a"
+    try:
+        if isinstance(value, float) and not math.isfinite(value):
+            return "n/a"
+    except TypeError:
+        return "n/a"
+    try:
+        return fmt.format(value)
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def _track_record_lines(tr: Dict[str, Any]) -> List[str]:
+    if not tr:
+        return [
+            "TRACK RECORD (wheel-10k-paper-v1 · since 2026-09-21)",
+            "-" * 40,
+            "  (no official snapshots yet — first persist writes today's NAV)",
+            "",
+        ]
+    lines = [
+        f"TRACK RECORD ({tr.get('track_id') or 'wheel-10k-paper-v1'} · since {tr.get('start_date')})",
+        "-" * 40,
+        (
+            f"  Start ${_f(tr.get('start_nav_usd')):,.0f} → NAV ${_f(tr.get('current_nav_usd')):,.2f}  "
+            f"({_signed_pct(tr.get('abs_return_pct'))} / "
+            f"${_f(tr.get('abs_return_usd')):+,.2f})"
+        ),
+        (
+            f"  SPY since start {_signed_pct(tr.get('spy_return_pct'))} | "
+            f"excess {_signed_pct(tr.get('excess_return_pct'))} / "
+            f"${_na(tr.get('excess_return_usd'), '{:+,.2f}')}"
+        ),
+        (
+            f"  Max DD {_na(tr.get('max_drawdown_pct'), '{:.2f}%')} | "
+            f"now {_na(tr.get('current_drawdown_pct'), '{:.2f}%')} | "
+            f"Sharpe {_na(tr.get('sharpe'), '{:.2f}')} | "
+            f"Sortino {_na(tr.get('sortino'), '{:.2f}')} (rf={_f(tr.get('risk_free_annual')):.0%})"
+        ),
+        (
+            f"  Hit rate {_na(tr.get('hit_rate_pct'), '{:.1f}%')} "
+            f"({tr.get('hit_sessions') or 0}/{tr.get('return_sessions') or 0} sessions) | "
+            f"option credit {_na(tr.get('option_credit_hit_pct'), '{:.0f}%')} "
+            f"({tr.get('option_credit_closes') or 0}/{tr.get('option_closes') or 0})"
+        ),
+        (
+            f"  Turnover 5d {_na(tr.get('turnover_5'), '{:.2f}')}x | "
+            f"21d {_na(tr.get('turnover_21'), '{:.2f}')}x"
+        ),
+        (
+            f"  Beta {_na(tr.get('beta'), '{:.2f}')} | "
+            f"corr {_na(tr.get('corr'), '{:.2f}')} | "
+            f"alpha {_na(tr.get('alpha_annual'), '{:+.2f}%')} ann."
+        ),
+        (
+            f"  Sessions {tr.get('sessions_with_email') or 0}/"
+            f"{tr.get('sessions_expected') or 0} expected | "
+            f"last success {tr.get('last_successful_date') or 'n/a'}"
+        ),
+        "",
+    ]
+    return lines
+
+
+def _ops_health_lines(ops: Dict[str, Any]) -> List[str]:
+    orders = ops.get("orders") or {}
+    fails = ops.get("fill_failures") or []
+    alerts = ops.get("coverage_alerts") or []
+    late = " LATE" if ops.get("late") else " on time"
+    lines = [
+        "OPS HEALTH",
+        "-" * 40,
+        (
+            f"  Morning {str(ops.get('morning') or 'n/a').upper()} | "
+            f"Afternoon {str(ops.get('afternoon') or 'n/a').upper()}"
+            + (f" | {ops.get('holiday_reason')}" if ops.get("holiday_reason") else "")
+        ),
+        (
+            f"  Clock {ops.get('clock') or 'n/a'} (expect {ops.get('expected_window') or '10:30 ET'})"
+            f"{late}"
+        ),
+        (
+            f"  Broker {'OK' if ops.get('broker_ok') else 'DOWN'} | "
+            f"spendable ${_f(ops.get('buying_power')):,.2f}"
+        ),
+        (
+            f"  Orders: {orders.get('submitted') or 0} submitted / "
+            f"{orders.get('filled') or 0} filled / "
+            f"{orders.get('partial') or 0} partial / "
+            f"{orders.get('rejected') or 0} rejected / "
+            f"{orders.get('pending') or 0} pending"
+        ),
+        f"  Fills: {', '.join(str(x) for x in fails) if fails else '(none failed)'}",
+        (
+            f"  Invariants: {', '.join(str(x) for x in alerts) if alerts else 'no coverage alerts'}"
+            + (" | coverage UNAVAILABLE" if ops.get("coverage_unavailable") else "")
+            + (" | CSP over limit" if ops.get("csp_over_limit") else "")
+        ),
+        (
+            f"  Kill: max pos {int(round(_f(ops.get('max_position_pct')) * 100))}% | "
+            + (
+                f"HALTED {ops.get('halt_reason')}"
+                if ops.get("trading_halted")
+                else "trading live"
+            )
+        ),
+    ]
+    return lines
 
 
 def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
@@ -156,30 +293,26 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
 
     mix = _sleeve_mix(results)
     ws = results.get("wheel_scorecard") or {}
-    spy_ret = ws.get("spy_return_since_start") or ws.get("spy_pct")
-    fund_ret = ws.get("fund_return_since_start") or ws.get("fund_pct")
-    spy_part = ""
-    if spy_ret is not None:
-        try:
-            spy_part = f" (SPY {_f(spy_ret)*100:+.2f}% since start)"
-        except Exception:
-            spy_part = ""
+    tr = results.get("track_record") or {}
+    spy_since = tr.get("spy_return_pct")
+    excess = tr.get("excess_return_pct")
     subject = (
         f"Aletheia daily wheel — {day_label} — "
-        f"cash+stocks ${mix['cash_plus_stocks']:,.2f} "
-        f"(Alpaca ${mix['equity']:,.2f}){spy_part}"
+        f"equity ${mix['equity']:,.2f} "
+        f"(SPY {_signed_pct(spy_since)} / excess {_signed_pct(excess)})"
     )
 
     lines: List[str] = []
     lines.append(f"ALETHEIA DAILY WHEEL — {day_label}")
     lines.append("=" * 72)
+    lines.extend(_track_record_lines(tr))
     lines.append(
         f"Cash + stocks ${mix['cash_plus_stocks']:,.2f} "
         f"(premium sits in cash; open shorts not subtracted)"
     )
     cash_line = (
         f"Alpaca equity ${mix['equity']:,.2f} | Cash ${mix['cash']:,.2f} "
-        f"({mix['cash_pct']:.1f}%)"
+        f"({_pct_label(mix.get('cash_pct'))})"
     )
     spendable = _f(mix.get("spendable_cash"))
     if spendable > 0 and mix["cash"] - spendable > 1.0:
@@ -191,21 +324,18 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
             f"(Alpaca subtracts this from NAV)"
         )
     lines.append(
-        f"Sleeves actual: wheel ${mix['wheel_mv']:,.2f} ({mix['wheel_pct']:.1f}% / target "
+        f"Sleeves actual: wheel ${mix['wheel_mv']:,.2f} "
+        f"({_pct_label(mix.get('wheel_pct'))} / target "
         f"{mix['target_wheel_pct']:.0f}%) | "
-        f"directional ${mix['directional_mv']:,.2f} ({mix['directional_pct']:.1f}% / target "
+        f"directional ${mix['directional_mv']:,.2f} "
+        f"({_pct_label(mix.get('directional_pct'))} / target "
         f"{mix['target_directional_pct']:.0f}%)"
     )
-    if fund_ret is not None or spy_ret is not None:
-        lines.append(
-            f"vs SPY: fund={fund_ret if fund_ret is not None else 'n/a'} | "
-            f"spy={spy_ret if spy_ret is not None else 'n/a'} | "
-            f"Sharpe fund={ws.get('fund_sharpe')} spy={ws.get('spy_sharpe')} | "
-            f"maxDD={ws.get('max_drawdown')}"
-        )
     lines.append(
         f"Premium collected (ledger): ${mix['premium_ledger']:,.2f}"
     )
+    lines.append("")
+    lines.extend(_ops_health_lines(results.get("ops_health") or {}))
     lines.append("")
 
     # Actions
@@ -437,13 +567,23 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
     if dir_rows == 0:
         lines.append("  (none / see coverage map)")
     lines.append("")
+    fp = results.get("config_fingerprint") or tr.get("config_fingerprint") or ""
+    lines.append(
+        f"Track {tr.get('track_id') or 'wheel-10k-paper-v1'} · "
+        f"start {tr.get('start_date') or '2026-09-21'} · "
+        f"official NAV=Alpaca equity · fp {fp or 'n/a'}"
+    )
     lines.append("This is an automated daily paper-trading digest.")
 
     text = "\n".join(lines)
 
     # Minimal HTML
     html_body = "<br>".join(
-        f"<b>{line}</b>" if line.startswith("ACTIONS") or line.startswith("COVERAGE") or line.startswith("OPEN SHORT") or line.startswith("DIRECTIONAL") or line.startswith("ALETHEIA") else line
+        f"<b>{line}</b>"
+        if line.startswith(
+            ("ACTIONS", "COVERAGE", "OPEN SHORT", "DIRECTIONAL", "ALETHEIA", "TRACK RECORD", "OPS HEALTH")
+        )
+        else line
         for line in lines
     )
     html = f"""<!DOCTYPE html>
@@ -492,3 +632,129 @@ def manage_results_have_actions(
         ):
             return True
     return False
+
+
+def _html_wrap(text: str) -> str:
+    return f"""<!DOCTYPE html>
+<html><body style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:1.45;color:#111">
+<pre style="white-space:pre-wrap">{text}</pre>
+</body></html>"""
+
+
+def build_missed_run_email(
+    *,
+    day_label: str,
+    reason: str,
+    last_success: Optional[str] = None,
+    holiday_reason: str = "",
+) -> Tuple[str, str, str]:
+    subject = f"Aletheia daily wheel — MISSED RUN — {day_label}"
+    lines = [
+        f"ALETHEIA DAILY WHEEL — MISSED RUN — {day_label}",
+        "=" * 72,
+        "TRACK RECORD (see last successful snapshot; no session NAV today)",
+        "-" * 40,
+        f"  Last successful morning: {last_success or 'none'}",
+        f"  Reason: {reason}",
+        "",
+        "OPS HEALTH",
+        "-" * 40,
+        "  Morning FAIL | Afternoon SKIP",
+        f"  Clock: no successful email this NYSE session",
+        f"  Alerts: morning job missed on an open weekday",
+    ]
+    if holiday_reason:
+        lines.append(f"  Calendar: {holiday_reason}")
+    lines.append("")
+    lines.append("Track wheel-10k-paper-v1 · start 2026-09-21 · official NAV=Alpaca equity")
+    lines.append("This is an automated missed-run alert. Paper state was not reset.")
+    text = "\n".join(lines)
+    return subject, text, _html_wrap(text)
+
+
+def build_wheel_weekly_email(
+    *,
+    friday_label: str,
+    track: Dict[str, Any],
+    week_snaps: List[dict],
+    ops_notes: Optional[List[str]] = None,
+    fingerprint: str = "",
+) -> Tuple[str, str, str]:
+    navs = []
+    for s in week_snaps:
+        navs.append((str(s.get("date") or "")[5:], _f(s.get("official_nav_usd"))))
+    week_ret = None
+    week_spy = None
+    week_excess = None
+    if len(week_snaps) >= 2:
+        a = _f(week_snaps[0].get("official_nav_usd"))
+        b = _f(week_snaps[-1].get("official_nav_usd"))
+        if a > 0:
+            week_ret = (b / a - 1.0) * 100.0
+        sa = _f(week_snaps[0].get("spy_level"))
+        sb = _f(week_snaps[-1].get("spy_level"))
+        if sa > 0 and sb > 0:
+            week_spy = (sb / sa - 1.0) * 100.0
+        if week_ret is not None and week_spy is not None:
+            week_excess = week_ret - week_spy
+    path = " → ".join(f"{d} ${v:,.0f}" for d, v in navs) or "(no weekday snapshots)"
+    prem0 = _f((week_snaps[0] if week_snaps else {}).get("premium_ledger_usd"))
+    prem1 = _f((week_snaps[-1] if week_snaps else {}).get("premium_ledger_usd"))
+    prem_week = prem1 - prem0
+    rolls = sum(int((s.get("actions") or {}).get("rolls") or 0) for s in week_snaps)
+    btc = sum(int((s.get("actions") or {}).get("btc") or 0) for s in week_snaps)
+    added, dropped = ([], [])
+    try:
+        from src.performance.official_track import top_contributors
+
+        added, dropped = top_contributors(week_snaps)
+    except Exception:
+        pass
+    fails = []
+    for s in week_snaps:
+        fails.extend(s.get("fill_failures") or [])
+        fails.extend(s.get("coverage_alerts") or [])
+    subject = (
+        f"Aletheia weekly wheel — {friday_label} — "
+        f"equity ${_f(track.get('current_nav_usd')):,.2f} "
+        f"(SPY {_signed_pct(track.get('spy_return_pct'))} / "
+        f"excess {_signed_pct(track.get('excess_return_pct'))})"
+    )
+    lines = [
+        f"ALETHEIA WEEKLY WHEEL — {friday_label}",
+        "=" * 72,
+        f"Week NAV: {path}",
+        (
+            f"Weekly return {_signed_pct(week_ret)} | "
+            f"SPY {_signed_pct(week_spy)} | "
+            f"excess {_signed_pct(week_excess)}"
+        ),
+        "",
+    ]
+    lines.extend(_track_record_lines(track))
+    lines.append(
+        f"Drawdown: current {_na(track.get('current_drawdown_pct'), '{:.2f}%')} | "
+        f"max {_na(track.get('max_drawdown_pct'), '{:.2f}%')}"
+    )
+    lines.append(
+        f"This week: premium Δ ${prem_week:,.2f} | rolls {rolls} | BTC {btc}"
+    )
+    lines.append(f"Added: {', '.join(added) or '—'} | Dropped: {', '.join(dropped) or '—'}")
+    lines.append("")
+    lines.append("OPS SUMMARY")
+    lines.append("-" * 40)
+    if ops_notes:
+        for n in ops_notes[:8]:
+            lines.append(f"  {n}")
+    if fails:
+        lines.append(f"  Issues: {', '.join(str(x) for x in fails[:8])}")
+    else:
+        lines.append("  Issues: (none recorded)")
+    lines.append("")
+    lines.append(
+        f"No silent resets: start {track.get('start_date')} | "
+        f"fp {fingerprint or track.get('config_fingerprint') or 'n/a'} | "
+        f"track {track.get('track_id')}"
+    )
+    text = "\n".join(lines)
+    return subject, text, _html_wrap(text)

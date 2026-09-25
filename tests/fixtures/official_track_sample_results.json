@@ -1,0 +1,90 @@
+{
+  "wheel_mode": true,
+  "timestamp": "2026-09-25T14:00:00-04:00",
+  "portfolio": {
+    "cash": 2467.07,
+    "raw_cash": 3330.0,
+    "equity": 9797.2,
+    "positions": {
+      "F": {"long": 100, "long_cost_basis": 12.0},
+      "NOK": {"long": 300, "long_cost_basis": 10.5}
+    }
+  },
+  "coverage_map": [
+    {
+      "ticker": "F",
+      "shares": 100,
+      "price": 12.6,
+      "coverage": "covered",
+      "contract": "F261016C00013000",
+      "strike": 13.0,
+      "dte": 21,
+      "otm_pct": 3.17,
+      "short_contracts": 1
+    }
+  ],
+  "short_put_map": [
+    {
+      "ticker": "NU",
+      "contract": "NU261030P00013000",
+      "strike": 13.0,
+      "dte": 35,
+      "qty": 1,
+      "collateral_usd": 1300,
+      "shares": 0,
+      "price": 13.56,
+      "otm_pct": 4.13
+    }
+  ],
+  "option_mtm_usd": -311.0,
+  "decisions": {},
+  "execution_results": {},
+  "execution_status": {"submitted": 5, "filled": 5, "partial": 0, "failed": 0, "pending": 0},
+  "wheel_scorecard": {"premium_ledger_usd": 376},
+  "track_record": {
+    "track_id": "wheel-10k-paper-v1",
+    "start_date": "2026-09-21",
+    "start_nav_usd": 10000,
+    "current_nav_usd": 9797.2,
+    "abs_return_pct": -2.03,
+    "abs_return_usd": -202.8,
+    "spy_return_pct": 0.4,
+    "excess_return_pct": -2.43,
+    "excess_return_usd": -243.0,
+    "max_drawdown_pct": -2.03,
+    "current_drawdown_pct": -2.03,
+    "sharpe": null,
+    "sortino": null,
+    "risk_free_annual": 0.0,
+    "hit_rate_pct": 25.0,
+    "hit_sessions": 1,
+    "return_sessions": 4,
+    "option_credit_hit_pct": 100.0,
+    "option_credit_closes": 1,
+    "option_closes": 1,
+    "turnover_5": 0.08,
+    "turnover_21": 0.08,
+    "beta": null,
+    "corr": null,
+    "alpha_annual": null,
+    "sessions_with_email": 5,
+    "sessions_expected": 5,
+    "last_successful_date": "2026-09-25",
+    "config_fingerprint": "samplefp0001"
+  },
+  "ops_health": {
+    "morning": "ok",
+    "afternoon": "skip",
+    "clock": "10:32 ET",
+    "expected_window": "10:30 ET",
+    "late": false,
+    "broker_ok": true,
+    "buying_power": 2467.07,
+    "orders": {"submitted": 5, "filled": 5, "partial": 0, "rejected": 0, "pending": 0},
+    "fill_failures": [],
+    "coverage_alerts": [],
+    "max_position_pct": 0.35,
+    "trading_halted": false
+  },
+  "config_fingerprint": "samplefp0001"
+}
