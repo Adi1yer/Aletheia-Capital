@@ -267,23 +267,29 @@ def test_csp_collateral_release_on_assignment():
 
 def test_csp_assignment_insufficient_cash_force_expire():
     """Test that insufficient cash for assignment forces expiry (no orphan short)."""
-    portfolio = WheelPortfolio(initial_cash=1000.0)  # Very low cash
+    portfolio = WheelPortfolio(initial_cash=10000.0)
     
-    # Write CSP with small collateral (can reserve $500)
+    # Write CSP successfully
     portfolio.write_cash_secured_put(
         "TEST",
-        strike=5.0,
+        strike=20.0,
         expiry=date.today() + timedelta(days=1),
-        premium_per_share=0.20,
+        premium_per_share=0.50,
         trade_date=date.today(),
     )
     
     assert len(portfolio.short_puts) == 1
+    assert portfolio.cash == 10050.0  # 10000 + 50 premium
+    assert portfolio.reserved_cash == 2000.0  # 20*100 collateral
+    
+    # Simulate losing most cash (e.g., other failed trades, directional losses)
+    # Leave less than strike*100 needed for assignment
+    portfolio.cash = 1500.0  # Insufficient for $2000 assignment
     
     # Try to assign - should fail due to insufficient cash, but NOT leave orphan
     success = portfolio.assign_put(
         "TEST",
-        strike=5.0,
+        strike=20.0,
         expiry=date.today() + timedelta(days=1),
         trade_date=date.today() + timedelta(days=1),
     )
