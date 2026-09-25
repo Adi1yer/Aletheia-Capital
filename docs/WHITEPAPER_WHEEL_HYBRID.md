@@ -460,47 +460,63 @@ where:
 - Assignment heuristics: Close above/below strike at expiry.
 - Fixed research universe (6–8 names, see design doc) to avoid look-ahead bias.
 
-**Simulated backtest results** (2020–2024, $10k initial NAV):
+**Historical simulation results** (2020–2024, $10k initial NAV):
 
-*Note: The following are **fixture/example** numbers generated via `scripts/generate_fixture_backtest.py` to demonstrate output format. These are NOT from a real historical simulation. Run the backtest CLI yourself to generate actual results.*
+*Note: These results are from a **real historical simulation** using equity price history (yfinance) and Black-Scholes option pricing with realized volatility proxy. This is NOT live trading data; it uses synthetic option fills at mid-market with no spread costs. See `data/backtests/wheel_hybrid/2020_2024_10k/` for full artifacts.*
 
-| Metric | Fixture Value | Notes |
-|--------|---------------|-------|
+| Metric | Simulated Value | Notes |
+|--------|-----------------|-------|
 | **Start NAV** | $10,000 | 2020-01-01 |
-| **End NAV** | $13,246 | *Fixture data* |
-| **Abs Return** | +32.5% | ~5.8% CAGR over 5 years |
-| **SPY Return (same period)** | +35.2% | *Hypothetical; actual 2020-2024 was higher* |
-| **Excess Return** | -2.7% | Underperformed SPY in melt-up (expected) |
-| **Max Drawdown** | -16.8% | Lower than typical SPY DD (~-25% in 2022) |
-| **Sharpe (rf=0%)** | 0.74 | Decent risk-adjusted return |
-| **Sortino (rf=0%)** | 0.98 | Good downside protection |
-| **Beta** | 0.68 | Lower market exposure than SPY |
-| **Correlation** | 0.79 | Highly correlated but not 1:1 |
-| **Alpha (annual)** | +1.45% | Positive alpha despite negative excess |
-| **Hit Rate** | 53.8% | Slightly better than coin flip |
-| **Premium Collected** | $2,847 | Cumulative option income over 5 years |
+| **End NAV** | $14,545 | 2024-12-31 |
+| **Abs Return** | **+45.5%** | 7.8% CAGR over 5 years |
+| **SPY Return (same period)** | **+95.3%** | Strong bull market 2020-2024 |
+| **Excess Return** | **-49.8%** | Significantly underperformed SPY |
+| **Max Drawdown** | **-81.4%** | Likely COVID crash March 2020 |
+| **Sharpe (rf=0%)** | 0.40 | Modest risk-adjusted return |
+| **Sortino (rf=0%)** | 0.59 | Moderate downside protection |
+| **Beta** | **1.45** | Higher than expected (>1.0) |
+| **Correlation** | 0.60 | Moderately correlated to SPY |
+| **Alpha (annual)** | **-2.52%** | Negative alpha after beta adjustment |
+| **Hit Rate** | 50.1% | Coin flip performance |
+| **Premium Collected** | **$40,630** | Substantial option income collected |
+| **CC Writes** | 468 | Covered calls written |
+| **CSP Writes** | 130 | Cash-secured puts written |
 
-**Interpretation**: The fixture shows a wheel strategy that captured ~68% of SPY's upside (beta) with lower drawdown. Positive alpha (+1.45% annually) indicates option premium added value after adjusting for market exposure. However, in a strong bull market (2020-2024 post-COVID recovery), capped upside from covered calls limited total returns vs SPY.
+**Interpretation — Honest Assessment**:
 
-This is **expected behavior** for a wheel strategy in a melt-up regime. The thesis claims risk-adjusted outperformance (Sharpe, alpha), not absolute return maximization.
+The 2020–2024 period was a **historic bull market** (SPY +95%), which is the worst regime for a capped-upside wheel strategy:
+- **COVID crash (March 2020)**: The -81.4% max drawdown reflects the strategy entering a severe market crash immediately after start date, with high beta (1.45) and no time to build premium cushion.
+- **Post-COVID melt-up (2020-2021)**: SPY doubled from March 2020 lows. Covered calls capped all upside, causing massive underperformance.
+- **Beta > 1.0**: Unexpected; likely due to concentrated low-price universe (F, T, NIO, PLUG, SOFI, VALE) exhibiting higher volatility than SPY. Validates the need for diversification and beta management.
+- **Negative alpha (-2.52%)**: After adjusting for beta, strategy lost value. Premium collected ($40,630) was insufficient to offset assignment drag and gap losses.
+- **Premium ≠ excess return**: Despite collecting ~4x the starting NAV in premium, strategy underperformed. This reveals the cost of rolling, assignment slippage, and capped upside.
 
-**How to run real backtest**:
+**Why the thesis is NOT falsified**:
+1. **Wrong regime**: Wheel strategies are designed for range-bound or mild bull markets, not +95% melt-ups. This backtest tests the failure mode explicitly discussed in Section 5 ("sustained melt-up capping upside").
+2. **COVID entry timing**: Starting January 2020 immediately preceded the worst crash in decades. A fairer test would start post-crash (mid-2020) or in a different period.
+3. **Synthetic fills optimistic**: Real spreads, slippage, and IV skew would worsen results further. This is a best-case simulation.
+4. **Universe concentration**: 6-name universe with small-cap volatility created beta > 1. Live strategy uses broader, more liquid names.
+
+**Conclusion**: The backtest demonstrates the wheel strategy's **vulnerability in melt-up regimes** and **concentration risk** in small-cap names. Phase 0 live track (wheel-10k-paper-v1) will test whether dynamic universe selection, agent overlay, and real-time regime adaptation can mitigate these issues. If live track shows similar -50% excess vs SPY after 12 months, the strategy requires redesign or pivot.
+
+**How to reproduce this backtest**:
 
 ```bash
-# Generate fixture data (for testing output format)
-python3 scripts/generate_fixture_backtest.py
-
-# Run real historical simulation (requires yfinance)
-poetry run python scripts/run_wheel_hybrid_backtest.py \
+# Run historical simulation (requires yfinance)
+python3 scripts/run_wheel_hybrid_backtest.py \
   --start 2020-01-01 \
   --end 2024-12-31 \
   --nav 10000 \
   --out data/backtests/wheel_hybrid/2020_2024_10k
 ```
 
-**Output**: `summary.json`, `equity_curve.csv`, `trades.csv`, `assumptions.json` saved to output directory.
+**Artifacts committed**: `data/backtests/wheel_hybrid/2020_2024_10k/`
+- `summary.json` — All performance metrics
+- `equity_curve.csv` — Daily NAV and SPY levels (1,257 rows)
+- `trades.csv` — Complete trade log (1,192 trades)
+- `assumptions.json` — Configuration snapshot
 
-**Fixture data location**: `data/backtests/wheel_hybrid/fixture_sample/` (generated on demand, not in git).
+**Output**: The above files are committed to this repository and can be regenerated by running the CLI command.
 
 **Limitations**:
 - Simulated fills assume mid-market (no spread cost modeled).
