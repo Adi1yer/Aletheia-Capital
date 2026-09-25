@@ -6,7 +6,9 @@
 
 | Document | Purpose |
 |----------|---------|
+| [WHITEPAPER_WHEEL_HYBRID.md](WHITEPAPER_WHEEL_HYBRID.md) | **Wheel-hybrid strategy thesis**: mandate, mechanics, risk framework, backtest design, falsifiers, roadmap |
 | [OFFICIAL_TRACK_RECORD.md](OFFICIAL_TRACK_RECORD.md) | Frozen wheel-10k paper track: start NAV, official vs cash+stocks, no silent resets |
+| [WHEEL_BACKTEST_DESIGN.md](WHEEL_BACKTEST_DESIGN.md) | Wheel backtest design: synthetic option pricing, fixed universe, validation vs approximations |
 | [GETTING_STARTED.md](GETTING_STARTED.md) | One-place setup: Python, Poetry, .env, Ollama/API, run commands |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, components, data flow |
 | [API.md](API.md) | API reference and usage |
