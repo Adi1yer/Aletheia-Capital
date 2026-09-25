@@ -1,176 +1,181 @@
-# VIX-Gated Wheel-Hybrid Backtest Results
+# VIX/SPY Index Regime Bake-Off
 
-## Executive Summary
+## Objective
 
-Implemented **FREE VIX-based regime gating** for wheel-hybrid strategy and ran comprehensive bake-off vs always-on baseline using the **real wheel-hybrid engine**.
+Test whether a **FREE** VIX-based index regime control can improve wheel-hybrid backtest returns vs an always-on baseline, using only public data (no paid API keys).
 
-**Key Result:** VIX-gated strategy **underperformed** always-on by **-21.22%** over 2020-2024 bluechip universe.
+## Methodology
 
-**Status:** ❌ **FAIL** (did not beat always-on by ≥2%)
+### Index-Level Regime Signal (Correct Approach)
 
-## Honest Disclaimers
+Uses **VIX vs SPY realized vol** to determine market volatility regime:
 
-1. **Index-level vol signal** — VIX is SPX implied vol, NOT individual stock IV
-2. **Free public data only** — CBOE VIX via yfinance (no API key)
-3. **Regime signal, not edge** — NOT a claim about name-level VRP or beat-SPY
-4. **Real engine** — Uses production wheel-hybrid backtest (not simplified simulator)
-5. **Auditable results** — Committed VIX cache + JSON for reproducibility
+- **VIX**: CBOE Volatility Index (SPX 30-day implied vol) via yfinance `^VIX`
+- **SPY RV**: S&P 500 ETF realized volatility calculated from price history
+- **Index VRP**: `(VIX - SPY_RV) / SPY_RV`
 
-## Backtest Configuration
+This is a **macro/index regime signal**, NOT name-specific IV:
+- ✅ Correct: Compare VIX (index IV) to SPY realized vol (index RV)
+- ❌ Wrong (previous attempt): Compare VIX to individual stock RV (F, BAC, INTC, etc.)
 
-| Parameter | Value |
-|-----------|-------|
-| Window | 2020-01-02 to 2024-12-31 (5 years) |
-| Universe | Bluechip 6: F, T, BAC, INTC, PFE, GE |
-| Initial Capital | $10,000 |
-| Wheel Allocation | 70% |
-| VIX Gate Threshold | VRP > 10% (VIX - RV > 10% of RV) |
-| Benchmark | ^SPXTR (SPY total return) |
+### Regime States (RegimeDetector)
+
+Three regime states control covered call write intensity:
+
+1. **HARVEST_VRP**: Index VRP > 10% → write CCs aggressively
+   - VIX is rich vs SPY realized vol → harvest volatility premium
+   
+2. **HOLD_DELTA**: Index VRP < -5% → skip/thin CC writes
+   - VIX is cheap vs SPY realized vol → preserve equity beta
+   
+3. **DEFENSIVE**: SPY RV > 40% OR index VRP < -10% → skip CC writes
+   - Market crash / vol spike → reduce risk, raise cash
+
+Regime transitions require 3+ consecutive days confirmation (hysteresis to avoid whipsaw).
+
+### Backtest Configuration
+
+- **Period**: 2020-01-01 to 2024-12-31 (5 years, including COVID crash + recovery)
+- **Universe**: Bluechip (F, T, BAC, INTC, PFE, GE)
+- **Initial NAV**: $10,000
+- **Allocation**: 70% wheel / 30% directional
+- **Benchmark**: SPY total return (`^SPXTR`)
+- **Data**: 100% free (yfinance for prices & VIX, no Polygon/Theta)
 
 ## Results
 
-### Performance Summary
+| Metric | Legacy (Always-On) | VIX/SPY Regime | Delta |
+|--------|-------------------:|---------------:|------:|
+| **Absolute Return** | +55.00% | +36.78% | **-18.22%** |
+| **vs SPY** | -40.30% | -58.51% | -18.21% |
+| **Sharpe Ratio** | 0.50 | 0.40 | -0.10 |
+| **Sortino Ratio** | 0.69 | 0.57 | -0.12 |
+| **Alpha (annual)** | -0.63% | -3.38% | -2.75% |
+| **Max Drawdown** | -37.67% | -37.57% | +0.10% |
+| **Premium Collected** | $6,981 | $4,999 | -$1,982 |
+| **CC Writes** | 195 | 119 | -76 |
+| **Trade Turnover** | 1.56 | 0.97 | -0.59 |
 
-| Strategy | Total Return | Sharpe | Premium Collected | CC Writes |
-|----------|--------------|--------|-------------------|-----------|
-| SPY Benchmark | **+95.30%** | N/A | N/A | N/A |
-| **Always-On** | **+55.00%** | 0.50 | $6,981 | 195 |
-| **VIX-Gated** | **+33.78%** | 0.36 | $1,491 | 54 |
+### Key Findings
 
-### Alpha Analysis
+1. **VIX/SPY regime underperformed by -18.22%** vs always-on baseline
+   - Failed ≥2% improvement hurdle by wide margin
+   
+2. **Regime was too conservative**: Only 119 CC writes vs 195 baseline (61% write rate)
+   - Regime detector spent extended periods in DEFENSIVE mode (late 2024)
+   - Skipped profitable overwrite opportunities
+   
+3. **Index VRP signal worked correctly**: Regime transitions observed based on VIX vs SPY RV
+   - Logs confirm defensive mode triggered when appropriate
+   - Hysteresis prevented rapid state changes
+   
+4. **Threshold sensitivity**: Current thresholds may be too tight for bluechip bluechips
+   - `harvest_min_vrp=0.10` (10% index VRP to harvest)
+   - `hold_max_vrp=-0.05` (-5% index VRP to hold delta)
+   - `defensive_rv_spike=0.40` (40% SPY RV to go defensive)
 
-| Comparison | Alpha |
-|------------|-------|
-| VIX-Gated vs Always-On | **-21.22%** ❌ |
-| VIX-Gated vs SPY | **-61.51%** ❌ |
+## Why Previous VIX Attempt Failed
 
-### Edge Gate Statistics
+The **first VIX bake-off** (now superseded) made a fundamental error:
 
-| Metric | Value |
-|--------|-------|
-| Writes Allowed | 1,472 (14.7%) |
-| Blocked (Low VRP) | 8,534 (85.3%) |
-| Blocked (No IV) | 0 (0%) |
-| **Block Rate** | **85.3%** |
-
-## Why VIX-Gated Underperformed
-
-### Root Cause: VRP Inversion
-
-VIX (SPX implied vol) was frequently **below** individual stock realized vol during 2020-2024:
-
+### Wrong Approach (Name-Level VIX Mismatch)
+```python
+# ❌ WRONG: Used VIX as ticker-level IV for name-level VRP gate
+edge_gate.should_write_cc(
+    ticker="F",  # Ford stock
+    realized_vol=ford_rv,  # Ford's 30% realized vol
+    iv=vix,  # 18% SPX implied vol ← MISMATCH!
+)
+# Result: VRP = (0.18 - 0.30) / 0.30 = -40% (negative)
+# Blocked 85% of writes because index vol < single-stock vol
 ```
-VRP = (VIX - Realized Vol) / Realized Vol
 
-Example from 2024-12-26:
-- VIX: 14.7% (index vol)
-- F realized vol: 23.4% (name vol)
-- VRP: -37% (NEGATIVE!)
-- Gate blocked write (VRP < 10% threshold)
+**Why this was wrong:**
+- VIX measures SPX index vol (~16-20% typical)
+- Individual stocks have higher vol than index due to idiosyncratic risk
+  - Ford: ~25-35% vol
+  - BAC: ~20-30% vol
+  - INTC: ~25-40% vol
+- Comparing VIX to stock RV creates systematic negative VRP
+- This isn't a regime signal; it's a category error
+
+### Correct Approach (Index Regime)
+```python
+# ✅ CORRECT: Compare VIX to SPY RV (both index measures)
+regime_detector.update(
+    vrp_avg=compute_index_vrp(vix, spy_rv),  # Index VRP
+    rv_avg=spy_rv,  # SPY realized vol
+)
+# VIX = 20%, SPY RV = 15% → VRP = +33% → HARVEST mode
+# VIX = 15%, SPY RV = 18% → VRP = -17% → HOLD_DELTA mode
 ```
 
-### Why This Happens
+## Conclusions
 
-1. **Index vol ≠ name vol** — SPX diversification reduces volatility vs single stocks
-2. **Correlation matters** — Individual stocks often more volatile than index
-3. **2020-2024 low-VIX regime** — Index vol compressed more than name vol
-4. **No single-name IV data** — Using index proxy for stock-specific decisions fails
+### Technical Implementation: ✅ SUCCESS
 
-### What VIX Actually Measures
+1. **Index regime correctly wired**: VIX vs SPY RV, not name-level mismatch
+2. **RegimeDetector integration works**: Engine updates regime daily, controls writes
+3. **FREE data only**: yfinance VIX + SPY prices, no API keys
+4. **Tests green**: `test_vix_regime_provider.py` validates index signals
 
-- **VIX = SPX 30-day implied volatility** (from SPX option prices)
-- Represents **market-wide** vol expectations
-- Does NOT capture **name-specific** vol factors:
-  - Earnings risk
-  - Sector rotation
-  - Idiosyncratic shocks
-  - Single-name option skew
+### Trading Performance: ❌ FAIL
 
-## Technical Implementation
+1. **VIX/SPY regime underperforms always-on by -18.22%**
+   - Misses ≥2% improvement hurdle
+   - Premium collected: $4,999 vs $6,981 baseline (-28%)
+   
+2. **Regime too conservative for 2020-2024 period**
+   - Stayed defensive too long (late 2024 vol spike)
+   - Missed profitable CC opportunities during melt-ups
+   
+3. **Threshold tuning required** if regime approach is pursued:
+   - Loosen DEFENSIVE trigger (maybe 45-50% SPY RV)
+   - Tighten HARVEST_VRP requirement (maybe 5% instead of 10%)
+   - Test on different market periods (2022 bear, 2023 rally separately)
 
-### VIX Provider
+### Recommendation
 
-- **Source:** CBOE ^VIX via yfinance (free, no API key)
-- **Coverage:** 2000-01-01 to present (6,725 days cached)
-- **Cache:** Local CSV at `data/vix_cache/vix_daily.csv`
-- **Protocol:** Implements `IVProvider` interface (get_atm_iv, get_iv_rank, get_iv_rv_spread)
+**Do NOT deploy VIX/SPY regime to live trading** without significant tuning and out-of-sample validation:
 
-### Integration
+- Current thresholds underperform on 2020-2024 bluechip
+- 5-year backtest is not sufficient for regime strategy validation
+- Consider:
+  1. Parameter sweep across regime thresholds
+  2. Walk-forward optimization with out-of-sample testing
+  3. Separate bull/bear/sideways period analysis
+  4. Compare to simpler rules (e.g., "skip CC when VIX < 15")
 
-- **Engine:** Uses existing `WheelHybridBacktest` (real premium model, portfolio, metrics)
-- **Gate:** `EdgeGate` with VRP threshold (min_vrp=0.10)
-- **Regime:** Optional `RegimeDetector` (not used in this test)
+**Always-on baseline (+55% return) remains the production default** until regime approach proves ≥2% improvement consistently.
 
-### Reproducibility
+## How to Reproduce
 
 ```bash
-# Run bake-off
+# Run VIX/SPY regime bake-off (2020-2024 bluechip)
 python3 scripts/run_vrp_bakeoff.py \
-  --start 2020-01-02 \
+  --start 2020-01-01 \
   --end 2024-12-31 \
   --nav 10000 \
-  --universe bluechip \
-  --iv-source vix \
-  --min-vrp 0.10 \
+  --iv-source vix-regime \
   --out docs/backtest_results/vix_gated
 
-# Results
-- docs/backtest_results/vix_gated/bakeoff_2020-01-02_2024-12-31.json
-- data/vix_cache/vix_daily.csv (committed for CI)
+# Results saved to:
+# - docs/backtest_results/vix_gated/bakeoff_2020-01-01_2024-12-31.json
 ```
-
-## Comparison to Prior Work
-
-| Metric | Legacy (This Test) | VIX-Gated (This Test) | Existing Bluechip |
-|--------|-------------------|----------------------|-------------------|
-| Final NAV | $15,500 | $13,378 | $15,500 |
-| Total Return | +55.0% | +33.8% | +55.0% |
-| CC Writes | 195 | 54 | 195 |
-| Premium | $6,981 | $1,491 | $6,981 |
-| Sharpe | 0.50 | 0.36 | 0.50 |
-
-Legacy matches existing committed backtest results (`docs/backtest_results/wheel_hybrid/2020_2024_10k_bluechip/summary.json`), confirming we're using the **real engine**.
-
-## Conclusion
-
-### What We Learned
-
-1. **VIX is not a name-level IV proxy** — Index vol ≠ stock vol
-2. **Free VIX data works** — Infrastructure is solid, data loads reliably
-3. **Gate logic works** — Correctly blocks writes when VRP < threshold
-4. **Real engine produces citeable results** — Not a toy simulator
-
-### Why This Failed
-
-- **Wrong signal for decision** — Using index vol to gate stock option writes
-- **VRP inverted** — VIX < name RV for 85% of opportunities
-- **Strategy mismatch** — VIX measures **market risk**, not **name-specific edge**
-
-### What Would Help
-
-1. **Single-name IV data** — Polygon/Theta/OPRA for stock-specific IV
-2. **VIX for regime only** — Use VIX to detect market stress (> 30 → defensive), not for name writes
-3. **Hybrid approach** — VIX macro filter + name IV for micro decisions
-4. **Different universe** — Test on lower-priced stocks (wheel-classic)
-
-## Status
-
-| Requirement | Status |
-|-------------|--------|
-| FREE VIX data (no API key) | ✅ |
-| Integrate with existing engine | ✅ |
-| Real bake-off (not toy simulator) | ✅ |
-| Committed auditable results | ✅ |
-| Honest labeling (regime signal) | ✅ |
-| Tests passing | ✅ (8/8) |
-| ≥2% outperformance | ❌ (-21%) |
-
-**Final Verdict:** Infrastructure complete and validated. Strategy hypothesis (use VIX as name IV proxy) **falsified** by data. This is a **scientifically valuable negative result**.
 
 ## Files
 
-- `src/backtesting/wheel_hybrid/vix_iv_provider.py` — VIX provider (259 lines)
-- `scripts/run_vrp_bakeoff.py` — Updated to support `--iv-source vix`
-- `tests/test_vix_iv_provider.py` — 8 tests (all passing)
-- `docs/backtest_results/vix_gated/bakeoff_2020-01-02_2024-12-31.json` — Results
-- `data/vix_cache/vix_daily.csv` — VIX data (6,725 days, committed)
+- `src/backtesting/wheel_hybrid/vix_regime_provider.py`: FREE VIX/SPY index regime provider
+- `src/backtesting/wheel_hybrid/regime.py`: RegimeDetector with HARVEST/HOLD/DEFENSIVE states
+- `src/backtesting/wheel_hybrid/engine.py`: WheelHybridBacktest with regime updates
+- `scripts/run_vrp_bakeoff.py`: Bake-off runner (--iv-source vix-regime)
+- `tests/test_vix_regime_provider.py`: Unit tests for index VRP signals
+
+## Attribution
+
+Implemented as FREE alternative to paid IV sources, using only public data:
+- VIX: CBOE Volatility Index via yfinance
+- SPY prices: Yahoo Finance historical data
+- No Polygon, Theta, or paid API keys required
+
+Regime states inspired by standard volatility regime frameworks (Derman 1999, VIX white paper).
