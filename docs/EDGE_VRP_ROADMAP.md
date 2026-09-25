@@ -236,26 +236,59 @@ HARVEST_VRP <---> HOLD_DELTA (based on VRP)
 
 ---
 
-### Phase 2: Wire Real IV Data (NEXT)
+### Phase 2: Wire Real IV Data ✅ (Infrastructure Complete)
 
 **Goal**: Replace synthetic IV with market IV from provider
 
-**Tasks**:
-1. Subscribe to Polygon.io Starter ($399/mo)
-2. Implement `PolygonIVProvider`:
-   - Fetch daily ATM IV for universe (21-day, 45-day)
-   - Cache to disk (`data/iv_cache/{symbol}/{date}.json`)
-   - Handle missing data (delisted stocks, gaps)
-3. Implement `FileIVProvider` / `CsvIVProvider`:
-   - Read cached IV snapshots
-   - Allow offline backtest replay
-4. Re-run 2015-2024 backtests with **real market IV**
-5. Compare:
-   - Edge-gated (real IV) vs always-on (synthetic IV)
-   - Regime-aware (HOLD_DELTA in melt-ups) vs static 70/30
+**Status**: INFRASTRUCTURE COMPLETE (awaiting market IV data)
 
-**Success criteria**:
-- Edge-gated strategy beats always-on by ≥2% annually
+**Completed**:
+1. ✅ `CsvIVProvider` / `FileIVProvider`:
+   - Read IV from CSV: `date,symbol,atm_iv,iv_rank`
+   - Deterministic lookup by (symbol, date)
+   - Missing IV → None (fail-closed when edge enabled)
+   - Unit tests pass (cache hit/miss, VRP calc, fail-closed)
+2. ✅ `PolygonIVProvider` stub:
+   - Environment variable `POLYGON_API_KEY` required
+   - Clear error if key missing (no silent CI failures)
+   - Cache layout: `data/iv_cache/{symbol}/{date}.json` (gitignored)
+   - Full API implementation pending (Polygon subscription needed)
+3. ✅ **SPY Total Return Benchmark**:
+   - Engine now uses `^SPXTR` (S&P 500 Total Return Index) by default
+   - Fallback to `SPY` price-only if `^SPXTR` unavailable
+   - Benchmark ticker logged in `summary.json` and `assumptions.json`
+   - Fixes ~2% annual understatement of SPY performance (dividends)
+4. ✅ **Bake-off harness** (`scripts/run_vrp_bakeoff.py`):
+   - Run same window/universe with edge-mode on vs off
+   - Side-by-side comparison table (return, excess, Sharpe, alpha, gate stats)
+   - Outputs JSON under `docs/backtest_results/wheel_hybrid/bakeoff_*`
+   - Labels synthetic runs as `research_only_synthetic_iv`
+5. ✅ **Synthetic IV fixture generator** (`scripts/build_iv_fixture_from_synthetic.py`):
+   - Generate IV CSV from realized vol + premium bump
+   - Labeled RESEARCH-ONLY (do not claim edge)
+   - For local testing and infrastructure validation
+6. ✅ **Tests**: File provider unit tests + bake-off smoke test
+7. ✅ **Docs**: Roadmap updated, whitepaper Phase 2 status note added
+
+**Pending (blocked on market IV data)**:
+- ❌ Polygon.io subscription (requires user decision + $399/mo budget)
+- ❌ Historical IV fetch for 2015-2024 (or 2000-2024 with OPRA-class provider)
+- ❌ Real market IV backtests (cannot run without data)
+- ❌ Edge validation (synthetic IV ≠ proof of VRP edge)
+
+**How to proceed**:
+1. **Drop in market IV CSV**: Generate or purchase IV data, save as:
+   ```
+   date,symbol,atm_iv,iv_rank
+   2020-01-02,AAPL,0.2500,0.45
+   ...
+   ```
+   Then run: `scripts/run_vrp_bakeoff.py --iv-csv path/to/iv.csv ...`
+
+2. **Or subscribe to Polygon.io**: Set `POLYGON_API_KEY` env var, complete `PolygonIVProvider._fetch_from_api()` implementation
+
+**Success criteria** (unchanged):
+- Edge-gated strategy beats always-on by ≥2% annually (with real IV)
 - Regime-aware reduces melt-up lag (2020-2021 test)
 - VRP signal has ≥55% hit rate (writes profitable > 55% of time)
 
@@ -346,20 +379,26 @@ HARVEST_VRP <---> HOLD_DELTA (based on VRP)
 - ✅ Expanded 45-name universe (diversification validated)
 - ✅ CSP collateral fixes (no over-leverage)
 - ✅ 25-year historical sample (2000-2024)
+- ✅ **Phase 1**: IV provider protocol, edge gate, regime scaffold
+- ✅ **Phase 2 Infrastructure**: CsvIVProvider, PolygonIVProvider stub, bake-off harness
+- ✅ **SPY Total Return Benchmark**: ^SPXTR support (fixes ~2% annual dividend understatement)
 
 **What we DON'T have (yet)**:
-- ❌ Market IV data (still using synthetic realized vol)
-- ❌ Proof VRP edge exists (synthetic ≠ real)
-- ❌ Regime-aware backtests (no HOLD_DELTA test yet)
-- ❌ SPY total return benchmark (missing ~2% annual dividend yield)
+- ❌ Market IV data subscription (still using synthetic for testing only)
+- ❌ Proof VRP edge exists (synthetic ≠ real; awaiting market IV)
+- ❌ Full Polygon.io implementation (stub only; API calls not wired)
 
-**Phase 1 scope (this PR)**:
-- Build plumbing for IV providers + edge gate + regime
-- Run sanity checks with synthetic IV (NOT claiming edge)
-- Document roadmap + falsifiers
-- Keep live `wheel-10k-paper-v1` untouched (do not contaminate control)
+**Phase 2 scope (PR #3)**:
+- ✅ Complete File/CSV IV provider (drop-in ready)
+- ✅ Polygon IV provider stub (clear error if key missing)
+- ✅ SPY total return benchmark (^SPXTR → SPY fallback)
+- ✅ Bake-off script (edge on vs off comparison)
+- ✅ Synthetic IV fixture generator (research-only)
+- ✅ Tests (IV provider, bake-off smoke test)
+- ✅ Docs (roadmap status, whitepaper note)
+- ❌ Live paper track unchanged (`wheel-10k-paper-v1` untouched)
 
-**Next milestone**: Phase 2 (wire Polygon.io, validate edge exists)
+**Next milestone**: Phase 2 validation (acquire market IV, run bake-off, validate edge)
 
 ---
 

@@ -4,6 +4,25 @@
 
 Paper-trading system for a **~$10k wheel-hybrid** book: rules-first covered-call / CSP wheel (~70% of capital) plus a smaller directional equity sleeve (~30%). Agents still run as an overlay for learning and residual ranking; they do **not** pick wheel underlyings in v1.
 
+---
+
+## 🎯 NEW: Phase 2 VRP Edge Infrastructure (PR #3)
+
+**Real IV drop-in ready!** Wire market implied volatility to validate VRP edge hypothesis.
+
+**Quick Start:**
+```bash
+# Drop in market IV CSV (date,symbol,atm_iv,iv_rank)
+scripts/run_vrp_bakeoff.py --iv-csv data/iv.csv --start 2020-01-01 --end 2024-12-31
+
+# Or set POLYGON_API_KEY for auto-fetch
+export POLYGON_API_KEY="your_key"
+```
+
+**Docs:** [EDGE_VRP_ROADMAP.md](docs/EDGE_VRP_ROADMAP.md) | **Status:** Infrastructure complete, awaiting market IV data
+
+---
+
 > **Contributors:** Configure git so commits attribute to **Adi1yer** only (see [SETUP.md](SETUP.md#git-commit-identity)).
 
 ## Current mandate: `wheel-10k`

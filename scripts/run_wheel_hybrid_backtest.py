@@ -112,6 +112,12 @@ def main():
         action="store_true",
         help="Enable regime detection (HARVEST_VRP / HOLD_DELTA / DEFENSIVE)",
     )
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default="^SPXTR",
+        help="Benchmark ticker (default: ^SPXTR = SPY total return, fallback to SPY price-only if unavailable)",
+    )
     
     args = parser.parse_args()
     
@@ -207,6 +213,7 @@ def main():
         iv_provider=iv_provider,
         edge_gate=edge_gate,
         regime_detector=regime_detector,
+        benchmark_ticker=args.benchmark,
     )
     
     # Run with Yahoo Finance provider

@@ -5,6 +5,7 @@ Phase 2: Real market IV from Polygon/ThetaData/OPRA
 """
 
 from datetime import date
+from pathlib import Path
 from typing import Optional, Protocol
 import structlog
 
@@ -183,40 +184,75 @@ class SyntheticIVFromRealizedProvider:
         return self.premium_bump
 
 
-class FileIVProvider:
+class CsvIVProvider:
     """
-    Read IV data from CSV/JSON files (for Phase 2 drop-in).
+    Read IV data from CSV file (Phase 2 real IV drop-in).
     
-    File format (CSV):
-        symbol,date,atm_iv_21d,atm_iv_45d,iv_rank
-        AAPL,2020-01-02,0.25,0.24,0.45
-        AAPL,2020-01-03,0.26,0.25,0.48
+    CSV format (atm_iv as decimal: 0.25 = 25% annualized vol):
+        date,symbol,atm_iv,iv_rank
+        2020-01-02,AAPL,0.2500,0.45
+        2020-01-02,MSFT,0.1800,0.32
+        2020-01-03,AAPL,0.2600,0.48
         ...
     
-    Or JSON (one file per symbol):
-        data/iv_cache/AAPL/2020-01-02.json:
-        {"atm_iv_21d": 0.25, "atm_iv_45d": 0.24, "iv_rank": 0.45}
+    Columns:
+        - date: YYYY-MM-DD
+        - symbol: ticker
+        - atm_iv: ATM IV as decimal (0.25 = 25% vol)
+        - iv_rank: IV rank 0.0-1.0 (optional, can be empty)
+    
+    Lookup: Deterministic by (symbol, date). Missing data returns None.
     """
     
-    def __init__(self, data_path: str, format: str = "csv"):
+    def __init__(self, csv_path: str, tenor_days: int = 21):
         """
         Args:
-            data_path: Path to CSV file or directory of JSON files
-            format: "csv" or "json"
+            csv_path: Path to IV CSV file
+            tenor_days: Assume CSV IV represents this tenor (default 21d)
         """
-        self.data_path = data_path
-        self.format = format
-        self.cache = {}  # {(symbol, date, tenor): iv_value}
+        import csv
+        from pathlib import Path
         
-        logger.info("FileIVProvider initialized", path=data_path, format=format)
-    
-    def _load_data(self):
-        """Load IV data from disk (lazy load on first access)."""
-        if self.cache:
-            return  # Already loaded
+        self.csv_path = csv_path
+        self.tenor_days = tenor_days
+        self.cache = {}  # {(symbol, date): {"atm_iv": float, "iv_rank": float}}
         
-        # TODO: Implement CSV/JSON parsing in Phase 2
-        logger.warning("FileIVProvider._load_data not implemented (Phase 2)")
+        # Load CSV on init (fail fast if file missing/malformed)
+        csv_file = Path(csv_path)
+        if not csv_file.exists():
+            raise FileNotFoundError(f"IV CSV not found: {csv_path}")
+        
+        with open(csv_file, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    symbol = row["symbol"].strip().upper()
+                    date_str = row["date"].strip()
+                    dt = date.fromisoformat(date_str)
+                    
+                    atm_iv_str = row["atm_iv"].strip()
+                    atm_iv = float(atm_iv_str) if atm_iv_str else None
+                    
+                    iv_rank_str = row.get("iv_rank", "").strip()
+                    iv_rank = float(iv_rank_str) if iv_rank_str else None
+                    
+                    self.cache[(symbol, dt)] = {
+                        "atm_iv": atm_iv,
+                        "iv_rank": iv_rank,
+                    }
+                except (KeyError, ValueError) as e:
+                    logger.warning(
+                        "Skipping malformed IV CSV row",
+                        row=row,
+                        error=str(e),
+                    )
+        
+        logger.info(
+            "CsvIVProvider loaded",
+            path=csv_path,
+            tenor_days=tenor_days,
+            rows=len(self.cache),
+        )
     
     def get_atm_iv(
         self,
@@ -224,9 +260,11 @@ class FileIVProvider:
         as_of: date,
         tenor_days: int = 21,
     ) -> Optional[float]:
-        """Fetch IV from loaded cache."""
-        self._load_data()
-        return self.cache.get((symbol, as_of, tenor_days))
+        """Fetch ATM IV from cache (assumes tenor matches constructor tenor_days)."""
+        entry = self.cache.get((symbol, as_of))
+        if entry:
+            return entry.get("atm_iv")
+        return None
     
     def get_iv_rank(
         self,
@@ -234,9 +272,167 @@ class FileIVProvider:
         as_of: date,
         lookback_days: int = 252,
     ) -> Optional[float]:
-        """Fetch IV rank from loaded cache."""
-        self._load_data()
-        return self.cache.get((symbol, as_of, "iv_rank"))
+        """Fetch IV rank from cache."""
+        entry = self.cache.get((symbol, as_of))
+        if entry:
+            return entry.get("iv_rank")
+        return None
+    
+    def get_iv_rv_spread(
+        self,
+        symbol: str,
+        as_of: date,
+        tenor_days: int = 21,
+        realized_vol: Optional[float] = None,
+    ) -> Optional[float]:
+        """Calculate VRP = (IV - RV) / RV."""
+        iv = self.get_atm_iv(symbol, as_of, tenor_days)
+        if iv is None or realized_vol is None or realized_vol <= 0:
+            return None
+        
+        return (iv - realized_vol) / realized_vol
+
+
+# Legacy alias for backward compatibility
+FileIVProvider = CsvIVProvider
+
+
+class PolygonIVProvider:
+    """
+    Fetch IV data from Polygon.io API (Phase 2 optional adapter).
+    
+    Requires POLYGON_API_KEY environment variable.
+    If key not set, raises clear error (does not fail CI silently).
+    
+    Cache layout: data/iv_cache/{symbol}/{date}.json
+    - Fetches on-demand if cache miss
+    - Writes to disk for offline replay
+    
+    API endpoints:
+    - /v3/snapshot/options/{symbol} → ATM IV from option chain
+    - Fallback: reconstruct IV from option quotes + Black-Scholes
+    """
+    
+    def __init__(self, cache_dir: str = "data/iv_cache"):
+        """
+        Args:
+            cache_dir: Directory for disk cache (gitignored)
+        """
+        import os
+        from pathlib import Path
+        
+        self.api_key = os.environ.get("POLYGON_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "POLYGON_API_KEY environment variable not set. "
+                "Get API key from https://polygon.io/ or use CsvIVProvider for offline replay."
+            )
+        
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(
+            "PolygonIVProvider initialized",
+            cache_dir=cache_dir,
+            api_key_set=True,
+        )
+    
+    def _get_cache_path(self, symbol: str, as_of: date) -> Path:
+        """Get cache file path for symbol/date."""
+        symbol_dir = self.cache_dir / symbol
+        symbol_dir.mkdir(exist_ok=True)
+        return symbol_dir / f"{as_of.isoformat()}.json"
+    
+    def _fetch_from_api(self, symbol: str, as_of: date) -> Optional[dict]:
+        """
+        Fetch IV from Polygon API (stub implementation).
+        
+        TODO: Implement actual API call in Phase 2:
+        - GET https://api.polygon.io/v3/snapshot/options/{symbol}
+        - Parse option chain for ATM strike
+        - Extract implied_volatility field
+        - Calculate IV rank from historical data
+        """
+        logger.warning(
+            "PolygonIVProvider._fetch_from_api not fully implemented (Phase 2 stub)",
+            symbol=symbol,
+            as_of=as_of,
+        )
+        # Stub: return None (cache miss → provider returns None → gate may block)
+        return None
+    
+    def _load_from_cache(self, symbol: str, as_of: date) -> Optional[dict]:
+        """Load IV from disk cache."""
+        import json
+        
+        cache_path = self._get_cache_path(symbol, as_of)
+        if not cache_path.exists():
+            return None
+        
+        try:
+            with open(cache_path, "r") as f:
+                return json.load(f)
+        except (IOError, json.JSONDecodeError) as e:
+            logger.warning(
+                "Failed to load IV from cache",
+                symbol=symbol,
+                as_of=as_of,
+                error=str(e),
+            )
+            return None
+    
+    def _save_to_cache(self, symbol: str, as_of: date, data: dict):
+        """Save IV to disk cache."""
+        import json
+        
+        cache_path = self._get_cache_path(symbol, as_of)
+        try:
+            with open(cache_path, "w") as f:
+                json.dump(data, f, indent=2)
+        except IOError as e:
+            logger.warning(
+                "Failed to save IV to cache",
+                symbol=symbol,
+                as_of=as_of,
+                error=str(e),
+            )
+    
+    def get_atm_iv(
+        self,
+        symbol: str,
+        as_of: date,
+        tenor_days: int = 21,
+    ) -> Optional[float]:
+        """Fetch ATM IV (cache → API → None)."""
+        # Try cache first
+        cached = self._load_from_cache(symbol, as_of)
+        if cached:
+            return cached.get("atm_iv")
+        
+        # Fetch from API
+        data = self._fetch_from_api(symbol, as_of)
+        if data:
+            self._save_to_cache(symbol, as_of, data)
+            return data.get("atm_iv")
+        
+        return None
+    
+    def get_iv_rank(
+        self,
+        symbol: str,
+        as_of: date,
+        lookback_days: int = 252,
+    ) -> Optional[float]:
+        """Fetch IV rank from cache or API."""
+        cached = self._load_from_cache(symbol, as_of)
+        if cached:
+            return cached.get("iv_rank")
+        
+        data = self._fetch_from_api(symbol, as_of)
+        if data:
+            return data.get("iv_rank")
+        
+        return None
     
     def get_iv_rv_spread(
         self,

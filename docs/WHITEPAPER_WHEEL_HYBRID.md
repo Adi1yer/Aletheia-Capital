@@ -2,7 +2,28 @@
 
 **Aletheia Capital Phase 0 Thesis**
 
-*Version 1.0 — September 2026*
+*Version 1.1 — September 2026*
+
+---
+
+## Phase 2 Infrastructure Update (2026-09-25)
+
+**Status**: Phase 2 infrastructure complete; awaiting market IV data for edge validation.
+
+**What's Ready**:
+- ✅ File/CSV IV provider: Drop-in market IV data support
+- ✅ SPY Total Return Benchmark: Now using `^SPXTR` (fixes ~2% annual dividend gap)
+- ✅ Bake-off harness: Compare edge-gated (VRP filter) vs always-on strategies
+- ✅ Polygon.io stub: Ready for API key + IV fetch implementation
+
+**Blocked on Market IV**: Historical implied volatility data (2015+ or 2000+) required to validate VRP edge hypothesis. Current backtests use **synthetic IV** (realized vol + premium bump) and are labeled **RESEARCH-ONLY**. Do NOT treat synthetic results as proof of edge.
+
+**To Validate Edge**: Acquire market IV CSV (`date,symbol,atm_iv,iv_rank`) and run:
+```bash
+scripts/run_vrp_bakeoff.py --iv-csv path/to/iv.csv --start 2020-01-01 --end 2024-12-31
+```
+
+**Kill Criteria**: If edge-gated strategy does NOT beat always-on by ≥2% annually with real market IV, project will be terminated or pivoted per roadmap falsifiers.
 
 ---
 
