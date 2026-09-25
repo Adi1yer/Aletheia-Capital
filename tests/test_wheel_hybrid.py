@@ -134,6 +134,55 @@ def test_allocate_exits_orphan_directional_leftovers():
     assert "ADBE" in (diag.get("orphan_exits") or [])
 
 
+def test_allocate_does_not_trim_directional_when_residual_shrinks():
+    portfolio = Portfolio(
+        cash=900.0,
+        positions={
+            "F": Position(long=100, long_cost_basis=12.0),
+            "NTNX": Position(long=3, long_cost_basis=70.0),
+        },
+    )
+    prices = {"F": 12.0, "NTNX": 70.0}
+    wheel = [WheelCandidate("F", 12.0, 80_000_000, 500, 0.9)]
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices=prices,
+        wheel_candidates=wheel,
+        directional_candidates=["NTNX"],
+        equity=10000.0,
+        cash_buffer_pct=0.06,
+        csp_reserve_frac=0.20,
+        max_wheel_names=1,
+        max_directional_names=1,
+    )
+    assert "NTNX" not in decisions or decisions["NTNX"].action != "sell"
+    assert diag.get("directional_residual_budget", 0) >= 0
+
+
+def test_allocate_keeps_held_directional_outside_top_n():
+    portfolio = Portfolio(
+        cash=2000.0,
+        positions={
+            "F": Position(long=100, long_cost_basis=12.0),
+            "IT": Position(long=1, long_cost_basis=180.0),
+        },
+    )
+    prices = {"F": 12.0, "IT": 180.0, "ACN": 180.0, "CTSH": 60.0, "MAS": 70.0, "NTNX": 70.0, "FOO": 50.0}
+    wheel = [WheelCandidate("F", 12.0, 80_000_000, 500, 0.9)]
+    decisions, diag = allocate_wheel_hybrid_book(
+        portfolio=portfolio,
+        current_prices=prices,
+        wheel_candidates=wheel,
+        directional_candidates=["ACN", "CTSH", "MAS", "NTNX", "FOO", "IT"],
+        equity=10000.0,
+        max_wheel_names=1,
+        max_directional_names=5,
+    )
+    assert "IT" in (diag.get("directional_targets") or [])
+    assert "IT" not in (diag.get("orphan_exits") or [])
+    assert "IT" not in decisions or decisions["IT"].action != "sell"
+
+
 def test_cc_select_reports_skip_reason_and_otm_band():
     from src.options.covered_calls import CoveredCallManager
 
@@ -704,6 +753,44 @@ def test_wheel_daily_email_shows_multi_lot_calls_and_strips_enum():
     assert "Cash + stocks $8,264.00" in text
     assert "Open option marks $-170.00" in text
     assert "Premium collected (ledger): $281.00" in text
+
+
+def test_wheel_daily_email_uses_raw_cash_not_spendable():
+    from src.utils.wheel_email import build_wheel_daily_email
+
+    subject, text, _ = build_wheel_daily_email(
+        {
+            "timestamp": "2026-09-25T14:00:00-04:00",
+            "portfolio": {
+                "cash": 2467.07,
+                "raw_cash": 3330.0,
+                "equity": 9797.20,
+                "positions": {
+                    "F": {"long": 100, "long_cost_basis": 12.0},
+                },
+            },
+            "coverage_map": [
+                {
+                    "ticker": "F",
+                    "shares": 100,
+                    "price": 12.60,
+                    "coverage": "covered",
+                    "contract": "F261016C00013000",
+                    "strike": 13.0,
+                    "dte": 21,
+                    "otm_pct": 3.17,
+                }
+            ],
+            "option_mtm_usd": -311.0,
+            "wheel_scorecard": {"premium_ledger_usd": 376},
+        }
+    )
+    # 3330 + 100*12.60 = 4590 — not spendable 2467 + 1260 = 3727
+    assert "Cash + stocks $4,590.00" in text
+    assert "Cash $3,330.00" in text
+    assert "spendable $2,467.07" in text
+    assert "option BP holds" in text
+    assert "cash+stocks $4,590.00" in subject.lower()
 
 
 def test_wheel_daily_email_ignores_nan_prices():

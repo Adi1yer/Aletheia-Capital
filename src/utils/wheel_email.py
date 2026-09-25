@@ -177,10 +177,14 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
         f"Cash + stocks ${mix['cash_plus_stocks']:,.2f} "
         f"(premium sits in cash; open shorts not subtracted)"
     )
-    lines.append(
+    cash_line = (
         f"Alpaca equity ${mix['equity']:,.2f} | Cash ${mix['cash']:,.2f} "
         f"({mix['cash_pct']:.1f}%)"
     )
+    spendable = _f(mix.get("spendable_cash"))
+    if spendable > 0 and mix["cash"] - spendable > 1.0:
+        cash_line += f" | spendable ${spendable:,.2f} (option BP holds)"
+    lines.append(cash_line)
     if mix.get("option_mtm") is not None:
         lines.append(
             f"Open option marks ${mix['option_mtm']:,.2f} "

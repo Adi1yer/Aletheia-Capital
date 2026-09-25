@@ -398,11 +398,18 @@ def allocate_wheel_hybrid_book(
 
     # Directional sleeve: residual cash only after wheel buys + buffer + CSP reserve.
     wheel_set = set(wheel_targets) | set(diagnostics["cc_lot_tickers"])
-    dir_names = [
+    ranked_dir = [
         str(t).upper()
         for t in directional_candidates
         if str(t).upper() not in {str(x).upper() for x in wheel_set}
-    ][: int(max_directional_names)]
+    ]
+    dir_names = ranked_dir[: int(max_directional_names)]
+    # A rank reshuffle must not dump names already in the sleeve (IT 9/25).
+    for t in ranked_dir:
+        if t in dir_names:
+            continue
+        if 0 < held_qty(t) < CC_LOT:
+            dir_names.append(t)
     diagnostics["directional_targets"] = list(dir_names)
     csp_cash_reserve = wheel_budget * reserve
     cash_after_wheel = cash
@@ -453,13 +460,8 @@ def allocate_wheel_hybrid_book(
                     reasoning=f"Directional sleeve residual (~{directional_pct:.0%} target, wheel-first)",
                 )
                 cash_after_wheel -= cost
-            elif delta <= -1 and (abs(delta) * px >= 50 or target_qty == 0):
-                decisions[t] = PortfolioDecision(
-                    action="sell",
-                    quantity=abs(int(delta)),
-                    confidence=55,
-                    reasoning="Directional sleeve trim",
-                )
+            # Do not sell just because today's CSP reserve left a tiny residual
+            # (9/25 dumped CTSH/MAS/NTNX/ACN). Cap-99 trim is handled above.
 
     # Exit orphan holdings left from prior broken runs / off-mandate names.
     keep = set(wheel_targets) | set(dir_names) | set(diagnostics["cc_lot_tickers"])

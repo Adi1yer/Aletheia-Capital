@@ -1867,20 +1867,35 @@ class TradingPipeline:
 
         # 12. Return results (use post-execution portfolio when available)
         broker_used = self.broker is not None
-        port_dict = (
-            portfolio_after
-            if (execute and self.broker and portfolio_after is not None)
-            else portfolio.model_dump()
-        )
-        # Prefer broker equity (not BP-haircut cash) for sleeve % and email.
+        email_src = portfolio
+        if execute and self.broker:
+            try:
+                email_src = self.broker.sync_portfolio()
+                port_dict = email_src.model_dump()
+            except Exception as e:
+                logger.warning("Post-run portfolio sync for email failed", error=str(e))
+                port_dict = (
+                    portfolio_after
+                    if portfolio_after is not None
+                    else portfolio.model_dump()
+                )
+                email_src = portfolio
+        else:
+            port_dict = (
+                portfolio_after
+                if (self.broker and portfolio_after is not None)
+                else portfolio.model_dump()
+            )
+        # Prefer the same snapshot's broker equity / raw cash (not the
+        # pre-trade object, and not BP-haircut spendable).
         try:
-            broker_eq = float(getattr(portfolio, "_broker_equity", 0) or 0)
+            broker_eq = float(getattr(email_src, "_broker_equity", 0) or 0)
         except (TypeError, ValueError):
             broker_eq = 0.0
         if not math.isfinite(broker_eq):
             broker_eq = 0.0
         try:
-            raw_cash = float(getattr(portfolio, "_raw_cash", 0) or 0)
+            raw_cash = float(getattr(email_src, "_raw_cash", 0) or 0)
         except (TypeError, ValueError):
             raw_cash = 0.0
         if not math.isfinite(raw_cash):
