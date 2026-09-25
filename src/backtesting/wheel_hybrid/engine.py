@@ -21,6 +21,10 @@ from src.backtesting.wheel_hybrid.premium_model import (
     select_put_strike,
 )
 from src.backtesting.wheel_hybrid.metrics import calculate_metrics
+from src.backtesting.wheel_hybrid.directional_trend import (
+    DirectionalTrendOverlay,
+    TrendConfig,
+)
 
 logger = structlog.get_logger()
 
@@ -52,6 +56,7 @@ class WheelHybridBacktest:
         edge_gate: Optional[object] = None,
         regime_detector: Optional[object] = None,
         vix_regime_provider: Optional[object] = None,
+        directional_trend: Optional[DirectionalTrendOverlay] = None,
         benchmark_ticker: str = "^SPXTR",
     ):
         self.start_date = start_date
@@ -78,6 +83,9 @@ class WheelHybridBacktest:
         self.edge_gate = edge_gate
         self.regime_detector = regime_detector
         self.vix_regime_provider = vix_regime_provider
+        
+        # Directional trend overlay (optional, for beat-SPY path)
+        self.directional_trend = directional_trend
         
         # Benchmark (Phase 2: SPY total return via ^SPXTR, or fallback to SPY price-only)
         self.benchmark_ticker = benchmark_ticker
@@ -412,6 +420,9 @@ class WheelHybridBacktest:
         target_wheel = current_nav * self.wheel_pct
         target_directional = current_nav * self.directional_pct
         
+        # Manage existing directional positions (sell if trend turns bearish)
+        self._manage_directional_positions(trade_date, prices)
+        
         # Buy wheel lots if under-allocated
         if wheel_mv < target_wheel * 0.9:
             self._buy_wheel_lots(trade_date, prices, target_wheel - wheel_mv)
@@ -422,9 +433,49 @@ class WheelHybridBacktest:
         # Write CSPs if cash-heavy
         self._write_cash_secured_puts(trade_date, prices)
         
+        # Recalculate directional MV after potential sales
+        directional_mv = self.portfolio.get_directional_market_value(prices)
+        
         # Buy directional if under-allocated
         if directional_mv < target_directional * 0.9:
             self._buy_directional(trade_date, prices, target_directional - directional_mv)
+    
+    def _manage_directional_positions(self, trade_date: date, prices: Dict[str, float]):
+        """Manage existing directional positions based on trend overlay."""
+        
+        if self.directional_trend is None:
+            return
+        
+        # Check each directional position
+        for pos in list(self.portfolio.directional):
+            price = prices.get(pos.ticker)
+            if price is None or price <= 0:
+                continue
+            
+            # Get price history for trend check
+            price_history = self.get_price_history_for_vol(
+                pos.ticker, trade_date, self.directional_trend.config.sma_window
+            )
+            
+            if not price_history:
+                continue
+            
+            # Check if we should continue holding
+            should_hold, reason = self.directional_trend.should_hold_directional(
+                pos.ticker, price, price_history, trade_date
+            )
+            
+            if not should_hold:
+                # Sell position (trend turned bearish)
+                logger.info(
+                    "Selling directional position (trend bearish)",
+                    ticker=pos.ticker,
+                    reason=reason,
+                    date=trade_date,
+                )
+                self.portfolio.sell_directional_position(
+                    pos.ticker, pos.shares, price, trade_date
+                )
     
     def _buy_wheel_lots(self, trade_date: date, prices: Dict[str, float], target_amount: float):
         """Buy 100-share lots for wheel sleeve."""
@@ -646,9 +697,9 @@ class WheelHybridBacktest:
         if len(directional_tickers) >= self.max_directional_names:
             return
         
-        # Simple heuristic: buy equal-weighted from available tickers
+        # Get candidates
         candidates = [
-            (ticker, price)
+            ticker
             for ticker, price in prices.items()
             if price > 0 and price <= 35 and ticker not in directional_tickers
         ]
@@ -656,15 +707,43 @@ class WheelHybridBacktest:
         if not candidates:
             return
         
-        # Limit to top few
-        candidates = candidates[:self.max_directional_names - len(directional_tickers)]
+        # Apply trend/momentum overlay if enabled
+        if self.directional_trend is not None:
+            # Build price histories for candidates
+            price_histories = {}
+            for ticker in candidates:
+                history = self.get_price_history_for_vol(ticker, trade_date, self.directional_trend.config.sma_window)
+                if history:
+                    price_histories[ticker] = history
+            
+            # Rank by trend/momentum
+            ranked = self.directional_trend.rank_directional_candidates(
+                candidates, prices, price_histories, trade_date
+            )
+            
+            # Filter out bearish/negative scores if configured
+            if self.directional_trend.config.cash_when_bearish:
+                ranked = [(t, s, r) for t, s, r in ranked if s >= 0]
+            
+            # Take top candidates
+            candidates = [ticker for ticker, score, reason in ranked[:self.max_directional_names - len(directional_tickers)]]
+            
+            logger.debug(
+                "Directional candidates ranked by trend/momentum",
+                date=trade_date,
+                top_candidates=[(t, f"{s:.1f}") for t, s, _ in ranked[:5]],
+            )
+        else:
+            # No overlay - use simple limit
+            candidates = candidates[:self.max_directional_names - len(directional_tickers)]
         
         if not candidates:
             return
         
         per_ticker_budget = min(target_amount / len(candidates), self.portfolio.cash / len(candidates))
         
-        for ticker, price in candidates:
+        for ticker in candidates:
+            price = prices[ticker]
             shares = per_ticker_budget / price
             
             if shares < 0.01:
@@ -751,6 +830,10 @@ class WheelHybridBacktest:
         # Add regime stats if enabled
         if self.regime_detector is not None:
             metrics["regime"] = self.regime_detector.get_stats()
+        
+        # Add directional trend stats if enabled
+        if self.directional_trend is not None:
+            metrics["directional_trend"] = self.directional_trend.get_stats()
         
         # Add benchmark metadata
         metrics["benchmark"] = self.benchmark_ticker
