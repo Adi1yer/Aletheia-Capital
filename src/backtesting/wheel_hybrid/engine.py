@@ -51,6 +51,7 @@ class WheelHybridBacktest:
         iv_provider: Optional[object] = None,
         edge_gate: Optional[object] = None,
         regime_detector: Optional[object] = None,
+        benchmark_ticker: str = "^SPXTR",
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -76,9 +77,12 @@ class WheelHybridBacktest:
         self.edge_gate = edge_gate
         self.regime_detector = regime_detector
         
+        # Benchmark (Phase 2: SPY total return via ^SPXTR, or fallback to SPY price-only)
+        self.benchmark_ticker = benchmark_ticker
+        
         self.portfolio = WheelPortfolio(initial_nav)
         self.equity_curve: List[Tuple[str, float]] = []
-        self.spy_curve: List[Tuple[str, float]] = []
+        self.spy_curve: List[Tuple[str, float]] = []  # Keep naming for compatibility
         
         # Historical price cache: {ticker: [(date, close, high, low), ...]}
         self.price_history: Dict[str, List[Tuple[date, float, float, float]]] = {}
@@ -144,21 +148,43 @@ class WheelHybridBacktest:
         Returns:
             Summary dict with metrics and paths.
         """
-        logger.info("Starting wheel hybrid backtest", start=self.start_date, end=self.end_date, nav=self.initial_nav)
+        logger.info(
+            "Starting wheel hybrid backtest",
+            start=self.start_date,
+            end=self.end_date,
+            nav=self.initial_nav,
+            benchmark=self.benchmark_ticker,
+        )
         
-        # Load price history for all tickers + SPY
-        for ticker in universe + ["SPY"]:
-            self.load_price_history(ticker, data_provider)
+        # Load price history for all tickers + benchmark
+        # Try ^SPXTR (SPY total return), fallback to SPY if unavailable
+        benchmark_loaded = False
+        for candidate in [self.benchmark_ticker, "SPY"]:
+            self.load_price_history(candidate, data_provider)
+            if self.price_history.get(candidate):
+                self.benchmark_ticker = candidate
+                benchmark_loaded = True
+                logger.info("Loaded benchmark", ticker=candidate)
+                break
         
-        # Get trading dates from SPY
-        spy_history = self.price_history.get("SPY", [])
+        if not benchmark_loaded:
+            logger.error("Benchmark price history required (tried ^SPXTR and SPY)")
+            return {}
+        
+        # Load universe tickers
+        for ticker in universe:
+            if ticker not in self.price_history:
+                self.load_price_history(ticker, data_provider)
+        
+        # Get trading dates from benchmark
+        spy_history = self.price_history.get(self.benchmark_ticker, [])
         if not spy_history:
-            logger.error("SPY price history required")
+            logger.error("Benchmark price history required", ticker=self.benchmark_ticker)
             return {}
         
         trading_dates = [d for d, _, _, _ in spy_history]
         
-        # Initial SPY level
+        # Initial benchmark level
         spy_start = spy_history[0][1]
         self.spy_curve.append((trading_dates[0].isoformat(), spy_start))
         
@@ -175,8 +201,8 @@ class WheelHybridBacktest:
             nav = self.portfolio.get_nav(prices, option_marks)
             self.equity_curve.append((trade_date.isoformat(), nav))
             
-            # Record SPY
-            spy_price = self.get_price_on_date("SPY", trade_date) or spy_start
+            # Record benchmark
+            spy_price = self.get_price_on_date(self.benchmark_ticker, trade_date) or spy_start
             self.spy_curve.append((trade_date.isoformat(), spy_price))
             
             if i % 50 == 0:
@@ -702,12 +728,16 @@ class WheelHybridBacktest:
         if self.regime_detector is not None:
             metrics["regime"] = self.regime_detector.get_stats()
         
+        # Add benchmark metadata
+        metrics["benchmark"] = self.benchmark_ticker
+        
         with open(output_dir / "summary.json", "w") as f:
             json.dump(metrics, f, indent=2)
         
         # Assumptions
         assumptions = {
             "start_date": self.start_date,
+            "benchmark": self.benchmark_ticker,
             "end_date": self.end_date,
             "initial_nav": self.initial_nav,
             "wheel_pct": self.wheel_pct,

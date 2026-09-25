@@ -43,6 +43,9 @@ logs/
 *.db
 *.sqlite
 
+# IV cache (Polygon/market data cache)
+data/iv_cache/
+
 # OS
 .DS_Store
 Thumbs.db
