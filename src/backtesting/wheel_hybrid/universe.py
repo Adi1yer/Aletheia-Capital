@@ -1,12 +1,11 @@
 """Fixed research universe for wheel backtest (no look-ahead bias)."""
 
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-# LONG-HISTORY UNIVERSE: Blue-chip / liquid names with options history back to ~2000s.
-# Excludes names that IPO'd after 2015 or have extreme beta/concentration risk.
-# All historically priced ≤$50 at some point, allowing affordable 100-share lots.
-WHEEL_LONG_HISTORY_UNIVERSE: List[str] = [
+# BLUECHIP UNIVERSE: Controlled 6-name set for apples-to-apples comparison.
+# Used for 2000-2024 baseline; liquid/optionable back to ~2000s.
+BLUECHIP_UNIVERSE: List[str] = [
     "F",      # Ford - liquid since 1900s, options since 1970s
     "T",      # AT&T - stable dividend, liquid options
     "BAC",    # Bank of America - major bank, liquid
@@ -15,74 +14,91 @@ WHEEL_LONG_HISTORY_UNIVERSE: List[str] = [
     "GE",     # General Electric - industrial (note: was split in 2021; data available pre-split)
 ]
 
-# MODERN RETAIL UNIVERSE (post-2018): Liquid, volatile, ≤$35 recent names.
-# Includes IPOs like SOFI (2021), NIO (2020), PLUG (regained liquidity ~2019).
-# NOT suitable for long backtests due to limited history.
-WHEEL_MODERN_RETAIL_UNIVERSE: List[str] = [
-    "F",
-    "T",
-    "SOFI",   # SoFi - IPO 2021
-    "NIO",    # Nio - IPO 2020 (NYSE)
-    "PLUG",   # Plug Power - regained liquidity post-2019
-    "VALE",   # Vale - commodities
+# EXPANDED LIQUID UNIVERSE: Large opportunity set (~45 names) for broader CC selection.
+# Criteria: Liquid (ADV > $50M historically), optionable, IPO ≤ 2015 for long history,
+# historically priced allowing 100-share lots with $10k NAV (≤~$80-100 for diversification).
+# Date-filtered in get_wheel_universe() to avoid pre-IPO look-ahead.
+# Sectors: Finance, Tech, Healthcare, Consumer, Industrial, Energy, Telecom.
+LIQUID_EXPANDED_UNIVERSE: List[str] = [
+    # Finance (9)
+    "BAC", "C", "WFC", "JPM", "GS", "MS", "USB", "PNC", "AXP",
+    # Tech (12)
+    "INTC", "CSCO", "ORCL", "IBM", "HPQ", "QCOM", "TXN", "AMAT", "MU", "ADI", "XLNX", "NVDA",
+    # Healthcare / Pharma (8)
+    "PFE", "MRK", "JNJ", "ABT", "BMY", "LLY", "AMGN", "GILD",
+    # Consumer / Retail (6)
+    "F", "GM", "KO", "PEP", "MCD", "WMT",
+    # Industrial / Aero (4)
+    "GE", "BA", "CAT", "MMM",
+    # Energy (3)
+    "XOM", "CVX", "COP",
+    # Telecom (3)
+    "T", "VZ", "TMUS",
 ]
 
-# FALLBACK: Minimal set guaranteed liquid across most eras
-WHEEL_FALLBACK_UNIVERSE: List[str] = [
-    "F",
-    "T",
-    "BAC",
-]
-
+# IPO dates for expanded universe filtering (for names that may not have full 2000+ history)
+EXPANDED_IPO_DATES = {
+    "TMUS": 2013,  # T-Mobile post-merger listing
+    "NVDA": 1999,  # NVIDIA (liquid options post-2000)
+    "GILD": 1992,  # Gilead (but liquid options post-2000)
+    # Most others IPO'd before 1995; all should have 2000+ data
+}
 
 def get_wheel_universe(
     start_date: str,
     *,
-    use_fallback: bool = False,
-    custom: List[str] = None,
+    universe_type: str = "auto",
+    custom: Optional[List[str]] = None,
 ) -> List[str]:
     """
     Return the appropriate fixed research universe for the backtest.
     
     Universe selection logic:
-    - Long backtests (start ≤ 2015): LONG_HISTORY (blue chips, no pre-IPO names)
-    - Modern backtests (start > 2015): MODERN_RETAIL (includes SOFI/NIO/PLUG when valid)
-    - Fallback: Minimal guaranteed-liquid set
+    - "bluechip": Fixed 6-name blue-chip set (F, T, BAC, INTC, PFE, GE)
+    - "expanded": Large liquid universe (~45 names, date-filtered for IPOs)
+    - "auto": Auto-select based on start date (≤2015 → bluechip; >2015 → expanded)
+    - custom list: Override with user-provided tickers
     
     Args:
         start_date: Backtest start date (YYYY-MM-DD).
-        use_fallback: Use fallback universe if primary has data issues.
+        universe_type: "bluechip", "expanded", or "auto".
         custom: Override with custom universe.
     
     Returns:
-        List of ticker symbols.
+        List of ticker symbols, date-filtered to avoid pre-IPO look-ahead.
     """
     if custom:
         return custom
-    if use_fallback:
-        return WHEEL_FALLBACK_UNIVERSE.copy()
     
     # Parse start date
     try:
         start_year = datetime.fromisoformat(start_date).year
     except (ValueError, AttributeError):
-        # Default to long history if parse fails
         start_year = 2000
     
-    # Long history for pre-2016 starts
-    if start_year <= 2015:
-        return WHEEL_LONG_HISTORY_UNIVERSE.copy()
+    # Explicit universe selection
+    if universe_type == "bluechip":
+        return BLUECHIP_UNIVERSE.copy()
     
-    # Modern retail for 2016+ starts
-    # But filter out stocks that didn't exist yet
-    universe = WHEEL_MODERN_RETAIL_UNIVERSE.copy()
+    elif universe_type == "expanded":
+        # Filter expanded universe by IPO date
+        universe = LIQUID_EXPANDED_UNIVERSE.copy()
+        for ticker, ipo_year in EXPANDED_IPO_DATES.items():
+            if start_year < ipo_year and ticker in universe:
+                universe.remove(ticker)
+        return universe
     
-    # Remove SOFI if start before 2021
-    if start_year < 2021 and "SOFI" in universe:
-        universe.remove("SOFI")
+    # Auto mode: bluechip for long history, expanded for recent
+    elif universe_type == "auto":
+        if start_year <= 2015:
+            return BLUECHIP_UNIVERSE.copy()
+        else:
+            # Expanded for 2016+, date-filtered
+            universe = LIQUID_EXPANDED_UNIVERSE.copy()
+            for ticker, ipo_year in EXPANDED_IPO_DATES.items():
+                if start_year < ipo_year and ticker in universe:
+                    universe.remove(ticker)
+            return universe
     
-    # Remove NIO if start before 2020
-    if start_year < 2020 and "NIO" in universe:
-        universe.remove("NIO")
-    
-    return universe
+    else:
+        raise ValueError(f"Unknown universe_type: {universe_type}. Use 'bluechip', 'expanded', or 'auto'.")

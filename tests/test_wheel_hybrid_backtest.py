@@ -335,11 +335,29 @@ def test_calculate_metrics():
 
 def test_get_wheel_universe():
     """Test universe selection."""
-    universe = get_wheel_universe("2020-01-01")
+    # Bluechip mode: always returns 6 names
+    universe_bluechip = get_wheel_universe("2000-01-01", universe_type="bluechip")
+    assert len(universe_bluechip) == 6
+    assert "F" in universe_bluechip
+    assert "BAC" in universe_bluechip
     
-    assert isinstance(universe, list)
-    assert len(universe) > 0
-    assert "F" in universe or "T" in universe
+    # Expanded mode: large universe (~45 names)
+    universe_expanded = get_wheel_universe("2000-01-01", universe_type="expanded")
+    assert len(universe_expanded) >= 40
+    assert "CSCO" in universe_expanded
+    assert "JPM" in universe_expanded
+    
+    # Auto mode for old dates uses bluechip
+    universe_2000 = get_wheel_universe("2000-01-01", universe_type="auto")
+    assert len(universe_2000) == 6
+    
+    # Auto mode for 2020 uses expanded
+    universe_2020 = get_wheel_universe("2020-07-01", universe_type="auto")
+    assert len(universe_2020) >= 40
+    
+    # Date filtering removes TMUS before 2013
+    universe_2010 = get_wheel_universe("2010-01-01", universe_type="expanded")
+    assert "TMUS" not in universe_2010
 
 
 def test_backtest_engine_mock():

@@ -60,22 +60,27 @@ def main():
     parser.add_argument(
         "--universe",
         type=str,
-        nargs="+",
-        help="Custom universe (space-separated tickers). Default: fixed research universe.",
+        default="auto",
+        choices=["bluechip", "expanded", "auto"],
+        help="Universe selection: bluechip (6 names), expanded (~45 names), auto (date-based). Default: auto.",
     )
     parser.add_argument(
-        "--use-fallback",
-        action="store_true",
-        help="Use fallback universe if primary has data issues",
+        "--custom-tickers",
+        type=str,
+        nargs="+",
+        help="Custom universe (space-separated tickers). Overrides --universe.",
     )
     
     args = parser.parse_args()
     
     # Get universe
-    if args.universe:
-        universe = args.universe
+    if args.custom_tickers:
+        universe = args.custom_tickers
     else:
-        universe = get_wheel_universe(args.start, use_fallback=args.use_fallback)
+        universe = get_wheel_universe(
+            args.start,
+            universe_type=args.universe,
+        )
     
     logger.info(
         "Starting backtest",
