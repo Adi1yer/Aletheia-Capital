@@ -51,6 +51,7 @@ class WheelHybridBacktest:
         iv_provider: Optional[object] = None,
         edge_gate: Optional[object] = None,
         regime_detector: Optional[object] = None,
+        crisis_overlay: Optional[object] = None,
         benchmark_ticker: str = "^SPXTR",
     ):
         self.start_date = start_date
@@ -76,6 +77,9 @@ class WheelHybridBacktest:
         self.iv_provider = iv_provider
         self.edge_gate = edge_gate
         self.regime_detector = regime_detector
+        
+        # Crisis overlay for directional sleeve (optional)
+        self.crisis_overlay = crisis_overlay
         
         # Benchmark (Phase 2: SPY total return via ^SPXTR, or fallback to SPY price-only)
         self.benchmark_ticker = benchmark_ticker
@@ -616,6 +620,15 @@ class WheelHybridBacktest:
     def _buy_directional(self, trade_date: date, prices: Dict[str, float], target_amount: float):
         """Buy directional positions with residual cash."""
         
+        # Check if crisis overlay is enabled
+        if self.crisis_overlay is not None and self.crisis_overlay.config.enabled:
+            self._buy_directional_with_crisis_overlay(trade_date, prices, target_amount)
+        else:
+            self._buy_directional_legacy(trade_date, prices, target_amount)
+    
+    def _buy_directional_legacy(self, trade_date: date, prices: Dict[str, float], target_amount: float):
+        """Buy directional positions with residual cash (legacy equal-weight)."""
+        
         # Count existing directional names
         directional_tickers = {pos.ticker for pos in self.portfolio.directional}
         
@@ -647,6 +660,119 @@ class WheelHybridBacktest:
                 continue
             
             self.portfolio.add_directional_position(ticker, shares, price, trade_date)
+    
+    def _buy_directional_with_crisis_overlay(self, trade_date: date, prices: Dict[str, float], target_amount: float):
+        """Buy directional positions using crisis overlay logic."""
+        
+        # Calculate SPY SMA200 for regime detection
+        spy_history = self.price_history.get(self.benchmark_ticker, [])
+        if not spy_history:
+            # Fallback to legacy if no SPY data
+            logger.warning("No SPY data for crisis overlay, using legacy directional")
+            self._buy_directional_legacy(trade_date, prices, target_amount)
+            return
+        
+        # Get SPY prices up to current date for SMA calculation
+        spy_prices = [close for dt, close, _, _ in spy_history if dt <= trade_date]
+        
+        if len(spy_prices) < self.crisis_overlay.config.sma_window:
+            # Not enough history for SMA yet
+            logger.debug("Insufficient SPY history for SMA200", days=len(spy_prices))
+            self._buy_directional_legacy(trade_date, prices, target_amount)
+            return
+        
+        # Calculate SMA200
+        from src.backtesting.wheel_hybrid.crisis_overlay import calculate_sma
+        spy_sma = calculate_sma(spy_prices, self.crisis_overlay.config.sma_window)
+        spy_current = spy_prices[-1]
+        
+        if spy_sma is None:
+            logger.warning("Could not calculate SPY SMA200")
+            self._buy_directional_legacy(trade_date, prices, target_amount)
+            return
+        
+        # Check if we should rebalance
+        should_rebalance, new_regime = self.crisis_overlay.should_rebalance(
+            trade_date, spy_current, spy_sma
+        )
+        
+        if should_rebalance:
+            # Update regime
+            self.crisis_overlay.update_regime(trade_date, new_regime)
+            
+            # Rebalance directional sleeve to target allocation
+            target_ticker = self.crisis_overlay.get_target_allocation()
+            
+            logger.info(
+                "Crisis overlay rebalance",
+                date=trade_date,
+                regime=new_regime.value,
+                target=target_ticker,
+                spy_price=spy_current,
+                spy_sma=spy_sma,
+            )
+            
+            # Sell all existing directional positions
+            for pos in list(self.portfolio.directional):
+                pos_price = prices.get(pos.ticker)
+                if pos_price is None:
+                    logger.warning("No price for directional position", ticker=pos.ticker)
+                    continue
+                
+                self.portfolio.sell_directional_position(
+                    pos.ticker, pos.shares, pos_price, trade_date
+                )
+            
+            # Buy target allocation
+            if target_ticker == "equal_weight_bluechip":
+                # Equal-weight across bluechip universe (legacy fallback)
+                self._buy_directional_legacy(trade_date, prices, target_amount)
+            else:
+                # Buy single ticker (SPY, BIL, or TLT)
+                target_price = prices.get(target_ticker)
+                
+                if target_price is None or target_price <= 0:
+                    logger.warning("No price for crisis overlay target", ticker=target_ticker)
+                    return
+                
+                # Allocate full directional budget to target ticker
+                budget = min(target_amount, self.portfolio.cash * 0.95)
+                shares = budget / target_price
+                
+                if shares >= 0.01:
+                    self.portfolio.add_directional_position(
+                        target_ticker, shares, target_price, trade_date
+                    )
+        else:
+            # No rebalance needed: maintain current allocation
+            # Only top up if significantly under-allocated
+            target_ticker = self.crisis_overlay.get_target_allocation()
+            directional_tickers = {pos.ticker for pos in self.portfolio.directional}
+            
+            # Check if we need to adjust allocation
+            if target_ticker not in directional_tickers:
+                # We should have target but don't: rebalance
+                logger.debug("Target ticker not held, triggering rebalance", target=target_ticker)
+                self._buy_directional_with_crisis_overlay(trade_date, prices, target_amount)
+            elif len(directional_tickers) == 1 and target_ticker in directional_tickers:
+                # Correct holding: top up if needed
+                target_price = prices.get(target_ticker)
+                if target_price and target_price > 0:
+                    current_value = sum(
+                        pos.shares * prices.get(pos.ticker, pos.cost_basis)
+                        for pos in self.portfolio.directional
+                        if pos.ticker == target_ticker
+                    )
+                    
+                    if current_value < target_amount * 0.8:
+                        # Significantly under-allocated: top up
+                        budget = min(target_amount - current_value, self.portfolio.cash * 0.95)
+                        shares = budget / target_price
+                        
+                        if shares >= 0.01:
+                            self.portfolio.add_directional_position(
+                                target_ticker, shares, target_price, trade_date
+                            )
     
     def _estimate_nav(self, trade_date: date, prices: Dict[str, float]) -> float:
         """Estimate current NAV."""
@@ -727,6 +853,10 @@ class WheelHybridBacktest:
         # Add regime stats if enabled
         if self.regime_detector is not None:
             metrics["regime"] = self.regime_detector.get_stats()
+        
+        # Add crisis overlay stats if enabled
+        if self.crisis_overlay is not None:
+            metrics["crisis_overlay"] = self.crisis_overlay.get_stats()
         
         # Add benchmark metadata
         metrics["benchmark"] = self.benchmark_ticker
