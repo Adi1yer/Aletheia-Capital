@@ -1,194 +1,208 @@
-# VIX-Gated Wheel-Hybrid Backtest — Quick Start
+# Phase 2: VRP Edge Quick Start
 
-## Overview
+**Status**: Infrastructure complete (PR #3) — awaiting market IV data
 
-Test wheel-hybrid covered call strategies with **free VIX regime gating** (no API keys required).
+---
 
-Two modes:
-- **Always-On**: Write CCs every day (baseline)
-- **VIX-Gated**: Scale CC writes based on VIX percentile rank
+## What's Ready
 
-## Installation
+✅ **CsvIVProvider**: Drop-in real market IV from CSV  
+✅ **PolygonIVProvider stub**: Ready for API key + implementation  
+✅ **SPY Total Return**: Benchmark now uses ^SPXTR (fixes ~2% dividend gap)  
+✅ **Bake-off harness**: Compare edge-gated vs always-on strategies  
+✅ **Tests**: All passing (IV provider + integration smoke test)  
+✅ **Docs**: Roadmap updated, whitepaper status noted  
 
-```bash
-# Install dependencies (if not already done)
-python3 -m pip install yfinance pandas structlog pytest
+---
+
+## How to Validate VRP Edge
+
+### Option 1: Drop In Market IV CSV
+
+**Step 1**: Get or generate market IV data in CSV format:
+```csv
+date,symbol,atm_iv,iv_rank
+2020-01-02,AAPL,0.2500,0.45
+2020-01-02,MSFT,0.1800,0.32
+2020-01-03,AAPL,0.2600,0.48
+2020-01-03,MSFT,0.1900,0.35
 ```
 
-## Run a Bake-Off
+**Field definitions**:
+- `date`: YYYY-MM-DD
+- `symbol`: Ticker (uppercase)
+- `atm_iv`: At-the-money implied volatility as **decimal** (0.25 = 25% annualized vol)
+- `iv_rank`: IV rank 0.0-1.0 (optional, can be empty)
 
-Compare always-on vs VIX-gated strategies:
-
+**Step 2**: Run bake-off to compare edge-gated vs always-on:
 ```bash
-# Use predefined test window
-python3 scripts/run_vrp_bakeoff.py --preset bluechip-2020-2024
-
-# Custom date range
-python3 scripts/run_vrp_bakeoff.py \
-  --start-date 2020-01-01 \
-  --end-date 2024-12-31 \
+scripts/run_vrp_bakeoff.py \
+  --iv-csv data/market_iv.csv \
+  --start 2020-01-01 \
+  --end 2024-12-31 \
   --universe bluechip \
-  --capital 10000
+  --min-vrp 0.10 \
+  --out docs/backtest_results/wheel_hybrid/bakeoff_2020_2024
 ```
 
-### Available Presets
-
-- `bluechip-2020-2024`: Full 2020s, 10 large-cap stocks (AAPL, MSFT, etc.)
-- `covid-recovery`: 2020-04-01 to 2021-12-31
-- `full-2020s`: 2020-01-01 to 2024-12-31
-
-### Available Universes
-
-- `bluechip`: AAPL, MSFT, JPM, JNJ, PG, KO, DIS, BA, CAT, MMM
-- `wheel_classic`: F, SOFI, NOK, ITUB, ABEV, GOLD, NIO, PLUG, LCID, RIVN
-
-## Output
-
-Results saved to `docs/backtest_results/vix_gated/`:
-- `summary_<dates>.json`: Performance metrics
-- `equity_curves_<dates>.csv`: Daily equity time series
-
-Sample output:
-
-```
-================================================================================
-VRP BAKE-OFF RESULTS
-================================================================================
-
-Window: 2020-01-01 to 2024-12-31
-Universe: 10 tickers
-
-SPY Benchmark:     +95.30%
-
-Always-On:         +36.84%  (Sharpe: 1.172)
-VIX-Gated:         +26.81%  (Sharpe: 1.214)
-
-Alpha vs Always-On: -10.02%
-Alpha vs SPY:       -68.48%
-
-≥2% hurdle vs always-on: ✗ FAIL
-================================================================================
-```
-
-## Run Tests
-
+**Step 3**: Review results:
 ```bash
-python3 -m pytest tests/test_vix_gated_wheel.py -v
+cat docs/backtest_results/wheel_hybrid/bakeoff_2020_2024/bakeoff_2020-01-01_2024-12-31.json
 ```
 
-All 12 tests should pass.
+Look for:
+- `comparison.abs_return_delta_pct`: How much edge-gated beat always-on (total return)
+- `comparison.excess_vs_spy_delta_pct`: How much edge-gated beat always-on (excess vs SPY)
+- Gate stats: `writes_allowed`, `writes_blocked_vrp`, block rate
 
-## Architecture
+**Success criteria**: Edge-gated beats always-on by **≥2% annually** excess vs SPY
 
-### Core Components
+**If edge NOT detected**: Project will be terminated or pivoted per EDGE_VRP_ROADMAP.md
 
-1. **VixDataProvider** (`vix_provider.py`)
-   - Free VIX data via yfinance (^VIX)
-   - Local cache for CI reproducibility
-   - Percentile rank calculation
+---
 
-2. **EdgeGate** (`edge_gate.py`)
-   - ALWAYS_ON: Write all lots every day
-   - VIX_GATED: Scale by VIX percentile (30th/70th thresholds)
-   - Returns "intensity" 0.0-1.0 controlling overwrite fraction
+### Option 2: Generate Synthetic IV (Research-Only)
 
-3. **WheelHybridSimulator** (`simulator.py`)
-   - Simplified backtest engine
-   - 70% wheel / 30% directional split
-   - Monthly CC writes with premium estimation
-   - No slippage, chain selection, or assignment modeling
-
-4. **IVProvider** (`iv_provider.py`)
-   - Interface for IV data sources
-   - `NoOpIVProvider`: Always-on mode
-   - `CsvIVProvider`: Phase 2 testing (not used in VIX path)
-
-### Regime Logic
-
-```python
-from src.backtesting.wheel_hybrid.vix_provider import VixDataProvider
-from src.backtesting.wheel_hybrid.edge_gate import EdgeGate, EdgeMode
-
-# VIX-gated mode
-vix_provider = VixDataProvider()
-gate = EdgeGate(
-    mode=EdgeMode.VIX_GATED,
-    vix_provider=vix_provider,
-    vix_percentile_threshold_low=30.0,
-    vix_percentile_threshold_high=70.0,
-)
-
-# Get overwrite intensity for a date
-intensity = gate.get_overwrite_intensity(date(2023, 6, 15))
-# intensity ∈ [0.0, 1.0]
-
-# Binary decision
-should_write = gate.should_write_cc(date(2023, 6, 15))
-```
-
-## Customization
-
-### Adjust VIX Thresholds
-
-Edit `edge_gate.py` or pass custom thresholds:
-
-```python
-gate = EdgeGate(
-    mode=EdgeMode.VIX_GATED,
-    vix_provider=vix_provider,
-    vix_percentile_threshold_low=20.0,   # More aggressive
-    vix_percentile_threshold_high=80.0,  # Wider neutral zone
-)
-```
-
-### Test Different Universes
-
-Add to `UNIVERSES` dict in `scripts/run_vrp_bakeoff.py`:
-
-```python
-UNIVERSES = {
-    "bluechip": ["AAPL", "MSFT", ...],
-    "wheel_classic": ["F", "SOFI", ...],
-    "tech_heavy": ["NVDA", "TSLA", "AMD", ...],  # New
-}
-```
-
-Then run:
-
+**For testing infrastructure only** (do NOT claim edge):
 ```bash
-python3 scripts/run_vrp_bakeoff.py --universe tech_heavy --preset full-2020s
+scripts/build_iv_fixture_from_synthetic.py \
+  --start 2020-01-01 \
+  --end 2024-12-31 \
+  --tickers AAPL MSFT GOOGL SPY \
+  --premium-bump 0.15 \
+  --out data/synthetic_iv_2020_2024.csv
 ```
 
-### Add Test Windows
+Then run bake-off with `--iv-csv data/synthetic_iv_2020_2024.csv`
 
-Edit `WINDOWS` dict:
+⚠️ **Warning**: Synthetic IV uses realized vol + premium bump. NOT market IV. Results are labeled `research_only_synthetic_iv` and must NOT be used for edge validation or beat-SPY claims.
 
-```python
-WINDOWS = {
-    "covid-recovery": (date(2020, 4, 1), date(2021, 12, 31)),
-    "2015-crisis": (date(2015, 1, 1), date(2016, 12, 31)),  # New
-}
+---
+
+### Option 3: Polygon.io API (Future)
+
+**Requirements**:
+1. Subscribe to [Polygon.io](https://polygon.io) (Starter $399/mo or Advanced $999/mo)
+2. Set environment variable:
+   ```bash
+   export POLYGON_API_KEY="your_api_key_here"
+   ```
+3. Complete `src/backtesting/wheel_hybrid/iv_provider.py` → `PolygonIVProvider._fetch_from_api()`:
+   - GET `https://api.polygon.io/v3/snapshot/options/{symbol}`
+   - Parse option chain for ATM strike
+   - Extract `implied_volatility` field
+   - Calculate IV rank from historical data
+4. Run bake-off (provider auto-fetches + caches to `data/iv_cache/`)
+
+**Cache layout**:
+```
+data/iv_cache/
+  AAPL/
+    2020-01-02.json
+    2020-01-03.json
+  MSFT/
+    2020-01-02.json
 ```
 
-## Known Limitations
+Cache is gitignored and persists for offline replay.
 
-1. **Simplified execution** — No slippage, partial fills, or chain selection
-2. **Fixed premium estimate** — Assumes ~1% monthly CC premium regardless of market
-3. **No assignment handling** — Assumes all positions always roll successfully
-4. **Monthly CC writes only** — Doesn't model weekly or dynamic rewrite logic
-5. **No transaction costs** — Zero commissions/fees
+---
 
-## Next Steps
+## Understanding Bake-Off Results
 
-1. **Review results** — See `docs/VIX_REGIME_BAKEOFF.md` for analysis
-2. **Test longer windows** — Include 2008, 2015-2016 high-VIX periods
-3. **Refine intensity mapping** — Current percentile thresholds may be too conservative
-4. **Compare to realized vol** — VIX vs SPY realized vol ratio (not just percentile)
+### Comparison Table
+
+```
+Metric                          Legacy (Off)         Gated (On)          Delta
+----------------------------------------------------------------------------------
+Absolute Return                 +125.50%             +138.20%            +12.70%
+Excess vs SPY                   +10.30%              +23.00%             +12.70%
+Max Drawdown                    -18.50%              -16.20%             +2.30%
+Sharpe Ratio                    1.45                 1.62                +0.17
+Alpha (annual)                  +2.50%               +5.80%              +3.30%
+Premium Collected               $3,250.00            $2,850.00           -$400.00
+```
+
+**What to look for**:
+- **Excess vs SPY Delta**: Edge-gated should beat legacy by ≥2% (main success metric)
+- **Gate block rate**: 20-40% typical (edge blocks writes when VRP too low)
+- **Premium collected**: May be LOWER for gated (fewer writes = better selectivity)
+- **Sharpe/Sortino**: Risk-adjusted return should improve
+
+### Gate Statistics
+
+```
+Gate Statistics:
+  Writes allowed:       450
+  Blocked (low VRP):    180
+  Blocked (low IV rank): 20
+  Blocked (no IV):       5
+  Block rate:           31.3%
+```
+
+**Interpretation**:
+- Block rate 20-40%: Healthy selectivity (edge working)
+- Block rate >60%: May be too conservative (threshold too high)
+- Block rate <10%: Weak filter (threshold too low or IV always rich)
+
+---
+
+## Next Steps After Bake-Off
+
+### If Edge Detected (≥2% beat)
+1. **Document results**: Save bake-off JSON + table
+2. **Walk-forward test**: Train on 2015-2019, test on 2020-2024 (out-of-sample)
+3. **New paper track**: Launch `vrp-wheel-v1` (Alpaca paper, $10k NAV)
+4. **Run 6-12 months**: Compare to SPY + legacy `wheel-10k-paper-v1`
+5. **If paper track succeeds**: Move to Phase 4 (production risk/ops)
+
+### If NO Edge Detected (<2% beat)
+1. **Kill criteria met**: Terminate project or pivot per roadmap
+2. **Pivot options**:
+   - Pure equity quant (drop options entirely)
+   - Tail hedging only (buy OTM puts, no overwriting)
+   - Delta-one replication (synthetic forwards)
+
+---
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/backtesting/wheel_hybrid/iv_provider.py` | CsvIVProvider, PolygonIVProvider |
+| `scripts/run_vrp_bakeoff.py` | Bake-off harness (edge on vs off) |
+| `scripts/build_iv_fixture_from_synthetic.py` | Generate synthetic IV (testing only) |
+| `tests/test_iv_providers.py` | Unit tests + smoke test |
+| `docs/EDGE_VRP_ROADMAP.md` | Full Phase 2 roadmap + kill criteria |
+| `docs/WHITEPAPER_WHEEL_HYBRID.md` | Strategy thesis + Phase 2 status |
+
+---
+
+## FAQ
+
+**Q: What IV tenor should I use?**  
+A: 21-day (3 weeks) is standard. Matches typical CC/CSP DTE range.
+
+**Q: What if some symbols are missing IV data?**  
+A: CsvIVProvider returns `None` → EdgeGate blocks writes (fail-closed). Symbol skipped that day.
+
+**Q: Can I use different VRP thresholds?**  
+A: Yes! Try `--min-vrp 0.05` (5%), `--min-vrp 0.15` (15%), `--min-vrp 0.20` (20%) and compare.
+
+**Q: What about IV rank filter?**  
+A: Optional. Add `--min-iv-rank 0.40` to require IV above 40th percentile.
+
+**Q: Should I enable regime detection?**  
+A: Optional Phase 2 feature. Add `--enable-regime` to test HARVEST_VRP / HOLD_DELTA / DEFENSIVE states.
+
+**Q: How do I compare to SPY total return?**  
+A: Bake-off automatically uses `^SPXTR` (SPY total return index) or falls back to SPY price-only if unavailable. Benchmark is logged in results.
+
+---
 
 ## Support
 
-This is a **research/simulation tool**, not a live trading system. Results are:
-- ✓ Reproducible via committed code + cached VIX data
-- ✓ Honestly labeled as simulation
-- ✗ Not representative of live execution
-- ✗ Not a recommendation to trade
+For questions or issues:
+- Open GitHub issue on [Adi1yer/Aletheia-Capital](https://github.com/Adi1yer/Aletheia-Capital)
+- Review [EDGE_VRP_ROADMAP.md](EDGE_VRP_ROADMAP.md) for full methodology
+- Check [WHITEPAPER_WHEEL_HYBRID.md](WHITEPAPER_WHEEL_HYBRID.md) for strategy thesis

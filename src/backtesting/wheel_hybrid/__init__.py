@@ -1,5 +1,8 @@
-"""Wheel-hybrid backtest simulator with VRP/regime gating support."""
+"""Wheel hybrid backtest: equity + synthetic options model."""
 
-from __future__ import annotations
+from src.backtesting.wheel_hybrid.engine import WheelHybridBacktest
+from src.backtesting.wheel_hybrid.portfolio import WheelPortfolio
+from src.backtesting.wheel_hybrid.metrics import calculate_metrics
+from src.backtesting.wheel_hybrid.vix_iv_provider import VixIVProvider
 
-__all__ = ["WheelHybridSimulator", "IVProvider", "VixDataProvider", "EdgeGate"]
+__all__ = ["WheelHybridBacktest", "WheelPortfolio", "calculate_metrics", "VixIVProvider"]
