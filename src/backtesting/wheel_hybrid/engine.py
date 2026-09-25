@@ -48,6 +48,9 @@ class WheelHybridBacktest:
         manage_itm_pct: float = 0.02,
         rf_rate: float = 0.0,
         vol_window: int = 21,
+        iv_provider: Optional[object] = None,
+        edge_gate: Optional[object] = None,
+        regime_detector: Optional[object] = None,
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -67,6 +70,11 @@ class WheelHybridBacktest:
         self.manage_itm_pct = manage_itm_pct
         self.rf_rate = rf_rate
         self.vol_window = vol_window
+        
+        # Edge / regime components (optional, Phase 1 scaffold)
+        self.iv_provider = iv_provider
+        self.edge_gate = edge_gate
+        self.regime_detector = regime_detector
         
         self.portfolio = WheelPortfolio(initial_nav)
         self.equity_curve: List[Tuple[str, float]] = []
@@ -417,6 +425,16 @@ class WheelHybridBacktest:
     def _write_covered_calls(self, trade_date: date, prices: Dict[str, float]):
         """Write covered calls on uncovered lots."""
         
+        # Regime check: Skip CC writes in HOLD_DELTA or DEFENSIVE
+        if self.regime_detector is not None:
+            if not self.regime_detector.should_write_cc():
+                logger.debug(
+                    "Skipping CC writes (regime)",
+                    date=trade_date,
+                    regime=self.regime_detector.get_current_regime().value,
+                )
+                return
+        
         # Find lots without matching short calls
         covered_tickers = {call.ticker for call in self.portfolio.short_calls}
         
@@ -434,6 +452,23 @@ class WheelHybridBacktest:
             
             if vol is None:
                 continue
+            
+            # Edge gate check: Only write if VRP edge detected
+            if self.edge_gate is not None:
+                allowed, reason = self.edge_gate.should_write_cc(
+                    lot.ticker,
+                    trade_date,
+                    vol,
+                    tenor_days=self.vol_window,
+                )
+                if not allowed:
+                    logger.debug(
+                        "CC write blocked by edge gate",
+                        ticker=lot.ticker,
+                        date=trade_date,
+                        reason=reason,
+                    )
+                    continue
             
             # Select strike and expiry
             strike = select_call_strike(price, target_otm_pct=self.cc_target_otm_pct)
@@ -489,6 +524,23 @@ class WheelHybridBacktest:
             
             if vol is None:
                 continue
+            
+            # Edge gate check: Only write if VRP edge detected
+            if self.edge_gate is not None:
+                allowed, reason = self.edge_gate.should_write_csp(
+                    ticker,
+                    trade_date,
+                    vol,
+                    tenor_days=self.vol_window,
+                )
+                if not allowed:
+                    logger.debug(
+                        "CSP write blocked by edge gate",
+                        ticker=ticker,
+                        date=trade_date,
+                        reason=reason,
+                    )
+                    continue
             
             # Select strike
             strike = select_put_strike(price, self.csp_score)
@@ -641,6 +693,14 @@ class WheelHybridBacktest:
             self.portfolio.premium_collected_total,
             self.portfolio.trades,
         )
+        
+        # Add edge gate stats if enabled
+        if self.edge_gate is not None:
+            metrics["edge_gate"] = self.edge_gate.get_stats()
+        
+        # Add regime stats if enabled
+        if self.regime_detector is not None:
+            metrics["regime"] = self.regime_detector.get_stats()
         
         with open(output_dir / "summary.json", "w") as f:
             json.dump(metrics, f, indent=2)

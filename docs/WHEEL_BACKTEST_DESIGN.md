@@ -145,6 +145,57 @@ The backtest supports three universe modes via `--universe` CLI flag:
 
 *Note*: The live track (wheel-10k-paper-v1) selects names dynamically using agent scores + liquidity filters. Fixed universes are for simulation reproducibility only.
 
+---
+
+## IV Provider Interface (Phase 1 Scaffold)
+
+**Status**: Code infrastructure complete, no live IV data yet.
+
+### IVProvider Protocol
+
+Abstract interface in `src/backtesting/wheel_hybrid/iv_provider.py`:
+- `get_atm_iv(symbol, as_of, tenor_days)` → ATM implied volatility
+- `get_iv_rank(symbol, as_of)` → IV rank (percentile vs 1yr history)
+- `get_iv_rv_spread(symbol, as_of, realized_vol)` → VRP (IV-RV) / RV
+
+### Implementations
+
+1. **NullIVProvider**: Returns None (legacy mode, no IV data)
+2. **SyntheticIVFromRealizedProvider**: Research-only, uses RV + bump (NOT production edge)
+3. **FileIVProvider**: Phase 2 drop-in for CSV/JSON IV data
+
+### Edge Gate
+
+`src/backtesting/wheel_hybrid/edge_gate.py`:
+- Filters option writes based on VRP > threshold
+- Fail-closed when IV unavailable (safe default)
+- Tracks writes blocked/allowed for reporting
+
+### Regime Detection
+
+`src/backtesting/wheel_hybrid/regime.py`:
+- **HARVEST_VRP**: Rich IV → write options aggressively
+- **HOLD_DELTA**: Cheap IV or melt-up → skip/thin CC writes, preserve beta
+- **DEFENSIVE**: Crash or vol spike → reduce risk, raise cash
+
+### CLI Flags
+
+```bash
+# Legacy mode (no edge gating)
+--edge-mode off
+
+# Synthetic IV (research-only, NOT production edge)
+--edge-mode synthetic --min-vrp 0.10 --synthetic-vrp-bump 0.15
+
+# Real IV from file (Phase 2)
+--edge-mode file --iv-csv data/iv_cache/iv_data.csv --min-vrp 0.10
+
+# Enable regime detection
+--enable-regime
+```
+
+See `docs/EDGE_VRP_ROADMAP.md` for full phased implementation plan.
+
 ## Code Structure
 
 ```

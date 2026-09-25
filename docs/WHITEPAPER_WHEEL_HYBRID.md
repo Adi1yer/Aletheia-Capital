@@ -641,6 +641,21 @@ The summary JSON files are ~700 bytes each and committed for audit trail. Full C
 
 **Test**: If coverage alerts, CSP over-limit, or halted trading occur > 5% of sessions, the **operational reliability** claim is **rejected**.
 
+---
+
+### VRP Edge Path (Phase 1 Scaffold)
+
+**Note**: Section 8b historical simulations use Black-Scholes + realized vol, **NOT market IV**. This is an **upper bound** on diversification benefit, not proof of VRP edge.
+
+**Roadmap to beat-SPY validation**: See `docs/EDGE_VRP_ROADMAP.md` for:
+- Signal stack (IV-RV spread, IV rank, regime detection)
+- Phase 1 scaffold (this PR): Infrastructure without live IV data
+- Phase 2: Wire real market IV from Polygon/ThetaData/OPRA
+- Phase 3: Walk-forward validation + new paper track `vrp-wheel-v1` (do NOT contaminate `wheel-10k-paper-v1`)
+- Phase 4: Production risk/ops if Phase 3 succeeds
+
+**Current status**: Phase 1 code scaffold complete (edge gate + regime detector). No claim of edge until Phase 2 wires real IV.
+
 **Action**: Manual intervention needed too often → not scalable, not rules-first. Redesign automation or hire human oversight (expensive, not MVP).
 
 ### Falsifier 5: Option Premium ≤ Transaction Costs

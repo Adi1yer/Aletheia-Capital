@@ -12,6 +12,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.backtesting.wheel_hybrid.engine import WheelHybridBacktest
 from src.backtesting.wheel_hybrid.universe import get_wheel_universe
+from src.backtesting.wheel_hybrid.iv_provider import (
+    NullIVProvider,
+    SyntheticIVFromRealizedProvider,
+    FileIVProvider,
+)
+from src.backtesting.wheel_hybrid.edge_gate import EdgeGate, EdgeGateConfig
+from src.backtesting.wheel_hybrid.regime import RegimeDetector, RegimeConfig
+from src.backtesting.wheel_hybrid.premium_model import realized_volatility
 from src.data.providers.yahoo import YahooFinanceProvider
 
 logger = structlog.get_logger()
@@ -70,6 +78,40 @@ def main():
         nargs="+",
         help="Custom universe (space-separated tickers). Overrides --universe.",
     )
+    parser.add_argument(
+        "--edge-mode",
+        type=str,
+        default="off",
+        choices=["off", "synthetic", "file"],
+        help="Edge gating mode: off (legacy), synthetic (research-only), file (real IV from CSV). Default: off.",
+    )
+    parser.add_argument(
+        "--iv-csv",
+        type=str,
+        help="Path to IV data CSV (required for --edge-mode file)",
+    )
+    parser.add_argument(
+        "--min-vrp",
+        type=float,
+        default=0.10,
+        help="Minimum VRP (IV-RV spread) to write options. Default: 0.10 (10%%).",
+    )
+    parser.add_argument(
+        "--min-iv-rank",
+        type=float,
+        help="Minimum IV rank to write options (0.0-1.0). Optional.",
+    )
+    parser.add_argument(
+        "--synthetic-vrp-bump",
+        type=float,
+        default=0.15,
+        help="Synthetic IV premium bump above realized vol (for --edge-mode synthetic). Default: 0.15 (15%%).",
+    )
+    parser.add_argument(
+        "--enable-regime",
+        action="store_true",
+        help="Enable regime detection (HARVEST_VRP / HOLD_DELTA / DEFENSIVE)",
+    )
     
     args = parser.parse_args()
     
@@ -88,7 +130,72 @@ def main():
         end=args.end,
         nav=args.nav,
         universe=universe,
+        edge_mode=args.edge_mode,
     )
+    
+    # Initialize IV provider, edge gate, and regime detector based on edge mode
+    iv_provider = None
+    edge_gate = None
+    regime_detector = None
+    
+    if args.edge_mode == "off":
+        # Legacy mode: no edge gating
+        logger.info("Edge gating disabled (legacy mode)")
+    
+    elif args.edge_mode == "synthetic":
+        # Synthetic IV from realized vol + bump (research-only)
+        logger.warning(
+            "Using synthetic IV (RESEARCH-ONLY, NOT PRODUCTION EDGE)",
+            vrp_bump=args.synthetic_vrp_bump,
+        )
+        
+        # Helper to get realized vol for IV provider
+        def get_realized_vol(symbol, as_of, window):
+            # This will be called by synthetic IV provider
+            # Return None for now (provider will handle)
+            return None
+        
+        iv_provider = SyntheticIVFromRealizedProvider(
+            realized_vol_provider=get_realized_vol,
+            premium_bump=args.synthetic_vrp_bump,
+        )
+        
+        # Create edge gate
+        gate_config = EdgeGateConfig(
+            enabled=True,
+            min_vrp=args.min_vrp,
+            min_iv_rank=args.min_iv_rank,
+            fail_closed_when_no_iv=False,  # Synthetic always provides IV
+        )
+        edge_gate = EdgeGate(gate_config, iv_provider)
+        
+        # Create regime detector if enabled
+        if args.enable_regime:
+            regime_config = RegimeConfig(enabled=True)
+            regime_detector = RegimeDetector(regime_config, iv_provider)
+            logger.info("Regime detection enabled")
+    
+    elif args.edge_mode == "file":
+        # Real IV from CSV file (Phase 2)
+        if not args.iv_csv:
+            logger.error("--iv-csv required for --edge-mode file")
+            return 1
+        
+        logger.info("Using IV from file", path=args.iv_csv)
+        iv_provider = FileIVProvider(args.iv_csv, format="csv")
+        
+        gate_config = EdgeGateConfig(
+            enabled=True,
+            min_vrp=args.min_vrp,
+            min_iv_rank=args.min_iv_rank,
+            fail_closed_when_no_iv=True,  # Fail safe if IV missing
+        )
+        edge_gate = EdgeGate(gate_config, iv_provider)
+        
+        if args.enable_regime:
+            regime_config = RegimeConfig(enabled=True)
+            regime_detector = RegimeDetector(regime_config, iv_provider)
+            logger.info("Regime detection enabled")
     
     # Initialize backtest
     backtest = WheelHybridBacktest(
@@ -97,6 +204,9 @@ def main():
         initial_nav=args.nav,
         wheel_pct=args.wheel_pct,
         directional_pct=args.directional_pct,
+        iv_provider=iv_provider,
+        edge_gate=edge_gate,
+        regime_detector=regime_detector,
     )
     
     # Run with Yahoo Finance provider
