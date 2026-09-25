@@ -10,8 +10,8 @@ import structlog
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.backtest.wheel_hybrid.engine import WheelHybridBacktest
-from src.backtest.wheel_hybrid.universe import get_wheel_universe
+from src.backtesting.wheel_hybrid.engine import WheelHybridBacktest
+from src.backtesting.wheel_hybrid.universe import get_wheel_universe
 from src.data.providers.yahoo import YahooFinanceProvider
 
 logger = structlog.get_logger()

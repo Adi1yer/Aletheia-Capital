@@ -9,8 +9,8 @@ from typing import Dict, List, Optional, Tuple
 
 import structlog
 
-from src.backtest.wheel_hybrid.portfolio import WheelPortfolio
-from src.backtest.wheel_hybrid.premium_model import (
+from src.backtesting.wheel_hybrid.portfolio import WheelPortfolio
+from src.backtesting.wheel_hybrid.premium_model import (
     check_assignment_call,
     check_assignment_put,
     estimate_call_premium,
@@ -20,7 +20,7 @@ from src.backtest.wheel_hybrid.premium_model import (
     select_call_strike,
     select_put_strike,
 )
-from src.backtest.wheel_hybrid.metrics import calculate_metrics
+from src.backtesting.wheel_hybrid.metrics import calculate_metrics
 
 logger = structlog.get_logger()
 

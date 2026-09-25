@@ -484,9 +484,13 @@ where:
 
 This is **expected behavior** for a wheel strategy in a melt-up regime. The thesis claims risk-adjusted outperformance (Sharpe, alpha), not absolute return maximization.
 
-**How to run**:
+**How to run real backtest**:
 
 ```bash
+# Generate fixture data (for testing output format)
+python3 scripts/generate_fixture_backtest.py
+
+# Run real historical simulation (requires yfinance)
 poetry run python scripts/run_wheel_hybrid_backtest.py \
   --start 2020-01-01 \
   --end 2024-12-31 \
@@ -494,7 +498,9 @@ poetry run python scripts/run_wheel_hybrid_backtest.py \
   --out data/backtests/wheel_hybrid/2020_2024_10k
 ```
 
-**Output**: `summary.json`, `equity_curve.csv`, `trades.csv`, `assumptions.json` saved to `data/backtests/wheel_hybrid/2020_2024_10k/`.
+**Output**: `summary.json`, `equity_curve.csv`, `trades.csv`, `assumptions.json` saved to output directory.
+
+**Fixture data location**: `data/backtests/wheel_hybrid/fixture_sample/` (generated on demand, not in git).
 
 **Limitations**:
 - Simulated fills assume mid-market (no spread cost modeled).
@@ -575,7 +581,7 @@ poetry run python scripts/run_wheel_hybrid_backtest.py \
 **Deliverables**:
 - [x] Daily email digests (live since 2026-09-21)
 - [x] Official track scoreboard (`docs/OFFICIAL_TRACK_RECORD.md`)
-- [x] Wheel backtest simulation (`src/backtest/wheel_hybrid/`, `docs/WHEEL_BACKTEST_DESIGN.md`)
+- [x] Wheel backtest simulation (`src/backtesting/wheel_hybrid/`, `docs/WHEEL_BACKTEST_DESIGN.md`)
 - [x] Whitepaper (this document)
 - [ ] 6-month performance report (target: 2027-03-21)
 - [ ] 12-month performance report (target: 2027-09-21)

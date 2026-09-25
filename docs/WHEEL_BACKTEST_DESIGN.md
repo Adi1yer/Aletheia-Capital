@@ -85,7 +85,7 @@ To avoid cherry-picking winners after the fact, the backtest uses:
 ## Code Structure
 
 ```
-src/backtest/wheel_hybrid/
+src/backtesting/wheel_hybrid/
 ├── __init__.py
 ├── engine.py                 # Main simulation loop
 ├── premium_model.py          # Black-Scholes + assignment heuristics
