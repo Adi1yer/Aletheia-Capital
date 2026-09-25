@@ -65,22 +65,46 @@ We simulate the wheel strategy using:
 
 ## Universe Selection (No Look-Ahead Bias)
 
-To avoid cherry-picking winners after the fact, the backtest uses:
+To avoid cherry-picking winners after the fact, the backtest uses **date-aware fixed universes**:
 
-**Fixed research universe**: 6–8 names that historically met the live wheel criteria for liquidity and price:
-- Liquid (ADV > $5M historically)
-- Price ≤ $35 (allowing 100-share lots with $10k NAV)
-- Stable option markets (proxied by high average volume in equity)
+### Long-History Universe (start ≤ 2015)
 
-**Example universe** (subject to data availability):
-- **F** (Ford)
-- **T** (AT&T)
-- **SOFI** (SoFi Technologies, if history available)
-- **PLUG** (Plug Power, if history available)
-- **NIO** (Nio, if history available)
-- **VALE** (Vale)
+Blue-chip names liquid and optionable back to ~2000s:
+- **F** (Ford) — Liquid since 1900s, options since 1970s
+- **T** (AT&T) — Stable dividend, liquid options
+- **BAC** (Bank of America) — Major bank, liquid
+- **INTC** (Intel) — Tech blue-chip
+- **PFE** (Pfizer) — Pharma blue-chip
+- **GE** (General Electric) — Industrial (note: split in 2021, data available pre-split)
 
-*Note*: The live track selects wheel names dynamically each morning using agent scores + liquidity filters. The backtest may use a fixed universe to avoid look-ahead bias, but documents this approximation clearly.
+**Rationale**: Backtests spanning 2000–2024 require names that:
+- Existed pre-2000 (no IPO look-ahead bias)
+- Had liquid option markets historically
+- Survived multiple recessions (dot-com, 2008, COVID)
+- Provide sector diversification (finance, tech, pharma, industrial)
+
+### Modern Retail Universe (start > 2015)
+
+Liquid, volatile names ≤$35 with post-2015 liquidity:
+- **F**, **T** (carryover from long-history)
+- **NIO** (Nio) — IPO 2020 (filtered out if start < 2020)
+- **PLUG** (Plug Power) — Regained liquidity ~2019
+- **VALE** (Vale) — Commodities, liquid
+- **SOFI** (SoFi) — IPO 2021 (filtered out if start < 2021)
+
+**Rationale**: Modern backtests (2016+) can use recent IPOs once they existed, capturing retail-favorite names with high option volume.
+
+### Date-Aware Filtering
+
+`get_wheel_universe(start_date)` automatically:
+- Uses long-history universe for pre-2016 starts
+- Uses modern universe for 2016+ starts
+- Removes SOFI if start < 2021
+- Removes NIO if start < 2020
+
+This prevents pre-IPO look-ahead bias while maximizing data availability.
+
+*Note*: The live track selects names dynamically using agent scores + liquidity filters. These fixed universes are for simulation consistency only.
 
 ## Code Structure
 

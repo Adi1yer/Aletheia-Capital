@@ -1,0 +1,31 @@
+{
+  "start_nav": 10000.0,
+  "end_nav": 15222.34,
+  "abs_return_pct": 52.22,
+  "abs_return_usd": 5222.34,
+  "spy_return_pct": 102.24,
+  "excess_return_pct": -50.01,
+  "excess_return_usd": -5001.28,
+  "max_drawdown_pct": -60.76,
+  "current_drawdown_pct": -59.08,
+  "sharpe": 0.44,
+  "sortino": 0.66,
+  "beta": 1.24,
+  "correlation": 0.58,
+  "alpha_annual_pct": -5.65,
+  "hit_rate_pct": 50.2,
+  "hit_sessions": 568,
+  "total_sessions": 1131,
+  "turnover": 1.07,
+  "premium_collected": 30211.64,
+  "trade_counts": {
+    "buys": 18,
+    "sells": 4,
+    "cc_writes": 407,
+    "csp_writes": 61,
+    "btc_calls": 392,
+    "btc_puts": 46,
+    "assignments_call": 4,
+    "assignments_put": 9
+  }
+}
