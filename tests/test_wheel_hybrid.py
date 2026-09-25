@@ -666,7 +666,10 @@ def test_wheel_daily_email_has_coverage_omits_agent_noise():
     }
     subject, text, html = build_wheel_daily_email(results)
     assert "daily wheel" in subject.lower()
-    assert "cash+stocks" in subject.lower()
+    assert "equity $10,000.00" in subject.lower()
+    assert "excess" in subject.lower()
+    assert "TRACK RECORD" in text
+    assert "OPS HEALTH" in text
     assert "Cash + stocks $5,800.00" in text
     assert "Alpaca equity $10,000.00" in text
     assert "COVERAGE MAP" in text
@@ -790,7 +793,8 @@ def test_wheel_daily_email_uses_raw_cash_not_spendable():
     assert "Cash $3,330.00" in text
     assert "spendable $2,467.07" in text
     assert "option BP holds" in text
-    assert "cash+stocks $4,590.00" in subject.lower()
+    assert "equity $9,797.20" in subject.lower()
+    assert "excess" in subject.lower()
 
 
 def test_wheel_daily_email_ignores_nan_prices():
@@ -834,8 +838,9 @@ def test_wheel_daily_email_ignores_nan_prices():
     assert "OTM=n/a" in text
     assert "wheel $1,200.00" in text
     assert "CTSH: 2 sh MV $118.76" in text
-    assert "alpaca $9,870.35" in subject.lower()
+    assert "equity $9,870.35" in subject.lower()
     assert "Cash + stocks $6,393.96" in text
+    assert "nan%" not in text.lower()
 
 
 def test_manage_or_roll_would_roll_on_near_itm():

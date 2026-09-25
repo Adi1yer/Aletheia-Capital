@@ -1,0 +1,46 @@
+name: Wheel Friday weekly digest
+
+on:
+  schedule:
+    # 21:00 UTC Friday ≈ 5:00 PM EDT
+    - cron: '0 21 * * 5'
+  workflow_dispatch:
+
+concurrency:
+  group: aletheia-wheel-paper
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: pip install poetry && poetry config virtualenvs.in-project true
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-
+      - run: poetry install --no-interaction --no-ansi
+      - name: Restore official snapshots
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/performance
+            data/cache
+          key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}
+          restore-keys: |
+            perf-${{ github.repository }}-wheel-v1-
+            perf-${{ github.repository }}-wheel-v1
+      - name: Send weekly digest
+        env:
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        run: poetry run python scripts/send_wheel_weekly_digest.py

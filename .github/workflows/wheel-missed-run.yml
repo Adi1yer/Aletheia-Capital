@@ -1,0 +1,74 @@
+name: Wheel missed-run watchdog
+
+on:
+  schedule:
+    # 21:30 UTC ≈ 5:30 PM EDT / 4:30 PM EST — after a long morning scan.
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force_missed:
+        description: 'Force a MISSED RUN email (for tests)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: aletheia-wheel-paper
+  cancel-in-progress: false
+
+jobs:
+  market-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: gate
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/should_run_daily_scan.py --github-output
+
+  watchdog:
+    needs: market-gate
+    if: needs.market-gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: pip install poetry && poetry config virtualenvs.in-project true
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-
+      - run: poetry install --no-interaction --no-ansi
+      - name: Restore official snapshots / run markers
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/performance
+            data/cache
+          key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}
+          restore-keys: |
+            perf-${{ github.repository }}-wheel-v1-
+            perf-${{ github.repository }}-wheel-v1
+      - name: Check missed morning run
+        env:
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        run: |
+          EXTRA=""
+          if [ "${{ github.event.inputs.force_missed }}" = "true" ]; then
+            EXTRA="--force-missed"
+          fi
+          poetry run python scripts/check_wheel_missed_run.py $EXTRA

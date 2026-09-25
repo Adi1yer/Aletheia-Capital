@@ -2245,6 +2245,18 @@ class TradingPipeline:
             pass
 
         logger.info("Weekly trading cycle complete", decision_count=len(decisions))
+        if bool(run_config.get("wheel_mode")) and not bool(run_config.get("beat_spy_mode")):
+            try:
+                from src.performance.official_track import attach_official_track
+
+                attach_official_track(
+                    results,
+                    run_config=run_config,
+                    data_provider=getattr(self, "data_provider", None),
+                    morning_status="ok",
+                )
+            except Exception as e:
+                logger.warning("Official track snapshot failed", error=str(e))
         return results
 
     def _build_data_snapshot(

@@ -1,0 +1,46 @@
+ALETHEIA DAILY WHEEL — 2026-09-25
+========================================================================
+TRACK RECORD (wheel-10k-paper-v1 · since 2026-09-21)
+----------------------------------------
+  Start $10,000 → NAV $9,797.20  (-2.03% / $-202.80)
+  SPY since start +0.40% | excess -2.43% / $-243.00
+  Max DD -2.03% | now -2.03% | Sharpe n/a | Sortino n/a (rf=0%)
+  Hit rate 25.0% (1/4 sessions) | option credit 100% (1/1)
+  Turnover 5d 0.08x | 21d 0.08x
+  Beta n/a | corr n/a | alpha n/a ann.
+  Sessions 5/5 expected | last success 2026-09-25
+
+Cash + stocks $7,740.00 (premium sits in cash; open shorts not subtracted)
+Alpaca equity $9,797.20 | Cash $3,330.00 (34.0%) | spendable $2,467.07 (option BP holds)
+Open option marks $-311.00 (Alpaca subtracts this from NAV)
+Sleeves actual: wheel $1,260.00 (12.9% / target 70%) | directional $3,150.00 (32.2% / target 30%)
+Premium collected (ledger): $376.00
+
+OPS HEALTH
+----------------------------------------
+  Morning OK | Afternoon SKIP
+  Clock 10:32 ET (expect 10:30 ET) on time
+  Broker OK | spendable $2,467.07
+  Orders: 5 submitted / 5 filled / 0 partial / 0 rejected / 0 pending
+  Fills: (none failed)
+  Invariants: no coverage alerts
+  Kill: max pos 35% | trading live
+
+ACTIONS TODAY
+----------------------------------------
+  (no portfolio changes this run)
+
+COVERAGE MAP (100-share wheel lots)
+----------------------------------------
+  F: 100 sh | F261016C00013000 strike $13.00 DTE=21 OTM=3.17%
+
+OPEN SHORT PUTS (cash-secured)
+----------------------------------------
+  NU: 1x NU261030P00013000 strike $13.00 DTE=35 collateral $1,300 | cash (no shares) OTM=4.13%
+
+DIRECTIONAL SLEEVE
+----------------------------------------
+  NOK: 300 sh MV $3,150.00
+
+Track wheel-10k-paper-v1 · start 2026-09-21 · official NAV=Alpaca equity · fp samplefp0001
+This is an automated daily paper-trading digest.

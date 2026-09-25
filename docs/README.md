@@ -6,6 +6,7 @@
 
 | Document | Purpose |
 |----------|---------|
+| [OFFICIAL_TRACK_RECORD.md](OFFICIAL_TRACK_RECORD.md) | Frozen wheel-10k paper track: start NAV, official vs cash+stocks, no silent resets |
 | [GETTING_STARTED.md](GETTING_STARTED.md) | One-place setup: Python, Poetry, .env, Ollama/API, run commands |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, components, data flow |
 | [API.md](API.md) | API reference and usage |
