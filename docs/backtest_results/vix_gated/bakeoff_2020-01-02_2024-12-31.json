@@ -1,0 +1,89 @@
+{
+  "metadata": {
+    "start_date": "2020-01-02",
+    "end_date": "2024-12-31",
+    "initial_nav": 10000.0,
+    "universe_type": "bluechip",
+    "universe_tickers": [
+      "F",
+      "T",
+      "BAC",
+      "INTC",
+      "PFE",
+      "GE"
+    ],
+    "iv_source": "vix_free_regime",
+    "min_vrp": 0.1,
+    "min_iv_rank": null,
+    "regime_enabled": false,
+    "label": "market_iv_validation"
+  },
+  "legacy_always_on": {
+    "start_nav": 10000.0,
+    "end_nav": 15499.57,
+    "abs_return_pct": 55.0,
+    "abs_return_usd": 5499.57,
+    "spy_return_pct": 95.3,
+    "excess_return_pct": -40.3,
+    "excess_return_usd": -4029.97,
+    "max_drawdown_pct": -37.67,
+    "current_drawdown_pct": -5.83,
+    "sharpe": 0.5,
+    "sortino": 0.69,
+    "beta": 0.77,
+    "correlation": 0.71,
+    "alpha_annual_pct": -0.63,
+    "hit_rate_pct": 53.9,
+    "hit_sessions": 677,
+    "total_sessions": 1256,
+    "turnover": 1.56,
+    "premium_collected": 6981.07,
+    "trade_counts": {
+      "buys": 12,
+      "sells": 2,
+      "cc_writes": 195,
+      "csp_writes": 12,
+      "btc_calls": 184,
+      "btc_puts": 8,
+      "assignments_call": 2,
+      "assignments_put": 2
+    }
+  },
+  "gated_edge_on": {
+    "start_nav": 10000.0,
+    "end_nav": 13378.33,
+    "abs_return_pct": 33.78,
+    "abs_return_usd": 3378.33,
+    "spy_return_pct": 95.3,
+    "excess_return_pct": -61.51,
+    "excess_return_usd": -6151.22,
+    "max_drawdown_pct": -41.5,
+    "current_drawdown_pct": -10.75,
+    "sharpe": 0.36,
+    "sortino": 0.52,
+    "beta": 0.85,
+    "correlation": 0.75,
+    "alpha_annual_pct": -4.6,
+    "hit_rate_pct": 51.8,
+    "hit_sessions": 651,
+    "total_sessions": 1256,
+    "turnover": 1.39,
+    "premium_collected": 1491.14,
+    "trade_counts": {
+      "buys": 11,
+      "sells": 1,
+      "cc_writes": 54,
+      "csp_writes": 0,
+      "btc_calls": 45,
+      "btc_puts": 0,
+      "assignments_call": 1,
+      "assignments_put": 0
+    }
+  },
+  "comparison": {
+    "abs_return_delta_pct": -21.22,
+    "excess_vs_spy_delta_pct": -21.21,
+    "sharpe_delta": -0.14,
+    "max_dd_delta_pct": -3.8299999999999983
+  }
+}

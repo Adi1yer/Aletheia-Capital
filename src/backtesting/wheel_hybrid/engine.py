@@ -51,6 +51,7 @@ class WheelHybridBacktest:
         iv_provider: Optional[object] = None,
         edge_gate: Optional[object] = None,
         regime_detector: Optional[object] = None,
+        vix_regime_provider: Optional[object] = None,
         benchmark_ticker: str = "^SPXTR",
     ):
         self.start_date = start_date
@@ -76,6 +77,7 @@ class WheelHybridBacktest:
         self.iv_provider = iv_provider
         self.edge_gate = edge_gate
         self.regime_detector = regime_detector
+        self.vix_regime_provider = vix_regime_provider
         
         # Benchmark (Phase 2: SPY total return via ^SPXTR, or fallback to SPY price-only)
         self.benchmark_ticker = benchmark_ticker
@@ -171,6 +173,12 @@ class WheelHybridBacktest:
             logger.error("Benchmark price history required (tried ^SPXTR and SPY)")
             return {}
         
+        # Ensure SPY is loaded for regime (VIX vs SPY RV)
+        if "SPY" not in self.price_history:
+            self.load_price_history("SPY", data_provider)
+            if not self.price_history.get("SPY"):
+                logger.warning("SPY not loaded; VIX regime may not work properly")
+        
         # Load universe tickers
         for ticker in universe:
             if ticker not in self.price_history:
@@ -240,6 +248,22 @@ class WheelHybridBacktest:
     
     def _daily_loop(self, trade_date: date, universe: List[str]):
         """Execute daily decisions: expiries, rolls, writes, buys."""
+        
+        # 0. Update regime detector with index VRP (VIX vs SPY RV)
+        if self.regime_detector is not None and self.vix_regime_provider is not None:
+            spy_prices = self.get_price_history_for_vol("SPY", trade_date, self.vol_window)
+            spy_rv = realized_volatility(spy_prices, self.vol_window)
+            
+            if spy_rv is not None and spy_rv > 0:
+                index_vrp = self.vix_regime_provider.compute_index_vrp(trade_date, spy_rv)
+                
+                self.regime_detector.update(
+                    trade_date=trade_date,
+                    vrp_avg=index_vrp,  # INDEX VRP: VIX vs SPY RV
+                    rv_avg=spy_rv,      # SPY realized vol
+                    iv_rank_avg=self.vix_regime_provider.get_vix_percentile(trade_date),
+                    equity_trend=None,  # Future: add SPY trend signal
+                )
         
         # 1. Handle expirations and assignments
         self._process_expirations(trade_date, universe)

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.backtesting.wheel_hybrid.engine import WheelHybridBacktest
 from src.backtesting.wheel_hybrid.universe import get_wheel_universe
 from src.backtesting.wheel_hybrid.iv_provider import CsvIVProvider, NullIVProvider
+from src.backtesting.wheel_hybrid.vix_regime_provider import VixRegimeProvider
 from src.backtesting.wheel_hybrid.edge_gate import EdgeGate, EdgeGateConfig
 from src.backtesting.wheel_hybrid.regime import RegimeDetector, RegimeConfig
 from src.data.providers.yahoo import YahooFinanceProvider
@@ -36,6 +37,7 @@ def run_backtest(
     iv_provider,
     edge_gate,
     regime_detector,
+    vix_regime_provider,
     benchmark_ticker: str,
     label: str,
 ):
@@ -51,6 +53,7 @@ def run_backtest(
         iv_provider=iv_provider,
         edge_gate=edge_gate,
         regime_detector=regime_detector,
+        vix_regime_provider=vix_regime_provider,
         benchmark_ticker=benchmark_ticker,
     )
     
@@ -102,7 +105,14 @@ def main():
     parser.add_argument(
         "--iv-csv",
         type=str,
-        help="Path to IV CSV for gated run (if not provided, uses synthetic IV labeled RESEARCH-ONLY)",
+        help="Path to IV CSV for name-level edge gating (optional)",
+    )
+    parser.add_argument(
+        "--iv-source",
+        type=str,
+        choices=["none", "csv", "vix-regime"],
+        default="none",
+        help="IV/regime source: none (always-on), csv (name IV from file), vix-regime (FREE VIX/SPY regime)",
     )
     parser.add_argument(
         "--min-vrp",
@@ -162,6 +172,7 @@ def main():
         iv_provider=None,
         edge_gate=None,
         regime_detector=None,
+        vix_regime_provider=None,
         benchmark_ticker=args.benchmark,
         label="legacy_always_on",
     )
@@ -170,36 +181,65 @@ def main():
         logger.error("Legacy run failed")
         return 1
     
-    # === Run 2: Gated (with IV) ===
+    # === Run 2: Gated/Regime Run ===
     logger.info("=" * 60)
-    logger.info("RUN 2: Gated (IV edge filter)")
+    logger.info("RUN 2: Gated/Regime Strategy")
     logger.info("=" * 60)
     
-    if args.iv_csv:
+    # Select approach based on source
+    if args.iv_source == "vix-regime":
+        logger.info("Using FREE VIX/SPY regime control (INDEX-LEVEL)")
+        
+        # Create VIX regime provider
+        vix_regime = VixRegimeProvider()
+        
+        # Enable regime detector with VIX
+        regime_config = RegimeConfig(
+            enabled=True,
+            harvest_min_vrp=0.10,  # VIX > SPY RV by 10% → HARVEST
+            hold_max_vrp=-0.05,  # VIX < SPY RV by 5% → HOLD_DELTA
+            defensive_rv_spike=0.40,  # SPY RV > 40% → DEFENSIVE
+        )
+        regime_detector = RegimeDetector(regime_config, None)  # No per-name IV needed
+        
+        # Store vix_regime for engine to use
+        iv_provider = None  # No name-level IV
+        edge_gate = None  # Regime controls writes, not edge gate
+        edge_label = "VIX/SPY-Regime (FREE index-level)"
+        
+        # Pass vix_regime separately to engine (we'll need to update engine call)
+        extra_kwargs = {"vix_regime_provider": vix_regime}
+        
+    elif args.iv_csv or args.iv_source == "csv":
+        if not args.iv_csv:
+            logger.error("--iv-source csv requires --iv-csv path")
+            return 1
         logger.info("Using market IV from CSV", path=args.iv_csv)
         iv_provider = CsvIVProvider(args.iv_csv)
-        is_synthetic = False
-    else:
-        logger.warning("No IV CSV provided, generating synthetic IV (RESEARCH-ONLY)")
-        # For simplicity, skip synthetic generation here and fail gracefully
-        logger.error(
-            "Bake-off requires --iv-csv. "
-            "Generate one with: scripts/build_iv_fixture_from_synthetic.py"
+        
+        gate_config = EdgeGateConfig(
+            enabled=True,
+            min_vrp=args.min_vrp,
+            min_iv_rank=args.min_iv_rank,
+            fail_closed_when_no_iv=True,
         )
-        return 1
-    
-    gate_config = EdgeGateConfig(
-        enabled=True,
-        min_vrp=args.min_vrp,
-        min_iv_rank=args.min_iv_rank,
-        fail_closed_when_no_iv=True,
-    )
-    edge_gate = EdgeGate(gate_config, iv_provider)
-    
-    regime_detector = None
-    if args.enable_regime:
-        regime_config = RegimeConfig(enabled=True)
-        regime_detector = RegimeDetector(regime_config, iv_provider)
+        edge_gate = EdgeGate(gate_config, iv_provider)
+        
+        regime_detector = None
+        if args.enable_regime:
+            regime_config = RegimeConfig(enabled=True)
+            regime_detector = RegimeDetector(regime_config, iv_provider)
+        
+        edge_label = "CSV-gated (name-level IV)"
+        extra_kwargs = {}
+        
+    else:  # none
+        logger.info("Using always-on (no gating)")
+        iv_provider = None
+        edge_gate = None
+        regime_detector = None
+        edge_label = "Always-On (duplicate baseline)"
+        extra_kwargs = {}
     
     gated_results = run_backtest(
         start_date=args.start,
@@ -209,8 +249,9 @@ def main():
         iv_provider=iv_provider,
         edge_gate=edge_gate,
         regime_detector=regime_detector,
+        vix_regime_provider=extra_kwargs.get("vix_regime_provider"),
         benchmark_ticker=args.benchmark,
-        label="gated_edge_on",
+        label=edge_label,
     )
     
     if not gated_results:
@@ -222,7 +263,15 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Determine label based on IV source
-    iv_source_label = "market_iv" if not is_synthetic else "synthetic_iv_research_only"
+    if args.iv_source == "vix-regime":
+        iv_source_label = "vix_spy_index_regime"
+        is_synthetic = False
+    elif args.iv_source == "csv":
+        iv_source_label = "market_iv_csv"
+        is_synthetic = False
+    else:
+        iv_source_label = "always_on_no_gating"
+        is_synthetic = False
     
     comparison = {
         "metadata": {
@@ -235,7 +284,7 @@ def main():
             "min_vrp": args.min_vrp,
             "min_iv_rank": args.min_iv_rank,
             "regime_enabled": args.enable_regime,
-            "label": "research_only_synthetic_iv" if is_synthetic else "market_iv_validation",
+            "label": edge_label,
         },
         "legacy_always_on": legacy_results,
         "gated_edge_on": gated_results,
@@ -252,12 +301,13 @@ def main():
     with open(json_path, "w") as f:
         json.dump(comparison, f, indent=2)
     
-    # Print comparison table
     print("\n" + "=" * 80)
     print(f"VRP BAKE-OFF RESULTS ({args.start} to {args.end})")
     print("=" * 80)
     print(f"Universe: {args.universe} ({len(universe)} tickers)")
     print(f"IV Source: {iv_source_label}")
+    if args.iv_source == "vix-regime":
+        print("ℹ️  Using FREE VIX/SPY REGIME (index-level, VIX vs SPY RV)")
     if is_synthetic:
         print("⚠️  WARNING: Using SYNTHETIC IV (RESEARCH-ONLY)")
     print("=" * 80)
