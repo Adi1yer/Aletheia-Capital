@@ -8,15 +8,21 @@
 
 ## Executive Summary
 
-This document describes a **free trend/momentum overlay** applied to the directional sleeve (~30% NAV) of the wheel-hybrid strategy. The wheel sleeve (~70% NAV) remains **always-on** (no VIX gates, no trend filters). This approach aims to improve risk-adjusted returns and reduce drawdowns without requiring paid IV data.
+This document describes a **free trend/momentum overlay** applied to the directional sleeve (~30% NAV) of the wheel-hybrid strategy. The wheel sleeve (~70% NAV) remains **always-on** (no VIX gates, no trend filters).
 
-**Key Claims**:
-- Classic trend-following (SMA200) filters out bearish regimes on directional positions
-- Dual momentum (absolute + relative) ranks directional candidates by strength
-- Wheel sleeve continues generating option premium regardless of trend
-- Free data only (Yahoo Finance price history)
+**Status**: ❌ **FAILED on citeable bluechip universe** — Underperforms baseline by -6.7pp
 
-**Falsifier**: If trend-sleeve hybrid does NOT beat baseline hybrid by ≥2% excess vs SPY OR does not materially improve Sharpe ratio, this path is abandoned or redesigned.
+**Honest Results**:
+- **Bluechip 2020-2024 (citeable baseline)**: Trend overlay WORSE by -6.7pp (-47.0% vs -40.3% vs SPY)
+- **Expanded 2020-2024 (non-citeable)**: Trend overlay BETTER by +117pp, but likely survivorship bias + NVDA
+
+**Key Findings**:
+- Trend overlay creates excessive turnover (1.56x → 39.69x on bluechip)
+- More premium collected but worse results = timing/churn losses
+- Expanded universe results are NOT CITEABLE due to mega-winner bias (NVDA, XLNX issues)
+- Bluechip baseline validated: matches whitepaper exactly (+55.0%, -40.3% vs SPY)
+
+**Conclusion**: Trend overlay does NOT improve the beat-SPY path on a fair apples-to-apples comparison.
 
 ---
 
@@ -174,25 +180,42 @@ python scripts/run_directional_trend_bakeoff.py \
 
 **Window**: 2020-01-01 to 2024-12-31 (5 years, includes COVID crash and melt-up)
 
-**Universe**: Expanded (~45 names, see `src/backtesting/wheel_hybrid/universe.py`)
+### CITEABLE RESULTS (Bluechip Universe)
 
-### Expected Outcomes
+**Universe**: 6 names (F, T, BAC, INTC, PFE, GE) — same as whitepaper baseline
 
-**Success Criteria**:
-- Trend Hybrid excess vs SPY ≥ Baseline Hybrid excess + 2pp
-- OR: Trend Hybrid Sharpe ≥ Baseline Hybrid Sharpe + 0.10 with positive excess improvement
+| Metric | Baseline Hybrid | Trend Overlay | Delta |
+|--------|-----------------|---------------|-------|
+| **Absolute Return** | +55.0% | +48.3% | **-6.7pp** ❌ |
+| **SPY Return** | +95.3% | +95.3% | — |
+| **Excess vs SPY** | -40.3% | -47.0% | **-6.7pp** ❌ |
+| **Max Drawdown** | -37.7% | -36.0% | +1.7pp |
+| **Sharpe Ratio** | 0.50 | 0.47 | **-0.03** ❌ |
+| **Sortino Ratio** | 0.69 | 0.65 | **-0.04** ❌ |
+| **Alpha (annual)** | -0.63% | -0.82% | -0.19pp |
+| **Premium Collected** | $6,981 | $8,661 | +$1,680 |
+| **Turnover** | 1.56x | 39.69x | **+38x** ❌ |
 
-**Failure Criteria**:
-- Trend Hybrid excess < Baseline Hybrid excess (underperforms)
-- OR: Trend Hybrid max DD > Baseline Hybrid max DD + 5pp (worse risk)
+**✅ Baseline Validation**: Matches whitepaper citeable baseline exactly (+55.0%, -40.3% vs SPY, Sharpe 0.50, $6,981 premium, 195 CC writes)
 
-### Placeholder Results
+**❌ Trend Overlay FAILS**: Underperforms by -6.7pp despite collecting more premium. High turnover (39x vs 1.6x) suggests timing/churn losses.
 
-*(Run `scripts/run_directional_trend_bakeoff.py` to populate)*
+### NON-CITEABLE RESULTS (Expanded Universe)
 
-```
-TBD: Awaiting backtest execution
-```
+**⚠️ WARNING**: Expanded results are NOT RELIABLE due to:
+- Survivorship bias (includes mega-winners like NVDA)
+- Problematic names (XLNX delisted/acquired)
+- Selection bias favoring winners
+
+**Universe**: 45 names (see `src/backtesting/wheel_hybrid/universe.py`)
+
+| Metric | Baseline Hybrid | Trend Overlay | Delta |
+|--------|-----------------|---------------|-------|
+| Absolute Return | +338% | +455% | +117pp |
+| Excess vs SPY | +243% | +360% | +117pp |
+| Sharpe Ratio | 1.19 | 1.44 | +0.25 |
+
+**⚠️ DO NOT CITE**: These numbers are an optimistic upper bound, not evidence of beat-SPY capability. The citeable bluechip results are authoritative.
 
 ---
 

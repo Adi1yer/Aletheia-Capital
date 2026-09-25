@@ -1,68 +1,92 @@
 # Directional Trend Overlay — Backtest Results
 
-This directory contains committed backtest results for the directional sleeve trend/momentum overlay strategy.
+**Status**: ❌ **FAILED** — Trend overlay underperforms citeable baseline by -6.7pp
+
+This directory contains committed backtest results showing that the directional trend/momentum overlay does NOT improve the beat-SPY path on an apples-to-apples comparison.
 
 ---
 
-## Quick Start: Reproduce Results
+## Key Finding: Baseline Validated, Overlay Failed
+
+### Citeable Bluechip Results (2020-2024)
+
+**Baseline Hybrid**: +55.0% (-40.3% vs SPY) — ✅ Matches whitepaper exactly  
+**Trend Overlay**: +48.3% (-47.0% vs SPY) — ❌ WORSE by -6.7pp
+
+**Conclusion**: Trend overlay creates excessive turnover (1.56x → 39.69x) that erodes gains despite collecting more premium.
+
+### Non-Citeable Expanded Results (2020-2024)
+
+**⚠️ DO NOT CITE**: Expanded universe shows +117pp improvement, but this is **NOT RELIABLE** due to:
+- Survivorship bias (NVDA mega-winner)
+- Problematic names (XLNX acquired/delisted)
+- Selection bias favoring winners
+
+---
+
+## Reproduce Results
 
 ### Prerequisites
 
 ```bash
 cd /workspace
 pip3 install --user structlog pandas numpy yfinance pydantic python-dotenv
-```
-
-### Run Full 2020-2024 Bake-off (Expanded Universe)
-
-```bash
 export PATH="/home/ubuntu/.local/bin:$PATH"
 export PYTHONPATH="/workspace:$PYTHONPATH"
+```
 
+### Run Citeable Bluechip Bake-off
+
+```bash
 python3 scripts/run_directional_trend_bakeoff.py \
   --start 2020-01-01 \
   --end 2024-12-31 \
-  --universe expanded \
+  --universe bluechip \
   --nav 10000 \
-  --out docs/backtest_results/directional_trend/2020_2024_expanded_rerun
+  --out docs/backtest_results/directional_trend/2020_2024_bluechip_rerun
 ```
 
 **Expected Output:**
-- Baseline Hybrid: +338% (+243pp vs SPY)
-- Trend Hybrid: +455% (+360pp vs SPY)
-- Improvement: +117pp excess vs SPY
-- Runtime: ~30 seconds
+- Baseline: +55.0% (-40.3% vs SPY)
+- Trend: +48.3% (-47.0% vs SPY)
+- Delta: -6.7pp underperformance
+- Runtime: ~5 seconds
 
 ---
 
 ## Committed Results
 
-### `2020_2024_expanded/summary.json`
+### `2020_2024_bluechip/summary.json` (CITEABLE)
 
 **Window**: 2020-01-01 to 2024-12-31  
-**Universe**: Expanded (45 names)  
+**Universe**: Bluechip (6 names: F, T, BAC, INTC, PFE, GE)  
 **Initial NAV**: $10,000
 
 #### Headline Metrics
 
-| Strategy | Abs Return | Excess vs SPY | Sharpe | Sortino | Max DD |
-|----------|-----------|--------------|--------|---------|--------|
-| Baseline Hybrid | +338% | +243pp | 1.19 | 1.72 | -44.1% |
-| **Trend Hybrid** | **+455%** | **+360pp** | **1.44** | **2.11** | **-37.6%** |
-| **Delta** | **+117pp** | **+117pp** | **+0.25** | **+0.39** | **+6.5pp** |
+| Strategy | Abs Return | Excess vs SPY | Sharpe | Sortino | Max DD | Turnover |
+|----------|-----------|--------------|--------|---------|--------|----------|
+| Baseline Hybrid | +55.0% | -40.3pp | 0.50 | 0.69 | -37.7% | 1.56x |
+| **Trend Hybrid** | **+48.3%** | **-47.0pp** | **0.47** | **0.65** | **-36.0%** | **39.69x** |
+| **Delta** | **-6.7pp** ❌ | **-6.7pp** ❌ | **-0.03** ❌ | **-0.04** ❌ | **+1.7pp** | **+38x** ❌ |
 
-#### Trade Statistics
+**✅ Baseline Validation**: Matches whitepaper exactly (+55.0%, -40.3% vs SPY, Sharpe 0.50, $6,981 premium, 195 CC writes)
 
-| Metric | Baseline | Trend Overlay |
-|--------|----------|---------------|
-| CC Writes | 306 | 311 |
-| CSP Writes | 34 | 89 |
-| Directional Buys | 19 | 179 |
-| Directional Sells | 8 | 173 |
-| Premium Collected | $17,019 | $25,770 |
-| Turnover | 2.16x | 26.98x |
+**❌ Trend Overlay Failure**: Underperforms despite +$1,680 more premium. Excessive turnover (39x vs 1.6x) creates timing/churn losses.
 
-**Key Insight**: Higher turnover from trend-following is more than offset by better timing (buying strength, selling weakness).
+---
+
+### `2020_2024_expanded/summary.json` (NON-CITEABLE)
+
+**⚠️ WARNING**: DO NOT CITE — Survivorship bias, mega-winner bias (NVDA), problematic names (XLNX)
+
+| Strategy | Abs Return | Excess vs SPY | Sharpe |
+|----------|-----------|--------------|--------|
+| Baseline | +338% | +243pp | 1.19 |
+| Trend | +455% | +360pp | 1.44 |
+| Delta | +117pp | +117pp | +0.25 |
+
+**Not Reliable**: Expanded results are an optimistic upper bound, not evidence of beat-SPY capability.
 
 ---
 
