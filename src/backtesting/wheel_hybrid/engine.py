@@ -224,6 +224,9 @@ class WheelHybridBacktest:
             if call.expiry == trade_date:
                 price = self.get_price_on_date(call.ticker, trade_date)
                 if price is None:
+                    # Force expire if no price data (don't leave orphan)
+                    logger.warning("No price for call expiry, force expiring", ticker=call.ticker, expiry=call.expiry)
+                    self.portfolio.expire_call(call.ticker, call.strike, call.expiry, trade_date)
                     continue
                 
                 if check_assignment_call(price, call.strike):
@@ -236,12 +239,26 @@ class WheelHybridBacktest:
             if put.expiry == trade_date:
                 price = self.get_price_on_date(put.ticker, trade_date)
                 if price is None:
+                    # Force expire if no price data (don't leave orphan)
+                    logger.warning("No price for put expiry, force expiring", ticker=put.ticker, expiry=put.expiry)
+                    self.portfolio.expire_put(put.ticker, put.strike, put.expiry, trade_date)
                     continue
                 
                 if check_assignment_put(price, put.strike):
                     self.portfolio.assign_put(put.ticker, put.strike, put.expiry, trade_date)
                 else:
                     self.portfolio.expire_put(put.ticker, put.strike, put.expiry, trade_date)
+        
+        # CLEANUP: Force expire any past-expiry options that weren't processed
+        for call in list(self.portfolio.short_calls):
+            if call.expiry < trade_date:
+                logger.error("Orphaned expired call found, force closing", ticker=call.ticker, expiry=call.expiry, days_past=((trade_date - call.expiry).days))
+                self.portfolio.expire_call(call.ticker, call.strike, call.expiry, trade_date)
+        
+        for put in list(self.portfolio.short_puts):
+            if put.expiry < trade_date:
+                logger.error("Orphaned expired put found, force closing", ticker=put.ticker, expiry=put.expiry, days_past=((trade_date - put.expiry).days))
+                self.portfolio.expire_put(put.ticker, put.strike, put.expiry, trade_date)
     
     def _manage_positions(self, trade_date: date, universe: List[str]):
         """Manage existing short options: BTC profit-taking, rolls."""

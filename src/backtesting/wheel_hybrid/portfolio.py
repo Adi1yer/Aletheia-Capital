@@ -56,6 +56,9 @@ class WheelPortfolio:
         self.premium_collected_total: float = 0.0
         self.realized_pnl: float = 0.0
         self.trades: List[Dict] = []
+        
+        # Track reserved cash for CSP collateral (not available for other uses)
+        self.reserved_cash: float = 0.0
     
     def add_equity_lot(
         self,
@@ -176,17 +179,25 @@ class WheelPortfolio:
         """Write one cash-secured put (1 contract = 100 shares)."""
         collateral_needed = strike * 100
         
-        # Check available cash (premium collected is added to cash)
-        if collateral_needed > self.cash:
-            logger.warning("Insufficient cash for CSP collateral", ticker=ticker, collateral=collateral_needed, cash=self.cash)
+        # Check AVAILABLE cash (total cash - already reserved)
+        available_cash = self.cash - self.reserved_cash
+        if collateral_needed > available_cash:
+            logger.warning(
+                "Insufficient available cash for CSP collateral",
+                ticker=ticker,
+                collateral=collateral_needed,
+                available_cash=available_cash,
+                total_cash=self.cash,
+                reserved=self.reserved_cash
+            )
             return False
         
         premium_total = premium_per_share * 100
         self.cash += premium_total
         self.premium_collected_total += premium_total
         
-        # Reserve collateral (cash remains but is "spoken for")
-        # We track this via the put position itself
+        # ACTUALLY reserve the collateral
+        self.reserved_cash += collateral_needed
         
         self.short_puts.append(ShortOption(
             ticker=ticker,
@@ -210,7 +221,7 @@ class WheelPortfolio:
             "cash_change": premium_total,
         })
         
-        logger.info("Wrote CSP", ticker=ticker, strike=strike, expiry=expiry, premium=premium_total)
+        logger.info("Wrote CSP", ticker=ticker, strike=strike, expiry=expiry, premium=premium_total, reserved=collateral_needed)
         return True
     
     def buy_to_close_call(
@@ -268,6 +279,10 @@ class WheelPortfolio:
                     logger.warning("Insufficient cash for BTC", ticker=ticker, cost=cost, cash=self.cash)
                     return False
                 
+                # Release reserved collateral
+                collateral_released = put.strike * 100 * put.quantity
+                self.reserved_cash = max(0.0, self.reserved_cash - collateral_released)
+                
                 self.cash -= cost
                 realized = put.premium_collected - cost
                 self.realized_pnl += realized
@@ -285,7 +300,7 @@ class WheelPortfolio:
                 })
                 
                 del self.short_puts[i]
-                logger.info("BTC put", ticker=ticker, strike=strike, pnl=realized)
+                logger.info("BTC put", ticker=ticker, strike=strike, pnl=realized, collateral_released=collateral_released)
                 return True
         
         logger.warning("No matching put to close", ticker=ticker, strike=strike, expiry=expiry)
@@ -328,8 +343,33 @@ class WheelPortfolio:
         for i, put in enumerate(self.short_puts):
             if put.ticker == ticker and put.strike == strike and put.expiry == expiry:
                 cost = strike * 100
+                
+                # Release reserved collateral FIRST (we're about to use it)
+                collateral_released = put.strike * 100 * put.quantity
+                self.reserved_cash = max(0.0, self.reserved_cash - collateral_released)
+                
                 if cost > self.cash:
-                    logger.error("Insufficient cash for put assignment", ticker=ticker, cost=cost, cash=self.cash)
+                    logger.error(
+                        "Insufficient cash for put assignment - FORCE EXPIRE",
+                        ticker=ticker,
+                        cost=cost,
+                        cash=self.cash,
+                        collateral_was=collateral_released
+                    )
+                    # Force-close the put at intrinsic to prevent orphan
+                    intrinsic = max(0.0, strike - 0.01) * 100  # Assume stock near strike
+                    realized = put.premium_collected - intrinsic
+                    self.realized_pnl += realized
+                    del self.short_puts[i]
+                    self.trades.append({
+                        "date": trade_date,
+                        "type": "force_expire_put",
+                        "ticker": ticker,
+                        "strike": strike,
+                        "expiry": expiry,
+                        "realized_pnl": realized,
+                        "reason": "insufficient_cash_for_assignment",
+                    })
                     return False
                 
                 # Buy 100 shares at strike
@@ -354,7 +394,7 @@ class WheelPortfolio:
                     "cash_change": -cost,
                 })
                 
-                logger.info("Put assigned", ticker=ticker, strike=strike)
+                logger.info("Put assigned", ticker=ticker, strike=strike, collateral_released=collateral_released)
                 return True
         return False
     
@@ -395,6 +435,10 @@ class WheelPortfolio:
         """Expire a put OTM (keep premium, no assignment)."""
         for i, put in enumerate(self.short_puts):
             if put.ticker == ticker and put.strike == strike and put.expiry == expiry:
+                # Release reserved collateral
+                collateral_released = put.strike * 100 * put.quantity
+                self.reserved_cash = max(0.0, self.reserved_cash - collateral_released)
+                
                 realized = put.premium_collected
                 self.realized_pnl += realized
                 
@@ -408,7 +452,7 @@ class WheelPortfolio:
                 })
                 
                 del self.short_puts[i]
-                logger.info("Put expired OTM", ticker=ticker, strike=strike)
+                logger.info("Put expired OTM", ticker=ticker, strike=strike, collateral_released=collateral_released)
                 return True
         return False
     

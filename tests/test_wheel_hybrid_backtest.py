@@ -165,6 +165,132 @@ def test_wheel_portfolio_csp():
     assert len(portfolio.short_puts) == 1
     assert portfolio.cash == 10040.0  # Premium added
     assert portfolio.premium_collected_total == 40.0
+    assert portfolio.reserved_cash == 1900.0  # Collateral reserved
+
+
+def test_csp_collateral_reservation():
+    """Test that CSP collateral is actually reserved and prevents over-leverage."""
+    portfolio = WheelPortfolio(initial_cash=10000.0)
+    
+    # Write first CSP - should work (19*100 = $1,900 collateral)
+    success1 = portfolio.write_cash_secured_put(
+        "TEST1",
+        strike=19.0,
+        expiry=date.today() + timedelta(days=30),
+        premium_per_share=0.50,
+        trade_date=date.today(),
+    )
+    assert success1
+    assert portfolio.reserved_cash == 1900.0
+    
+    # Try to write many more CSPs that would exceed cash
+    # Available cash = 10050 (initial + premium) - 1900 (reserved) = 8150
+    # Max additional CSPs at $20 strike = 4 (4 * 2000 = 8000)
+    
+    for i in range(4):
+        success = portfolio.write_cash_secured_put(
+            f"TEST{i+2}",
+            strike=20.0,
+            expiry=date.today() + timedelta(days=30),
+            premium_per_share=0.50,
+            trade_date=date.today(),
+        )
+        assert success, f"CSP {i+2} should succeed"
+    
+    # 6th CSP should FAIL (would need $2000 more, only have $150 available)
+    success_fail = portfolio.write_cash_secured_put(
+        "TEST_FAIL",
+        strike=20.0,
+        expiry=date.today() + timedelta(days=30),
+        premium_per_share=0.50,
+        trade_date=date.today(),
+    )
+    assert not success_fail, "6th CSP should fail due to insufficient available cash"
+    assert len(portfolio.short_puts) == 5  # Only 5 succeeded
+
+
+def test_csp_collateral_release_on_expire():
+    """Test that CSP collateral is released when put expires OTM."""
+    portfolio = WheelPortfolio(initial_cash=10000.0)
+    
+    # Write CSP
+    portfolio.write_cash_secured_put(
+        "TEST",
+        strike=19.0,
+        expiry=date.today() + timedelta(days=1),
+        premium_per_share=0.40,
+        trade_date=date.today(),
+    )
+    
+    assert portfolio.reserved_cash == 1900.0
+    
+    # Expire OTM
+    portfolio.expire_put(
+        "TEST",
+        strike=19.0,
+        expiry=date.today() + timedelta(days=1),
+        trade_date=date.today() + timedelta(days=1),
+    )
+    
+    assert portfolio.reserved_cash == 0.0  # Collateral released
+    assert len(portfolio.short_puts) == 0
+
+
+def test_csp_collateral_release_on_assignment():
+    """Test that CSP collateral is released when put is assigned."""
+    portfolio = WheelPortfolio(initial_cash=10000.0)
+    
+    # Write CSP
+    portfolio.write_cash_secured_put(
+        "TEST",
+        strike=19.0,
+        expiry=date.today() + timedelta(days=1),
+        premium_per_share=0.40,
+        trade_date=date.today(),
+    )
+    
+    assert portfolio.reserved_cash == 1900.0
+    
+    # Assign (uses reserved cash to buy shares)
+    success = portfolio.assign_put(
+        "TEST",
+        strike=19.0,
+        expiry=date.today() + timedelta(days=1),
+        trade_date=date.today() + timedelta(days=1),
+    )
+    
+    assert success
+    assert portfolio.reserved_cash == 0.0  # Collateral released
+    assert len(portfolio.short_puts) == 0
+    assert len(portfolio.equity_lots) == 1  # Now own shares
+
+
+def test_csp_assignment_insufficient_cash_force_expire():
+    """Test that insufficient cash for assignment forces expiry (no orphan short)."""
+    portfolio = WheelPortfolio(initial_cash=1000.0)  # Very low cash
+    
+    # Write CSP with small collateral (can reserve $500)
+    portfolio.write_cash_secured_put(
+        "TEST",
+        strike=5.0,
+        expiry=date.today() + timedelta(days=1),
+        premium_per_share=0.20,
+        trade_date=date.today(),
+    )
+    
+    assert len(portfolio.short_puts) == 1
+    
+    # Try to assign - should fail due to insufficient cash, but NOT leave orphan
+    success = portfolio.assign_put(
+        "TEST",
+        strike=5.0,
+        expiry=date.today() + timedelta(days=1),
+        trade_date=date.today() + timedelta(days=1),
+    )
+    
+    assert not success  # Assignment failed
+    assert len(portfolio.short_puts) == 0  # Put was force-expired, NOT orphaned
+    assert portfolio.reserved_cash == 0.0  # Collateral released
 
 
 def test_calculate_metrics():
