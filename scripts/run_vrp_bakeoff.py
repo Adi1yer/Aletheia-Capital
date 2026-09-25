@@ -263,13 +263,15 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Determine label based on IV source
-    if args.iv_source == "vix":
-        iv_source_label = "vix_free_regime"
+    if args.iv_source == "vix-regime":
+        iv_source_label = "vix_spy_index_regime"
+        is_synthetic = False
     elif args.iv_source == "csv":
         iv_source_label = "market_iv_csv"
+        is_synthetic = False
     else:
-        iv_source_label = "synthetic_iv_research_only"
-        is_synthetic = True
+        iv_source_label = "always_on_no_gating"
+        is_synthetic = False
     
     comparison = {
         "metadata": {
@@ -282,7 +284,7 @@ def main():
             "min_vrp": args.min_vrp,
             "min_iv_rank": args.min_iv_rank,
             "regime_enabled": args.enable_regime,
-            "label": "research_only_synthetic_iv" if is_synthetic else "market_iv_validation",
+            "label": edge_label,
         },
         "legacy_always_on": legacy_results,
         "gated_edge_on": gated_results,
@@ -299,14 +301,13 @@ def main():
     with open(json_path, "w") as f:
         json.dump(comparison, f, indent=2)
     
-    # Print comparison table
     print("\n" + "=" * 80)
     print(f"VRP BAKE-OFF RESULTS ({args.start} to {args.end})")
     print("=" * 80)
     print(f"Universe: {args.universe} ({len(universe)} tickers)")
     print(f"IV Source: {iv_source_label}")
-    if args.iv_source == "vix":
-        print("ℹ️  Using FREE VIX (REGIME SIGNAL, index-level vol)")
+    if args.iv_source == "vix-regime":
+        print("ℹ️  Using FREE VIX/SPY REGIME (index-level, VIX vs SPY RV)")
     if is_synthetic:
         print("⚠️  WARNING: Using SYNTHETIC IV (RESEARCH-ONLY)")
     print("=" * 80)
