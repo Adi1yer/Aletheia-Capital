@@ -17,8 +17,8 @@ with materially milder drawdowns than pure Arm C (without lagging Arm C badly on
 | arm_1_pure_momentum | 2022_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_1_pure_momentum | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_1_pure_momentum | 2008_2009_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
-| arm_2_momentum_div_drip | 2020_2024 | 150.3% | 95.3% | +55.0pp | 1.01 | -30.1% | ✓ BEATS (+55.0pp) |
-| arm_2_momentum_div_drip | 2010_2024 | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
+| arm_2_momentum_div_drip | 2020_2024 | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
+| arm_2_momentum_div_drip | 2010_2024 | 1217.7% | 583.8% | +633.9pp | 1.08 | -33.5% | ✓ BEATS (+633.9pp) |
 | arm_2_momentum_div_drip | 2022_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_2_momentum_div_drip | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_2_momentum_div_drip | 2008_2009_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
@@ -52,19 +52,19 @@ with materially milder drawdowns than pure Arm C (without lagging Arm C badly on
 
 ### Performance by Window
 
-**2020_2024** (2020-01-01 to 2024-12-31) - primary window
+**2020_2024** (2020-01-01 to 2024-12-31): *Data unavailable*
 
-- **Strategy Total Return:** 150.33% (ann. 20.20%)
-- **SPY Total Return:** 95.30% (ann. 14.36%)
-- **Excess Return:** +55.03pp (ann. +5.84pp)
-- **Sharpe Ratio:** 1.01
-- **Sortino Ratio:** 1.45
-- **Max Drawdown:** -30.13% (vs SPY -33.72%)
-- **Beta:** 0.95
+**2010_2024** (2010-01-01 to 2024-12-31) - primary window
+
+- **Strategy Total Return:** 1217.69% (ann. 18.79%)
+- **SPY Total Return:** 583.77% (ann. 13.70%)
+- **Excess Return:** +633.93pp (ann. +5.09pp)
+- **Sharpe Ratio:** 1.08
+- **Sortino Ratio:** 1.53
+- **Max Drawdown:** -33.51% (vs SPY -33.72%)
+- **Beta:** 1.00
 - **Correlation:** 0.98
-- **Verdict:** ✓ BEATS (+55.0pp)
-
-**2010_2024** (2010-01-01 to 2024-12-31): *Data unavailable*
+- **Verdict:** ✓ BEATS (+633.9pp)
 
 **2022_stress** (2022-01-01 to 2022-12-31): *Data unavailable*
 
