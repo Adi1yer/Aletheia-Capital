@@ -18,6 +18,7 @@ from src.backtesting.wheel_hybrid.premium_model import (
     estimate_put_premium,
     realized_volatility,
     select_call_strike,
+    select_call_strike_by_delta,
     select_put_strike,
 )
 from src.backtesting.wheel_hybrid.metrics import calculate_metrics
@@ -39,6 +40,8 @@ class WheelHybridBacktest:
         max_directional_names: int = 5,
         max_lots_per_name: int = 3,
         cc_target_otm_pct: float = 0.05,
+        cc_strike_mode: str = "otm_pct",
+        cc_target_delta: float = 0.30,
         cc_dte_range: Tuple[int, int] = (21, 45),
         csp_dte_range: Tuple[int, int] = (14, 45),
         csp_score: int = 55,
@@ -63,6 +66,8 @@ class WheelHybridBacktest:
         self.max_directional_names = max_directional_names
         self.max_lots_per_name = max_lots_per_name
         self.cc_target_otm_pct = cc_target_otm_pct
+        self.cc_strike_mode = cc_strike_mode
+        self.cc_target_delta = cc_target_delta
         self.cc_dte_range = cc_dte_range
         self.csp_dte_range = csp_dte_range
         self.csp_score = csp_score
@@ -521,8 +526,19 @@ class WheelHybridBacktest:
                     continue
             
             # Select strike and expiry
-            strike = select_call_strike(price, target_otm_pct=self.cc_target_otm_pct)
             dte = (self.cc_dte_range[0] + self.cc_dte_range[1]) // 2
+            
+            if self.cc_strike_mode == "delta":
+                strike = select_call_strike_by_delta(
+                    price,
+                    self.cc_target_delta,
+                    dte,
+                    vol,
+                    self.rf_rate,
+                )
+            else:  # otm_pct mode (default)
+                strike = select_call_strike(price, target_otm_pct=self.cc_target_otm_pct)
+            
             expiry = trade_date + timedelta(days=dte)
             
             # Estimate premium
