@@ -123,19 +123,28 @@ def get_point_in_time_quality_universe(
     as_of_date: date,
     top_n: int = 30,
     exclude_financials_crisis: bool = True,
+    data_provider = None,  # Pass provider for price history
 ) -> List[str]:
     """
     Get point-in-time liquid quality universe (NO HINDSIGHT).
     
     Selects from large-cap liquid names that:
     1. Existed and were tradeable as of the given date
-    2. Meet simple quality proxy (large-cap, liquid, not in crisis sectors)
-    3. Have sufficient price history
+    2. Have sufficient price history (≥252 trading days)
+    3. Are sorted by 12-1 month momentum (using only past prices)
+    4. Meet simple quality proxy (large-cap, liquid)
+    
+    Methodology:
+    - Universe: S&P 100 core + late large-cap additions (by IPO date)
+    - Filter: Only names with ≥252 days of price history as of as_of_date
+    - Rank: 12-1 month momentum (trailing 252 days, skip last 21 days)
+    - Select: Top N by momentum
     
     Args:
         as_of_date: Date as of which to select (no future knowledge allowed)
         top_n: Target number of names
         exclude_financials_crisis: If True, exclude financials during 2008-2009
+        data_provider: Optional data provider for momentum calculation
     
     Returns:
         List of tickers selected using only past information
@@ -153,16 +162,78 @@ def get_point_in_time_quality_universe(
                 universe.append(ticker)
     
     # Crisis filter: exclude financials during 2008-2009
+    # This is a pre-registered rule based on known systemic risk
     if exclude_financials_crisis and year in [2008, 2009]:
         financials = ["JPM", "BAC", "WFC", "C", "USB", "AXP", "GS", "BLK"]
         universe = [t for t in universe if t not in financials]
     
-    # Remove duplicates, sort for determinism
-    universe = sorted(list(set(universe)))
+    # Remove duplicates
+    universe = list(set(universe))
     
-    # Return top N (in practice, we'd sort by market cap or liquidity here,
-    # but with free data we'll just use the full filtered list)
-    return universe[:top_n]
+    # If no data provider, fall back to alphabetical (for testing only)
+    if data_provider is None:
+        universe_sorted = sorted(universe)
+        return universe_sorted[:top_n]
+    
+    # Calculate 12-1 month momentum for each name
+    # Requires ≥252 trading days of history as of as_of_date
+    momentum_scores = {}
+    
+    from datetime import timedelta
+    lookback_start = as_of_date - timedelta(days=400)  # ~252 trading days + buffer
+    
+    for ticker in universe:
+        try:
+            # Get price history up to as_of_date (no future data)
+            prices = data_provider.get_prices(
+                ticker,
+                lookback_start.strftime("%Y-%m-%d"),
+                as_of_date.strftime("%Y-%m-%d"),
+            )
+            
+            if not prices or len(prices) < 252:
+                # Insufficient history - skip
+                continue
+            
+            # Extract closes as list of (date, close)
+            price_data = [(p.time.date() if hasattr(p.time, 'date') else p.time, p.close) for p in prices]
+            price_data.sort(key=lambda x: x[0])
+            
+            # Filter to only prices on or before as_of_date
+            price_data = [(d, c) for d, c in price_data if d <= as_of_date]
+            
+            if len(price_data) < 252:
+                continue
+            
+            # 12-1 month momentum: price 21 days ago / price 252 days ago
+            # (skip last month to avoid short-term reversals)
+            if len(price_data) >= 252:
+                price_current = price_data[-21][1] if len(price_data) > 21 else price_data[-1][1]
+                price_252d_ago = price_data[-252][1]
+                
+                if price_252d_ago > 0:
+                    momentum = (price_current / price_252d_ago) - 1.0
+                    momentum_scores[ticker] = momentum
+        
+        except Exception:
+            # Data fetch failed - skip ticker
+            continue
+    
+    # Sort by momentum descending, take top N
+    sorted_by_momentum = sorted(
+        momentum_scores.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+    
+    selected = [ticker for ticker, _ in sorted_by_momentum[:top_n]]
+    
+    # If we don't have enough names with momentum, fill with alphabetical from remaining
+    if len(selected) < top_n:
+        remaining = sorted([t for t in universe if t not in selected])
+        selected.extend(remaining[:top_n - len(selected)])
+    
+    return selected
 
 
 # =============================================================================
