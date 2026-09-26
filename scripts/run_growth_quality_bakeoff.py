@@ -285,8 +285,10 @@ def generate_summary_report(results: Dict[str, Dict[str, Dict]], output_dir: Pat
                          f"(ann. {metrics.get('spy_ann_return_pct', 0.0):.2f}%)")
             report.append(f"- **Excess Return:** {metrics.get('excess_return_pct', 0.0):+.2f}pp "
                          f"(ann. {metrics.get('excess_ann_return_pct', 0.0):+.2f}pp)")
-            report.append(f"- **Sharpe Ratio:** {sharpe:.2f if sharpe is not None else 'N/A'}")
-            report.append(f"- **Sortino Ratio:** {sortino:.2f if sortino is not None else 'N/A'}")
+            sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "N/A"
+            sortino_str = f"{sortino:.2f}" if sortino is not None else "N/A"
+            report.append(f"- **Sharpe Ratio:** {sharpe_str}")
+            report.append(f"- **Sortino Ratio:** {sortino_str}")
             report.append(f"- **Max Drawdown:** {metrics.get('max_drawdown_pct', 0.0):.2f}% "
                          f"(vs SPY {metrics.get('spy_max_drawdown_pct', 0.0):.2f}%)")
             report.append(f"- **Beta:** {metrics.get('beta', 0.0):.2f}")
