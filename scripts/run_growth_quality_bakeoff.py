@@ -153,15 +153,17 @@ def generate_summary_report(results: Dict[str, Dict[str, Dict]], output_dir: Pat
             strategy_tr = metrics.get("abs_return_pct", 0.0)
             spy_tr = metrics.get("spy_return_pct", 0.0)
             excess = metrics.get("excess_return_pct", 0.0)
-            sharpe = metrics.get("sharpe", 0.0)
+            sharpe = metrics.get("sharpe")
             max_dd = metrics.get("max_drawdown_pct", 0.0)
             
             is_primary = window_name in ["2020_2024", "2010_2024"]
             verdict = format_verdict(strategy_tr, spy_tr, is_primary)
             
+            sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "N/A"
+            
             report.append(
                 f"| {arm_id} | {window_name} | {strategy_tr:.1f}% | {spy_tr:.1f}% | "
-                f"{excess:+.1f}pp | {sharpe:.2f} | {max_dd:.1f}% | {verdict} |"
+                f"{excess:+.1f}pp | {sharpe_str} | {max_dd:.1f}% | {verdict} |"
             )
     
     report.append("")
@@ -230,14 +232,17 @@ def generate_summary_report(results: Dict[str, Dict[str, Dict]], output_dir: Pat
             
             report.append(f"**{window_name}** ({start} to {end}) - {stress}")
             report.append("")
+            sharpe = metrics.get('sharpe')
+            sortino = metrics.get('sortino')
+            
             report.append(f"- **Strategy Total Return:** {metrics.get('abs_return_pct', 0.0):.2f}% "
                          f"(ann. {metrics.get('ann_return_pct', 0.0):.2f}%)")
             report.append(f"- **SPY Total Return:** {metrics.get('spy_return_pct', 0.0):.2f}% "
                          f"(ann. {metrics.get('spy_ann_return_pct', 0.0):.2f}%)")
             report.append(f"- **Excess Return:** {metrics.get('excess_return_pct', 0.0):+.2f}pp "
                          f"(ann. {metrics.get('excess_ann_return_pct', 0.0):+.2f}pp)")
-            report.append(f"- **Sharpe Ratio:** {metrics.get('sharpe', 0.0):.2f}")
-            report.append(f"- **Sortino Ratio:** {metrics.get('sortino', 0.0):.2f}")
+            report.append(f"- **Sharpe Ratio:** {sharpe:.2f if sharpe is not None else 'N/A'}")
+            report.append(f"- **Sortino Ratio:** {sortino:.2f if sortino is not None else 'N/A'}")
             report.append(f"- **Max Drawdown:** {metrics.get('max_drawdown_pct', 0.0):.2f}% "
                          f"(vs SPY {metrics.get('spy_max_drawdown_pct', 0.0):.2f}%)")
             report.append(f"- **Beta:** {metrics.get('beta', 0.0):.2f}")
