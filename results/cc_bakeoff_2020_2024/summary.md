@@ -7,21 +7,21 @@
 
 | Arm | Overwrite % | OTM % | Total Return | vs SPY | Sharpe | Sortino | Max DD | Upside Cap | Downside Cap | CC Writes |
 |-----|-------------|-------|--------------|--------|--------|---------|--------|------------|--------------|----------|
-| A BASELINE 100PCT 5OTM | 100% | 5% | +55.00% | -40.29pp | 0.50 | 0.69 | -37.67% | 75.0% | 75.4% | 195 |
-| B 75PCT 5OTM | 75% | 5% | +55.00% | -40.29pp | 0.50 | 0.69 | -37.67% | 75.0% | 75.4% | 195 |
-| C 50PCT 5OTM | 50% | 5% | +55.00% | -40.29pp | 0.50 | 0.69 | -37.67% | 75.0% | 75.4% | 195 |
-| D 50PCT 10OTM | 50% | 10% | +55.64% | -39.65pp | 0.52 | 0.72 | -37.40% | 74.5% | 75.1% | 215 |
+| A BASELINE 100PCT 5OTM | 100% | 5% | +75.27% | -20.03pp | 0.66 | 0.91 | -35.97% | 63.4% | 60.2% | 614 |
+| B 75PCT 5OTM | 75% | 5% | +67.77% | -27.52pp | 0.60 | 0.83 | -35.97% | 68.0% | 66.3% | 489 |
+| C 50PCT 5OTM | 50% | 5% | +73.47% | -21.83pp | 0.61 | 0.85 | -35.97% | 71.2% | 69.0% | 349 |
+| D 50PCT 10OTM | 50% | 10% | +55.80% | -39.50pp | 0.52 | 0.72 | -37.40% | 73.9% | 74.4% | 243 |
 
 ## Key Findings
 
-- **Baseline (100% overwrite):** +55.00% total return, -40.29pp vs SPY
-- **75% overwrite, 5% OTM:** +55.00% total return (+0.00pp vs baseline), -40.29pp vs SPY (+0.00pp improvement)
-- **50% overwrite, 5% OTM (BXMH-style):** +55.00% total return (+0.00pp vs baseline), -40.29pp vs SPY (+0.00pp improvement)
-- **50% overwrite, 10% OTM (more upside retention):** +55.64% total return (+0.64pp vs baseline), -39.65pp vs SPY (+0.64pp improvement)
+- **Baseline (100% overwrite):** +75.27% total return, -20.03pp vs SPY
+- **75% overwrite, 5% OTM:** +67.77% total return (-7.50pp vs baseline), -27.52pp vs SPY (-7.49pp improvement)
+- **50% overwrite, 5% OTM (BXMH-style):** +73.47% total return (-1.80pp vs baseline), -21.83pp vs SPY (-1.80pp improvement)
+- **50% overwrite, 10% OTM (more upside retention):** +55.80% total return (-19.47pp vs baseline), -39.50pp vs SPY (-19.47pp improvement)
 
 ## Recommendation
 
-**BORDERLINE.** 50% overwrite, 10% OTM (more upside retention) marginally improved vs baseline (+0.64pp), but below 2pp threshold for production change. Keep code as research knob (default=1.0).
+**KEEP default (100% overwrite) for now.** Partial overwrite did not improve absolute excess vs SPY by meaningful margin.
 
 ## Notes
 
