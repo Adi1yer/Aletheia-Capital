@@ -1,5 +1,12 @@
 """Yahoo Finance data provider (free)"""
 
+# IMPORTANT: Load websockets.asyncio before yfinance to avoid import error
+# See: https://github.com/ranaroussi/yfinance/issues/1729
+try:
+    import websockets.asyncio
+except ImportError:
+    pass  # Ignore if websockets < 13.0
+
 from typing import List, Optional
 from datetime import datetime, date
 from src.data.models import Price, FinancialMetrics, LineItem, CompanyNews
