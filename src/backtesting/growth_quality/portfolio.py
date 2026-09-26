@@ -155,12 +155,17 @@ class GrowthQualityPortfolio:
         current_holdings = self.get_holdings()
         
         # Calculate target shares
+        # Reserve cash for trading costs by reducing available NAV
+        # For a full rebalance with N positions, we need ~N * cost_pct of NAV
+        cost_reserve_factor = len(target_weights) * trading_cost_pct
+        available_nav = current_nav / (1.0 + cost_reserve_factor)
+        
         target_shares = {}
         for ticker, weight in target_weights.items():
             price = prices.get(ticker)
             if price is None or price <= 0:
                 continue
-            target_value = current_nav * weight
+            target_value = available_nav * weight
             target_shares[ticker] = target_value / price
         
         # Sell positions no longer in target
