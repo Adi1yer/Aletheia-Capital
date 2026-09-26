@@ -20,10 +20,10 @@
 | arm_b_hindsight | 2010_2024 | 3011.8% | 583.8% | +2428.1pp | 1.33 | -31.6% | ⚠️ LOOKAHEAD - NOT CITEABLE | ⚠️ HINDSIGHT |
 | arm_b_hindsight | 2022_stress | -24.8% | -18.6% | -6.2pp | -0.97 | -28.4% | ⚠️ LOOKAHEAD - NOT CITEABLE | ⚠️ HINDSIGHT |
 | arm_b_hindsight | 2000_2002_stress | -0.4% | -37.0% | +36.6pp | 0.14 | -30.1% | ⚠️ LOOKAHEAD - NOT CITEABLE | ⚠️ HINDSIGHT |
-| arm_c_point_in_time | 2020_2024 | 112.3% | 95.3% | +17.0pp | 0.82 | -36.3% | ✓ KEEP (+17.0pp vs SPY) |  |
-| arm_c_point_in_time | 2010_2024 | 872.4% | 583.8% | +288.6pp | 0.96 | -36.3% | ✓ KEEP (+288.6pp vs SPY) |  |
-| arm_c_point_in_time | 2022_stress | -6.0% | -18.6% | +12.6pp | -0.19 | -19.4% | ✓ PASS (+12.6pp vs SPY) |  |
-| arm_c_point_in_time | 2000_2002_stress | -14.0% | -37.0% | +23.0pp | -0.09 | -31.1% | ✓ PASS (+23.0pp vs SPY) |  |
+| arm_c_point_in_time | 2020_2024 | 110.9% | 95.3% | +15.6pp | 0.86 | -32.4% | ✓ KEEP (+15.6pp vs SPY) |  |
+| arm_c_point_in_time | 2010_2024 | 849.1% | 583.8% | +265.3pp | 1.05 | -27.1% | ✓ KEEP (+265.3pp vs SPY) |  |
+| arm_c_point_in_time | 2022_stress | -0.8% | -18.6% | +17.8pp | 0.05 | -13.8% | ✓ PASS (+17.8pp vs SPY) |  |
+| arm_c_point_in_time | 2000_2002_stress | -11.3% | -37.0% | +25.7pp | -0.17 | -24.3% | ✓ PASS (+25.7pp vs SPY) |  |
 | arm_d_sp100 | 2020_2024 | 84.2% | 95.3% | -11.2pp | 0.72 | -33.4% | ✗ FAIL (-11.1pp vs SPY) |  |
 | arm_d_sp100 | 2010_2024 | 584.1% | 583.8% | +0.4pp | 0.87 | -33.4% | ✓ KEEP (+0.4pp vs SPY) |  |
 | arm_d_sp100 | 2022_stress | -1.8% | -18.6% | +16.9pp | -0.00 | -17.1% | ✓ PASS (+16.9pp vs SPY) |  |
@@ -58,7 +58,7 @@ This arm is a citeable baseline for comparison.
 
 - **Strategy Total Return:** 1170.77% (ann. 18.51%)
 - **SPY Total Return:** 583.77% (ann. 13.70%)
-- **Excess Return:** +587.00pp (ann. +4.81pp)
+- **Excess Return:** +587.01pp (ann. +4.81pp)
 - **Sharpe Ratio:** 0.93
 - **Sortino Ratio:** 1.32
 - **Max Drawdown:** -35.12% (vs SPY -33.72%)
@@ -172,55 +172,55 @@ This arm **meets the primary KEEP bar** (≥ SPY on both 2020-2024 and 2010-2024
 
 **2020_2024** (2020-01-01 to 2024-12-31) - primary window
 
-- **Strategy Total Return:** 112.26% (ann. 16.29%)
+- **Strategy Total Return:** 110.94% (ann. 16.14%)
 - **SPY Total Return:** 95.30% (ann. 14.36%)
-- **Excess Return:** +16.96pp (ann. +1.93pp)
-- **Sharpe Ratio:** 0.82
-- **Sortino Ratio:** 1.16
-- **Max Drawdown:** -36.28% (vs SPY -33.72%)
-- **Beta:** 0.96
-- **Correlation:** 0.96
-- **Annual Turnover:** 1.19x
-- **Verdict:** ✓ KEEP (+17.0pp vs SPY)
+- **Excess Return:** +15.64pp (ann. +1.78pp)
+- **Sharpe Ratio:** 0.86
+- **Sortino Ratio:** 1.31
+- **Max Drawdown:** -32.44% (vs SPY -33.72%)
+- **Beta:** 0.79
+- **Correlation:** 0.84
+- **Annual Turnover:** 0.96x
+- **Verdict:** ✓ KEEP (+15.6pp vs SPY)
 
 **2010_2024** (2010-01-01 to 2024-12-31) - primary window
 
-- **Strategy Total Return:** 872.35% (ann. 16.41%)
+- **Strategy Total Return:** 849.09% (ann. 16.22%)
 - **SPY Total Return:** 583.77% (ann. 13.70%)
-- **Excess Return:** +288.58pp (ann. +2.71pp)
-- **Sharpe Ratio:** 0.96
-- **Sortino Ratio:** 1.36
-- **Max Drawdown:** -36.26% (vs SPY -33.72%)
-- **Beta:** 0.98
-- **Correlation:** 0.97
-- **Annual Turnover:** 2.41x
-- **Verdict:** ✓ KEEP (+288.6pp vs SPY)
+- **Excess Return:** +265.32pp (ann. +2.52pp)
+- **Sharpe Ratio:** 1.05
+- **Sortino Ratio:** 1.61
+- **Max Drawdown:** -27.10% (vs SPY -33.72%)
+- **Beta:** 0.75
+- **Correlation:** 0.83
+- **Annual Turnover:** 1.94x
+- **Verdict:** ✓ KEEP (+265.3pp vs SPY)
 
 **2022_stress** (2022-01-01 to 2022-12-31) - stress test
 
-- **Strategy Total Return:** -6.05% (ann. -6.07%)
+- **Strategy Total Return:** -0.83% (ann. -0.84%)
 - **SPY Total Return:** -18.65% (ann. -18.71%)
-- **Excess Return:** +12.60pp (ann. +12.64pp)
-- **Sharpe Ratio:** -0.19
-- **Sortino Ratio:** -0.27
-- **Max Drawdown:** -19.45% (vs SPY -24.50%)
-- **Beta:** 0.84
-- **Correlation:** 0.97
-- **Annual Turnover:** 0.66x
-- **Verdict:** ✓ PASS (+12.6pp vs SPY)
+- **Excess Return:** +17.81pp (ann. +17.88pp)
+- **Sharpe Ratio:** 0.05
+- **Sortino Ratio:** 0.07
+- **Max Drawdown:** -13.76% (vs SPY -24.50%)
+- **Beta:** 0.68
+- **Correlation:** 0.87
+- **Annual Turnover:** 0.60x
+- **Verdict:** ✓ PASS (+17.8pp vs SPY)
 
 **2000_2002_stress** (2000-01-01 to 2002-12-31) - stress test
 
-- **Strategy Total Return:** -14.02% (ann. -4.94%)
+- **Strategy Total Return:** -11.33% (ann. -3.96%)
 - **SPY Total Return:** -37.01% (ann. -14.37%)
-- **Excess Return:** +23.00pp (ann. +9.43pp)
-- **Sharpe Ratio:** -0.09
-- **Sortino Ratio:** -0.14
-- **Max Drawdown:** -31.08% (vs SPY -47.52%)
-- **Beta:** 0.90
-- **Correlation:** 0.92
-- **Annual Turnover:** 1.24x
-- **Verdict:** ✓ PASS (+23.0pp vs SPY)
+- **Excess Return:** +25.68pp (ann. +10.41pp)
+- **Sharpe Ratio:** -0.17
+- **Sortino Ratio:** -0.25
+- **Max Drawdown:** -24.27% (vs SPY -47.52%)
+- **Beta:** 0.53
+- **Correlation:** 0.80
+- **Annual Turnover:** 0.83x
+- **Verdict:** ✓ PASS (+25.7pp vs SPY)
 
 ---
 

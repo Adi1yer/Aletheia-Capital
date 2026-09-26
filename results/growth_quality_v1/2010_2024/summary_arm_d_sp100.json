@@ -7,7 +7,7 @@
   "spy_return_pct": 583.77,
   "spy_ann_return_pct": 13.7,
   "excess_return_pct": 0.38,
-  "excess_return_usd": 37.72,
+  "excess_return_usd": 37.74,
   "excess_ann_return_pct": 0.0,
   "max_drawdown_pct": -33.37,
   "spy_max_drawdown_pct": -33.72,
@@ -18,7 +18,7 @@
   "correlation": 0.95,
   "alpha_annual_pct": 1.2,
   "hit_rate_pct": 54.9,
-  "hit_sessions": 2070,
+  "hit_sessions": 2069,
   "total_sessions": 3772,
   "turnover_annual": 2.39,
   "trade_counts": {

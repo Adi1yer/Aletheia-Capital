@@ -208,7 +208,11 @@ class GrowthQualityBacktest:
                 # For point-in-time arms, refresh universe as of this date
                 if self.arm_type == "point_in_time_quality":
                     from src.backtesting.growth_quality.universe import get_point_in_time_quality_universe
-                    universe = get_point_in_time_quality_universe(trade_date, top_n=self.top_n or 30)
+                    universe = get_point_in_time_quality_universe(
+                        trade_date,
+                        top_n=self.top_n or 30,
+                        data_provider=data_provider
+                    )
                     logger.info(f"Point-in-time universe on {trade_date}: {len(universe)} names")
                     # Load prices for any new names
                     for ticker in universe:
