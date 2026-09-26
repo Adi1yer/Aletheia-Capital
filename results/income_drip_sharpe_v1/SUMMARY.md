@@ -13,11 +13,11 @@ Tested three improvements to the income drip strategy (Arm 2: 80/20 momentum/div
 
 1. **✅ Turnover Audit & Fix (Goal 1)** - **KEEP**
 2. **✅ Sleeve Weight Grid (Goal 2)** - **KEEP 80/20, ABANDON 90/10 and 70/30**
-3. **⏭️ Vol-Target Overlay (Goal 3)** - Recommended for future evaluation
+3. **✅ Vol-Target Overlay (Goal 3)** - **ABANDON**
 
 ### Key Findings
 
-**The turnover bug was the critical issue.** Fixing it improved Sharpe by 9.8% on 2020-2024 while reducing turnover from 14.3x to 1.06x. Alternative sleeve weights (90/10, 70/30) did not beat the fixed 80/20 baseline on both windows per the KEEP bar.
+**The turnover bug was the critical issue.** Fixing it improved Sharpe by 9.8% on 2020-2024 while reducing turnover from 14.3x to 1.06x. Alternative sleeve weights (90/10, 70/30) did not beat the fixed 80/20 baseline on both windows per the KEEP bar. Vol-targeting improved Sharpe on 2010-2024 but hurt on 2020-2024, failing the BOTH windows requirement.
 
 **New Production Baseline:** 80/20 (post-turnover-fix)
 - **2020-2024:** Sharpe 1.010, Ann Return 20.20%, Max DD -30.13%, Turnover 1.06x
@@ -134,7 +134,7 @@ Neither 90/10 nor 70/30 improved Sharpe on **both** primary windows vs the 80/20
 
 ---
 
-## Goal 3: Vol-Target Overlay ⏭️ DEFERRED
+## Goal 3: Vol-Target Overlay ✅ ABANDON
 
 ### Configuration (Pre-Registered)
 
@@ -143,16 +143,93 @@ Neither 90/10 nor 70/30 improved Sharpe on **both** primary windows vs the 80/20
 - **Lookback:** 63 trading days (3 months trailing)
 - **Rebalance:** Quarterly (aligned with strategy)
 - **No lookahead:** Point-in-time only
+- **Remainder:** Cash (uninvested)
 
-### Status
+### Test Approach
 
-**Deferred for future evaluation.** The vol-target overlay would require additional multi-hour backtests. Given that:
+Post-processed existing baseline 80/20 equity curves by:
+1. Calculating daily returns from baseline NAV
+2. Computing 63-day trailing realized volatility (annualized)
+3. Scaling exposure = min(1.0, 15% / realized_vol)
+4. Applying scaled returns to generate vol-targeted NAV
 
-1. The turnover fix delivered the primary improvement (+9.8% Sharpe)
-2. The 80/20 sleeve weight is confirmed optimal
-3. Vol-targeting is an **optional overlay**, not a core mechanism fix
+This is computationally equivalent to dynamically adjusting portfolio exposure but much faster than re-running full backtest.
 
-**Recommendation:** Evaluate vol-targeting in a future iteration on live paper track data once the fixed 80/20 baseline has proven track record.
+### Results vs Untargeted 80/20 Baseline
+
+#### 2020-2024
+
+| Metric | Baseline 80/20 | Vol-Target | Change |
+|--------|----------------|------------|--------|
+| **Sharpe** | **0.993** | 0.825 | **-0.168** ❌ |
+| Ann Return | 20.19% | 14.55% | -5.64pp |
+| Max DD | -30.04% | -24.68% | +5.36pp |
+| Avg Exposure | 100% | 87.8% | -12.2pp |
+
+**Verdict:** Sharpe **worse** by 0.168 - the return reduction (-5.6pp) outweighs the drawdown improvement.
+
+#### 2010-2024
+
+| Metric | Baseline 80/20 | Vol-Target | Change |
+|--------|----------------|------------|--------|
+| **Sharpe** | 1.084 | **1.164** | **+0.080** ✓ |
+| Ann Return | 18.79% | 15.88% | -2.91pp |
+| Max DD | -33.44% | -27.29% | +6.15pp |
+| Avg Exposure | 100% | 90.6% | -9.4pp |
+
+**Verdict:** Sharpe **better** by 0.080 - the drawdown improvement (+6.2pp) outweighs the return reduction (-2.9pp).
+
+### Exposure Analysis
+
+**2020-2024:**
+- Avg exposure: 87.8% (12.2% cash on average)
+- Strategy was moderately de-risked throughout
+
+**2010-2024:**
+- Avg exposure: 90.6% (9.4% cash on average)
+- Strategy was lightly de-risked, especially during high-vol periods
+
+### Why It Worked on 2010-2024 But Not 2020-2024
+
+**2010-2024 (Vol-targeting helped):**
+- Longer window includes multiple high-volatility regimes (2011, 2015-16, 2018, 2020, 2022)
+- Vol-targeting successfully de-risked during these periods
+- Drawdown improvement (+6.2pp) was large enough to offset return drag
+- Sharpe improved because risk reduction was efficient
+
+**2020-2024 (Vol-targeting hurt):**
+- Shorter window, fewer volatility regimes
+- 2020 COVID crash was brief; vol-targeting may have underweighted the sharp recovery
+- Return drag (-5.6pp) was larger than on longer window
+- Drawdown improvement (+5.4pp) wasn't enough to compensate
+- Sharpe declined because returns fell faster than risk
+
+### Final Verdict: ✗ ABANDON
+
+**KEEP Bar:** Sharpe must improve on **BOTH** windows.
+
+**Result:**
+- 2020-2024: Sharpe -0.168 ❌
+- 2010-2024: Sharpe +0.080 ✓
+
+**Decision: ✗ ABANDON** - Vol-targeting does not meet the BOTH windows requirement.
+
+### Why ABANDON Is Correct
+
+1. **Mixed results suggest regime-dependence** - Works in long volatile cycles, hurts in shorter/calmer periods
+2. **No consistent edge** - If it doesn't help on both windows, it's not a robust improvement
+3. **Return drag is material** - Consistently giving up 3-6pp annualized return
+4. **Simpler is better** - The untargeted 80/20 baseline already has strong Sharpe (1.01 / 1.08) without additional complexity
+
+### Takeaway
+
+Vol-targeting is a **trade-off**, not a free lunch:
+- Reduces risk (drawdowns) by holding cash
+- Reduces returns proportionally
+- Only improves Sharpe if risk reduction is more efficient than return reduction
+- In this case, efficiency varies by regime - not robust enough to KEEP
+
+The **post-fix 80/20 baseline** (Sharpe 1.01 / 1.08) remains the production recommendation.
 
 ---
 
@@ -176,13 +253,15 @@ Neither 90/10 nor 70/30 improved Sharpe on **both** primary windows vs the 80/20
 - ✗ ABANDON 90/10 (worse on both windows)
 - ✗ ABANDON 70/30 (fails BOTH windows requirement)
 
-### ⏭️ DEFER: Vol-Target Overlay (Goal 3)
+### ✗ ABANDON: Vol-Target Overlay (Goal 3)
 
-**Verdict:** Recommended for future evaluation
+**Verdict:** Does not meet BOTH windows requirement
 
-- Optional overlay, not core fix
-- Requires additional long-running backtests
-- Evaluate on live paper track after baseline proven
+- **2020-2024:** Sharpe worse (-0.168) ❌
+- **2010-2024:** Sharpe better (+0.080) ✓
+- Mixed results suggest regime-dependence, not robust improvement
+- Return drag (3-6pp) outweighs benefit on recent window
+- Simpler untargeted 80/20 baseline remains superior
 
 ---
 
