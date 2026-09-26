@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import structlog
 
@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.backtesting.growth_quality.engine import GrowthQualityBacktest
 from src.backtesting.growth_quality.universe import get_universe_for_arm
 from src.backtesting.income_drip.engine import IncomeDripBacktest
+from src.backtesting.income_drip.data_cache import DataCache
 from src.data.providers.yahoo import YahooFinanceProvider
 
 logger = structlog.get_logger()
@@ -68,6 +69,7 @@ def run_pure_momentum_arm(
     end_date: str,
     output_dir: Path,
     initial_nav: float = 10_000.0,
+    cache: Optional[DataCache] = None,
 ) -> Dict:
     """Run pure Arm C momentum (control)."""
     logger.info("Running pure momentum arm", window=window_name)
@@ -93,6 +95,7 @@ def run_pure_momentum_arm(
             data_provider,
             arm_name=f"arm_1_pure_momentum_{window_name}",
             arm_type="point_in_time_quality",
+            cache=cache,
         )
         
         if not results:
@@ -120,6 +123,7 @@ def run_income_drip_arm(
     end_date: str,
     output_dir: Path,
     initial_nav: float = 10_000.0,
+    cache: Optional[DataCache] = None,
 ) -> Dict:
     """Run income drip arm (with or without CCs)."""
     logger.info("Running income drip arm", arm=arm_id, window=window_name)
@@ -145,6 +149,7 @@ def run_income_drip_arm(
         results = backtest.run(
             data_provider,
             arm_name=f"{arm_id}_{window_name}",
+            cache=cache,
         )
         
         if not results:
@@ -465,6 +470,10 @@ def main():
         output_dir=str(output_dir),
     )
     
+    # Initialize data cache
+    cache = DataCache(cache_dir=str(output_dir / ".data_cache"))
+    logger.info("Initialized data cache", cache_dir=str(output_dir / ".data_cache"))
+    
     # Run all combinations
     all_results = {}
     
@@ -482,6 +491,7 @@ def main():
                     end_date=end_date,
                     output_dir=output_dir,
                     initial_nav=args.nav,
+                    cache=cache,
                 )
             else:
                 metrics = run_income_drip_arm(
@@ -492,6 +502,7 @@ def main():
                     end_date=end_date,
                     output_dir=output_dir,
                     initial_nav=args.nav,
+                    cache=cache,
                 )
             
             arm_results[window_name] = metrics

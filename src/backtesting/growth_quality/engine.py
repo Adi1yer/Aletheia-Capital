@@ -54,10 +54,13 @@ class GrowthQualityBacktest:
         # Track rebalance dates
         self.last_rebalance_date: Optional[date] = None
     
-    def load_price_history(self, ticker: str, data_provider):
+    def load_price_history(self, ticker: str, data_provider, cache=None):
         """Load historical prices for a ticker."""
         try:
-            prices = data_provider.get_prices(ticker, self.start_date, self.end_date)
+            if cache:
+                prices = cache.get_prices(ticker, self.start_date, self.end_date, data_provider)
+            else:
+                prices = data_provider.get_prices(ticker, self.start_date, self.end_date)
             
             history = []
             for p in prices:
@@ -121,6 +124,7 @@ class GrowthQualityBacktest:
         data_provider,
         arm_name: str = "generic",
         arm_type: str = "fixed",  # "fixed", "point_in_time_quality"
+        cache=None,
     ) -> Dict:
         """
         Run backtest simulation.
@@ -150,7 +154,7 @@ class GrowthQualityBacktest:
         # Load price history for all tickers + benchmark
         benchmark_loaded = False
         for candidate in [self.benchmark_ticker, "SPY"]:
-            self.load_price_history(candidate, data_provider)
+            self.load_price_history(candidate, data_provider, cache)
             if self.price_history.get(candidate):
                 self.benchmark_ticker = candidate
                 benchmark_loaded = True
@@ -164,7 +168,7 @@ class GrowthQualityBacktest:
         # Load universe tickers
         for ticker in universe:
             if ticker not in self.price_history:
-                self.load_price_history(ticker, data_provider)
+                self.load_price_history(ticker, data_provider, cache)
         
         # Get trading dates from benchmark
         benchmark_history = self.price_history.get(self.benchmark_ticker, [])
@@ -213,11 +217,11 @@ class GrowthQualityBacktest:
                         top_n=self.top_n or 30,
                         data_provider=data_provider
                     )
-                    logger.info(f"Point-in-time universe on {trade_date}: {len(universe)} names")
-                    # Load prices for any new names
-                    for ticker in universe:
-                        if ticker not in self.price_history:
-                            self.load_price_history(ticker, data_provider)
+                logger.info(f"Point-in-time universe on {trade_date}: {len(universe)} names")
+                # Load prices for any new names
+                for ticker in universe:
+                    if ticker not in self.price_history:
+                        self.load_price_history(ticker, data_provider, cache)
                 
                 self._rebalance(trade_date, universe)
                 self.last_rebalance_date = trade_date

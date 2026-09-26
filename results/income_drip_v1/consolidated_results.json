@@ -27,7 +27,9 @@
         "buys": 185,
         "sells": 178
       },
-      "years": 4.99
+      "years": 4.99,
+      "arm": "arm_1_pure_momentum",
+      "benchmark": "SPY"
     },
     "2010_2024": {
       "start_nav": 10000.0,
@@ -56,7 +58,9 @@
         "buys": 554,
         "sells": 656
       },
-      "years": 14.97
+      "years": 14.97,
+      "arm": "arm_1_pure_momentum",
+      "benchmark": "SPY"
     },
     "2022_stress": {
       "start_nav": 10000.0,
@@ -85,7 +89,9 @@
         "buys": 55,
         "sells": 19
       },
-      "years": 1.0
+      "years": 1.0,
+      "arm": "arm_1_pure_momentum",
+      "benchmark": "SPY"
     },
     "2000_2002_stress": {
       "start_nav": 10000.0,
@@ -114,13 +120,75 @@
         "buys": 171,
         "sells": 154
       },
-      "years": 2.98
+      "years": 2.98,
+      "arm": "arm_1_pure_momentum",
+      "benchmark": "SPY"
     },
     "2008_2009_stress": {}
   },
   "arm_2_momentum_div_drip": {
-    "2020_2024": {},
-    "2010_2024": {},
+    "2020_2024": {
+      "start_nav": 10000.0,
+      "end_nav": 22736.26,
+      "abs_return_pct": 127.36,
+      "abs_return_usd": 12736.26,
+      "ann_return_pct": 17.9,
+      "spy_return_pct": 95.3,
+      "spy_ann_return_pct": 14.36,
+      "excess_return_pct": 32.07,
+      "excess_return_usd": 3206.71,
+      "excess_ann_return_pct": 3.54,
+      "max_drawdown_pct": -31.62,
+      "spy_max_drawdown_pct": -33.72,
+      "current_drawdown_pct": -2.76,
+      "sharpe": 0.92,
+      "sortino": 1.32,
+      "beta": 0.93,
+      "correlation": 0.97,
+      "alpha_annual_pct": 3.98,
+      "hit_rate_pct": 56.0,
+      "hit_sessions": 703,
+      "total_sessions": 1256,
+      "turnover_annual": 14.32,
+      "trade_counts": {
+        "buys": 1000,
+        "sells": 935
+      },
+      "years": 4.99,
+      "arm": "arm_2_momentum_div_drip",
+      "benchmark": "SPY"
+    },
+    "2010_2024": {
+      "start_nav": 10000.0,
+      "end_nav": 114980.31,
+      "abs_return_pct": 1049.8,
+      "abs_return_usd": 104980.31,
+      "ann_return_pct": 17.72,
+      "spy_return_pct": 583.77,
+      "spy_ann_return_pct": 13.7,
+      "excess_return_pct": 466.04,
+      "excess_return_usd": 46603.68,
+      "excess_ann_return_pct": 4.02,
+      "max_drawdown_pct": -32.96,
+      "spy_max_drawdown_pct": -33.72,
+      "current_drawdown_pct": -2.76,
+      "sharpe": 1.08,
+      "sortino": 1.52,
+      "beta": 0.94,
+      "correlation": 0.98,
+      "alpha_annual_pct": 4.17,
+      "hit_rate_pct": 56.6,
+      "hit_sessions": 2136,
+      "total_sessions": 3772,
+      "turnover_annual": 42.71,
+      "trade_counts": {
+        "buys": 3000,
+        "sells": 2935
+      },
+      "years": 14.97,
+      "arm": "arm_2_momentum_div_drip",
+      "benchmark": "SPY"
+    },
     "2022_stress": {},
     "2000_2002_stress": {
       "start_nav": 10000.0,
@@ -149,13 +217,75 @@
         "buys": 439,
         "sells": 402
       },
-      "years": 2.98
+      "years": 2.98,
+      "arm": "arm_2_momentum_div_drip",
+      "benchmark": "SPY"
     },
     "2008_2009_stress": {}
   },
   "arm_3_momentum_div_cc_drip": {
-    "2020_2024": {},
-    "2010_2024": {},
+    "2020_2024": {
+      "start_nav": 10000.0,
+      "end_nav": 22560.5,
+      "abs_return_pct": 125.6,
+      "abs_return_usd": 12560.5,
+      "ann_return_pct": 17.72,
+      "spy_return_pct": 95.3,
+      "spy_ann_return_pct": 14.36,
+      "excess_return_pct": 30.31,
+      "excess_return_usd": 3030.95,
+      "excess_ann_return_pct": 3.36,
+      "max_drawdown_pct": -31.62,
+      "spy_max_drawdown_pct": -33.72,
+      "current_drawdown_pct": -2.73,
+      "sharpe": 0.92,
+      "sortino": 1.31,
+      "beta": 0.92,
+      "correlation": 0.97,
+      "alpha_annual_pct": 3.86,
+      "hit_rate_pct": 55.8,
+      "hit_sessions": 701,
+      "total_sessions": 1256,
+      "turnover_annual": 14.32,
+      "trade_counts": {
+        "buys": 1000,
+        "sells": 981
+      },
+      "years": 4.99,
+      "arm": "arm_3_momentum_div_cc_drip",
+      "benchmark": "SPY"
+    },
+    "2010_2024": {
+      "start_nav": 10000.0,
+      "end_nav": 111253.89,
+      "abs_return_pct": 1012.54,
+      "abs_return_usd": 101253.89,
+      "ann_return_pct": 17.46,
+      "spy_return_pct": 583.77,
+      "spy_ann_return_pct": 13.7,
+      "excess_return_pct": 428.77,
+      "excess_return_usd": 42877.26,
+      "excess_ann_return_pct": 3.76,
+      "max_drawdown_pct": -32.9,
+      "spy_max_drawdown_pct": -33.72,
+      "current_drawdown_pct": -2.73,
+      "sharpe": 1.07,
+      "sortino": 1.51,
+      "beta": 0.94,
+      "correlation": 0.98,
+      "alpha_annual_pct": 4.04,
+      "hit_rate_pct": 56.4,
+      "hit_sessions": 2128,
+      "total_sessions": 3772,
+      "turnover_annual": 42.67,
+      "trade_counts": {
+        "buys": 3000,
+        "sells": 3250
+      },
+      "years": 14.97,
+      "arm": "arm_3_momentum_div_cc_drip",
+      "benchmark": "SPY"
+    },
     "2022_stress": {},
     "2000_2002_stress": {
       "start_nav": 10000.0,
@@ -184,7 +314,9 @@
         "buys": 439,
         "sells": 430
       },
-      "years": 2.98
+      "years": 2.98,
+      "arm": "arm_3_momentum_div_cc_drip",
+      "benchmark": "SPY"
     },
     "2008_2009_stress": {}
   }
