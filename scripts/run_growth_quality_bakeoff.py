@@ -370,8 +370,16 @@ def main():
         for window_name in windows_to_run:
             start_date, end_date = WINDOWS[window_name]
             
+            # Map arm_id to actual arm name
+            arm_mapping = {
+                "arm_a_qqq": "qqq",
+                "arm_b_equal_weight": "equal_weight",
+                "arm_c_quality_screen": "quality_screen",
+            }
+            arm_name = arm_mapping.get(arm_id, arm_id)
+            
             metrics = run_single_backtest(
-                arm=arm_id.replace("arm_", "").replace("_", "_"),  # Clean up arm name
+                arm=arm_name,
                 window_name=window_name,
                 start_date=start_date,
                 end_date=end_date,
