@@ -39,6 +39,7 @@ class WheelHybridBacktest:
         max_directional_names: int = 5,
         max_lots_per_name: int = 3,
         cc_target_otm_pct: float = 0.05,
+        cc_overwrite_pct: float = 1.00,
         cc_dte_range: Tuple[int, int] = (21, 45),
         csp_dte_range: Tuple[int, int] = (14, 45),
         csp_score: int = 55,
@@ -63,6 +64,7 @@ class WheelHybridBacktest:
         self.max_directional_names = max_directional_names
         self.max_lots_per_name = max_lots_per_name
         self.cc_target_otm_pct = cc_target_otm_pct
+        self.cc_overwrite_pct = cc_overwrite_pct
         self.cc_dte_range = cc_dte_range
         self.csp_dte_range = csp_dte_range
         self.csp_score = csp_score
@@ -240,6 +242,8 @@ class WheelHybridBacktest:
                 "directional_pct": self.directional_pct,
                 "max_wheel_names": self.max_wheel_names,
                 "max_directional_names": self.max_directional_names,
+                "cc_target_otm_pct": self.cc_target_otm_pct,
+                "cc_overwrite_pct": self.cc_overwrite_pct,
                 "rf_rate": self.rf_rate,
                 "vol_window": self.vol_window,
                 "universe": universe,
@@ -473,7 +477,7 @@ class WheelHybridBacktest:
                 spent += lot_cost
     
     def _write_covered_calls(self, trade_date: date, prices: Dict[str, float]):
-        """Write covered calls on uncovered lots."""
+        """Write covered calls on uncovered lots, respecting cc_overwrite_pct."""
         
         # Regime check: Skip CC writes in HOLD_DELTA or DEFENSIVE
         if self.regime_detector is not None:
@@ -485,19 +489,25 @@ class WheelHybridBacktest:
                 )
                 return
         
-        # Find lots without matching short calls
+        # Find lots without matching short calls (eligible for new CC)
         covered_tickers = {call.ticker for call in self.portfolio.short_calls}
         
+        # Group eligible lots by ticker to implement partial overwrite per name
+        eligible_lots_by_ticker = {}
         for lot in self.portfolio.equity_lots:
-            if lot.ticker in covered_tickers:
-                continue
-            
-            price = prices.get(lot.ticker)
+            if lot.ticker not in covered_tickers:
+                if lot.ticker not in eligible_lots_by_ticker:
+                    eligible_lots_by_ticker[lot.ticker] = []
+                eligible_lots_by_ticker[lot.ticker].append(lot)
+        
+        # For each ticker with eligible lots, write calls on only cc_overwrite_pct of them
+        for ticker, lots in eligible_lots_by_ticker.items():
+            price = prices.get(ticker)
             if price is None or price <= 0:
                 continue
             
             # Calculate volatility
-            vol_prices = self.get_price_history_for_vol(lot.ticker, trade_date, self.vol_window)
+            vol_prices = self.get_price_history_for_vol(ticker, trade_date, self.vol_window)
             vol = realized_volatility(vol_prices, self.vol_window)
             
             if vol is None:
@@ -506,7 +516,7 @@ class WheelHybridBacktest:
             # Edge gate check: Only write if VRP edge detected
             if self.edge_gate is not None:
                 allowed, reason = self.edge_gate.should_write_cc(
-                    lot.ticker,
+                    ticker,
                     trade_date,
                     vol,
                     tenor_days=self.vol_window,
@@ -514,34 +524,42 @@ class WheelHybridBacktest:
                 if not allowed:
                     logger.debug(
                         "CC write blocked by edge gate",
-                        ticker=lot.ticker,
+                        ticker=ticker,
                         date=trade_date,
                         reason=reason,
                     )
                     continue
             
-            # Select strike and expiry
-            strike = select_call_strike(price, target_otm_pct=self.cc_target_otm_pct)
-            dte = (self.cc_dte_range[0] + self.cc_dte_range[1]) // 2
-            expiry = trade_date + timedelta(days=dte)
+            # Determine how many lots to cover based on cc_overwrite_pct
+            num_eligible = len(lots)
+            num_to_cover = max(1, int(num_eligible * self.cc_overwrite_pct + 0.5))
             
-            # Estimate premium
-            premium_per_share = estimate_call_premium(price, strike, dte, vol, self.rf_rate)
-            
-            # Min premium check
-            if premium_per_share * 100 < 15.0:
-                continue
-            
-            self.portfolio.write_covered_call(
-                lot.ticker,
-                strike,
-                expiry,
-                premium_per_share,
-                trade_date,
-            )
-            
-            # Mark as covered
-            covered_tickers.add(lot.ticker)
+            # Write calls on the first num_to_cover lots (deterministic selection)
+            for i in range(min(num_to_cover, num_eligible)):
+                # Select strike and expiry
+                strike = select_call_strike(price, target_otm_pct=self.cc_target_otm_pct)
+                dte = (self.cc_dte_range[0] + self.cc_dte_range[1]) // 2
+                expiry = trade_date + timedelta(days=dte)
+                
+                # Estimate premium
+                premium_per_share = estimate_call_premium(price, strike, dte, vol, self.rf_rate)
+                
+                # Min premium check
+                if premium_per_share * 100 < 15.0:
+                    continue
+                
+                success = self.portfolio.write_covered_call(
+                    ticker,
+                    strike,
+                    expiry,
+                    premium_per_share,
+                    trade_date,
+                )
+                
+                if success:
+                    # Mark as covered (prevent duplicate writes on same ticker)
+                    covered_tickers.add(ticker)
+                    break
     
     def _write_cash_secured_puts(self, trade_date: date, prices: Dict[str, float]):
         """Write cash-secured puts when cash-heavy."""
@@ -766,6 +784,8 @@ class WheelHybridBacktest:
             "initial_nav": self.initial_nav,
             "wheel_pct": self.wheel_pct,
             "directional_pct": self.directional_pct,
+            "cc_target_otm_pct": self.cc_target_otm_pct,
+            "cc_overwrite_pct": self.cc_overwrite_pct,
             "rf_rate": self.rf_rate,
             "vol_window": self.vol_window,
         }
