@@ -1,0 +1,169 @@
+{
+  "metadata": {
+    "start_date": "2020-01-02",
+    "end_date": "2024-12-31",
+    "initial_nav": 10000.0,
+    "universe_type": "bluechip",
+    "universe_tickers": [
+      "F",
+      "T",
+      "BAC",
+      "INTC",
+      "PFE",
+      "GE"
+    ],
+    "benchmark": "^SPXTR",
+    "phase": "B",
+    "description": "Strike schedule bake-off (wider-OTM / 30\u0394)"
+  },
+  "arms": {
+    "A_baseline_5pct_otm": {
+      "start_nav": 10000.0,
+      "end_nav": 15499.58,
+      "abs_return_pct": 55.0,
+      "abs_return_usd": 5499.58,
+      "spy_return_pct": 95.3,
+      "excess_return_pct": -40.3,
+      "excess_return_usd": -4029.97,
+      "max_drawdown_pct": -37.67,
+      "current_drawdown_pct": -5.83,
+      "sharpe": 0.5,
+      "sortino": 0.69,
+      "beta": 0.77,
+      "correlation": 0.71,
+      "alpha_annual_pct": -0.63,
+      "hit_rate_pct": 53.9,
+      "hit_sessions": 677,
+      "total_sessions": 1256,
+      "turnover": 1.56,
+      "premium_collected": 6981.07,
+      "trade_counts": {
+        "buys": 12,
+        "sells": 2,
+        "cc_writes": 195,
+        "csp_writes": 12,
+        "btc_calls": 184,
+        "btc_puts": 8,
+        "assignments_call": 2,
+        "assignments_put": 2
+      },
+      "config": {
+        "label": "A: Baseline (5% OTM)",
+        "strike_mode": "otm_pct",
+        "target_otm_pct": 0.05,
+        "target_delta": null
+      }
+    },
+    "B_wider_7.5pct_otm": {
+      "start_nav": 10000.0,
+      "end_nav": 15827.96,
+      "abs_return_pct": 58.28,
+      "abs_return_usd": 5827.96,
+      "spy_return_pct": 95.3,
+      "excess_return_pct": -37.02,
+      "excess_return_usd": -3701.58,
+      "max_drawdown_pct": -36.86,
+      "current_drawdown_pct": -5.68,
+      "sharpe": 0.54,
+      "sortino": 0.75,
+      "beta": 0.76,
+      "correlation": 0.74,
+      "alpha_annual_pct": -0.34,
+      "hit_rate_pct": 53.6,
+      "hit_sessions": 673,
+      "total_sessions": 1256,
+      "turnover": 1.38,
+      "premium_collected": 8480.7,
+      "trade_counts": {
+        "buys": 12,
+        "sells": 2,
+        "cc_writes": 249,
+        "csp_writes": 27,
+        "btc_calls": 234,
+        "btc_puts": 24,
+        "assignments_call": 2,
+        "assignments_put": 1
+      },
+      "config": {
+        "label": "B: Wider OTM (7.5%)",
+        "strike_mode": "otm_pct",
+        "target_otm_pct": 0.075,
+        "target_delta": null
+      }
+    },
+    "C_bxmd_30delta": {
+      "start_nav": 10000.0,
+      "end_nav": 13248.95,
+      "abs_return_pct": 32.49,
+      "abs_return_usd": 3248.95,
+      "spy_return_pct": 95.3,
+      "excess_return_pct": -62.81,
+      "excess_return_usd": -6280.6,
+      "max_drawdown_pct": -36.27,
+      "current_drawdown_pct": -5.62,
+      "sharpe": 0.39,
+      "sortino": 0.53,
+      "beta": 0.72,
+      "correlation": 0.77,
+      "alpha_annual_pct": -3.69,
+      "hit_rate_pct": 53.8,
+      "hit_sessions": 676,
+      "total_sessions": 1256,
+      "turnover": 2.39,
+      "premium_collected": 11941.21,
+      "trade_counts": {
+        "buys": 14,
+        "sells": 4,
+        "cc_writes": 352,
+        "csp_writes": 13,
+        "btc_calls": 339,
+        "btc_puts": 10,
+        "assignments_call": 4,
+        "assignments_put": 1
+      },
+      "config": {
+        "label": "C: BXMD-style (30\u0394)",
+        "strike_mode": "delta",
+        "target_otm_pct": null,
+        "target_delta": 0.3
+      }
+    },
+    "D_bxy_2pct_otm": {
+      "start_nav": 10000.0,
+      "end_nav": 14985.07,
+      "abs_return_pct": 49.85,
+      "abs_return_usd": 4985.07,
+      "spy_return_pct": 95.3,
+      "excess_return_pct": -45.44,
+      "excess_return_usd": -4544.47,
+      "max_drawdown_pct": -35.24,
+      "current_drawdown_pct": -4.33,
+      "sharpe": 0.53,
+      "sortino": 0.74,
+      "beta": 0.66,
+      "correlation": 0.74,
+      "alpha_annual_pct": -0.43,
+      "hit_rate_pct": 54.9,
+      "hit_sessions": 690,
+      "total_sessions": 1256,
+      "turnover": 1.36,
+      "premium_collected": 14337.45,
+      "trade_counts": {
+        "buys": 11,
+        "sells": 2,
+        "cc_writes": 327,
+        "csp_writes": 11,
+        "btc_calls": 318,
+        "btc_puts": 7,
+        "assignments_call": 2,
+        "assignments_put": 2
+      },
+      "config": {
+        "label": "D: BXY-style (2% OTM)",
+        "strike_mode": "otm_pct",
+        "target_otm_pct": 0.02,
+        "target_delta": null
+      }
+    }
+  }
+}

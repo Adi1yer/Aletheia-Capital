@@ -114,6 +114,84 @@ def realized_volatility(
     return max(0.10, min(2.0, annual_vol))
 
 
+def call_delta(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+) -> float:
+    """
+    Calculate Black-Scholes delta for a call option.
+    
+    Args:
+        S: Underlying price
+        K: Strike price
+        T: Time to expiration (years)
+        r: Risk-free rate (annual)
+        sigma: Volatility (annual)
+    
+    Returns:
+        Call delta (0 to 1).
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 1.0 if S > K else 0.0
+    
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    return _norm_cdf(d1)
+
+
+def select_call_strike_by_delta(
+    underlying_price: float,
+    target_delta: float,
+    dte: int,
+    realized_vol: float,
+    rf_rate: float = 0.0,
+) -> float:
+    """
+    Select covered call strike to achieve target delta (BXMD-style).
+    
+    Uses iterative search to find strike with delta closest to target.
+    
+    Args:
+        underlying_price: Current stock price.
+        target_delta: Target delta (e.g., 0.30 for 30Δ).
+        dte: Days to expiration.
+        realized_vol: Annualized realized volatility.
+        rf_rate: Risk-free rate (annual).
+    
+    Returns:
+        Strike price with delta closest to target, rounded to standard increments.
+    """
+    T = dte / 365.0
+    
+    # Binary search for strike that gives target delta
+    # Start with a reasonable range: ATM to 50% OTM
+    low_strike = underlying_price * 1.01
+    high_strike = underlying_price * 1.50
+    
+    best_strike = underlying_price * 1.05
+    best_delta_diff = abs(call_delta(underlying_price, best_strike, T, rf_rate, realized_vol) - target_delta)
+    
+    # Try strikes from 1% OTM to 50% OTM
+    for otm_pct in [i * 0.005 for i in range(1, 101)]:  # 0.5% increments
+        test_strike = underlying_price * (1.0 + otm_pct)
+        test_delta = call_delta(underlying_price, test_strike, T, rf_rate, realized_vol)
+        delta_diff = abs(test_delta - target_delta)
+        
+        if delta_diff < best_delta_diff:
+            best_delta_diff = delta_diff
+            best_strike = test_strike
+    
+    # Round to standard option strikes ($0.50 increments below $25, $1 above)
+    if best_strike < 25:
+        strike = round(best_strike * 2) / 2.0
+    else:
+        strike = round(best_strike)
+    
+    return strike
+
+
 def select_call_strike(
     underlying_price: float,
     otm_pct_low: float = 0.03,
