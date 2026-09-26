@@ -33,6 +33,7 @@ class GrowthQualityBacktest:
         top_n: Optional[int] = None,  # For Arm B/C
         trading_cost_pct: float = 0.0005,  # 5 bps round-trip
         benchmark_ticker: str = "^SPXTR",  # SPY total return
+        universe_mode: str = "fixed",  # "fixed" or "point_in_time"
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -41,6 +42,7 @@ class GrowthQualityBacktest:
         self.top_n = top_n
         self.trading_cost_pct = trading_cost_pct
         self.benchmark_ticker = benchmark_ticker
+        self.universe_mode = universe_mode  # NEW: support point-in-time selection
         
         self.portfolio = GrowthQualityPortfolio(initial_nav)
         self.equity_curve: List[Tuple[str, float]] = []
@@ -84,11 +86,13 @@ class GrowthQualityBacktest:
     
     def should_rebalance(self, trade_date: date) -> bool:
         """Determine if portfolio should rebalance on this date."""
-        if self.rebalance_frequency == "none":
-            return False
-        
+        # Always rebalance on first call (initial allocation)
         if self.last_rebalance_date is None:
             return True
+        
+        # After initial allocation, "none" means buy-and-hold (no more rebalances)
+        if self.rebalance_frequency == "none":
+            return False
         
         if self.rebalance_frequency == "monthly":
             # Rebalance on first trading day of each month
@@ -116,14 +120,16 @@ class GrowthQualityBacktest:
         universe: List[str],
         data_provider,
         arm_name: str = "generic",
+        arm_type: str = "fixed",  # "fixed", "point_in_time_quality"
     ) -> Dict:
         """
         Run backtest simulation.
         
         Args:
-            universe: List of tickers to hold.
+            universe: List of tickers (for fixed arms) or initial universe (for point-in-time)
             data_provider: Data provider with get_prices() method.
             arm_name: Name of strategy arm for logging.
+            arm_type: Type of arm ("fixed", "point_in_time_quality")
         
         Returns:
             Summary dict with metrics and paths.
@@ -133,11 +139,13 @@ class GrowthQualityBacktest:
             start=self.start_date,
             end=self.end_date,
             nav=self.initial_nav,
-            universe=universe,
+            universe=universe if arm_type == "fixed" else f"point-in-time (initial: {len(universe)} names)",
             arm=arm_name,
             rebalance=self.rebalance_frequency,
             benchmark=self.benchmark_ticker,
         )
+        
+        self.arm_type = arm_type  # Store for rebalance logic
         
         # Load price history for all tickers + benchmark
         benchmark_loaded = False
@@ -173,10 +181,36 @@ class GrowthQualityBacktest:
         # Initial NAV
         self.equity_curve.append((trading_dates[0].isoformat(), self.initial_nav))
         
+        # Initial allocation on first day
+        first_date = trading_dates[0]
+        
+        # For point-in-time arms, get universe as of first date
+        if self.arm_type == "point_in_time_quality":
+            from src.backtesting.growth_quality.universe import get_point_in_time_quality_universe
+            universe = get_point_in_time_quality_universe(first_date, top_n=self.top_n or 30)
+            logger.info(f"Point-in-time universe on {first_date}: {len(universe)} names")
+            # Load prices for new names
+            for ticker in universe:
+                if ticker not in self.price_history:
+                    self.load_price_history(ticker, data_provider)
+        
+        self._rebalance(first_date, universe)
+        self.last_rebalance_date = first_date
+        
         # Daily loop
         for i, trade_date in enumerate(trading_dates[1:], start=1):
             # Check if rebalance needed
             if self.should_rebalance(trade_date):
+                # For point-in-time arms, refresh universe as of this date
+                if self.arm_type == "point_in_time_quality":
+                    from src.backtesting.growth_quality.universe import get_point_in_time_quality_universe
+                    universe = get_point_in_time_quality_universe(trade_date, top_n=self.top_n or 30)
+                    logger.info(f"Point-in-time universe on {trade_date}: {len(universe)} names")
+                    # Load prices for any new names
+                    for ticker in universe:
+                        if ticker not in self.price_history:
+                            self.load_price_history(ticker, data_provider)
+                
                 self._rebalance(trade_date, universe)
                 self.last_rebalance_date = trade_date
             
