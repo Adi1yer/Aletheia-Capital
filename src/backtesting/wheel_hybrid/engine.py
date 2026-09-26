@@ -489,19 +489,20 @@ class WheelHybridBacktest:
                 )
                 return
         
-        # Find lots without matching short calls (eligible for new CC)
-        covered_tickers = {call.ticker for call in self.portfolio.short_calls}
+        # Count existing short calls per ticker
+        short_call_counts = {}
+        for call in self.portfolio.short_calls:
+            short_call_counts[call.ticker] = short_call_counts.get(call.ticker, 0) + 1
         
-        # Group eligible lots by ticker to implement partial overwrite per name
-        eligible_lots_by_ticker = {}
+        # Group all lots by ticker
+        lots_by_ticker = {}
         for lot in self.portfolio.equity_lots:
-            if lot.ticker not in covered_tickers:
-                if lot.ticker not in eligible_lots_by_ticker:
-                    eligible_lots_by_ticker[lot.ticker] = []
-                eligible_lots_by_ticker[lot.ticker].append(lot)
+            if lot.ticker not in lots_by_ticker:
+                lots_by_ticker[lot.ticker] = []
+            lots_by_ticker[lot.ticker].append(lot)
         
-        # For each ticker with eligible lots, write calls on only cc_overwrite_pct of them
-        for ticker, lots in eligible_lots_by_ticker.items():
+        # For each ticker with lots, write calls on cc_overwrite_pct of total lots
+        for ticker, lots in lots_by_ticker.items():
             price = prices.get(ticker)
             if price is None or price <= 0:
                 continue
@@ -530,12 +531,17 @@ class WheelHybridBacktest:
                     )
                     continue
             
-            # Determine how many lots to cover based on cc_overwrite_pct
-            num_eligible = len(lots)
-            num_to_cover = max(1, int(num_eligible * self.cc_overwrite_pct + 0.5))
+            # Determine target number of calls based on cc_overwrite_pct
+            num_lots = len(lots)
+            existing_calls = short_call_counts.get(ticker, 0)
+            target_calls = max(1, int(num_lots * self.cc_overwrite_pct + 0.5))
+            calls_to_write = target_calls - existing_calls
             
-            # Write calls on the first num_to_cover lots (deterministic selection)
-            for i in range(min(num_to_cover, num_eligible)):
+            if calls_to_write <= 0:
+                continue
+            
+            # Write the needed number of calls
+            for i in range(calls_to_write):
                 # Select strike and expiry
                 strike = select_call_strike(price, target_otm_pct=self.cc_target_otm_pct)
                 dte = (self.cc_dte_range[0] + self.cc_dte_range[1]) // 2
@@ -546,7 +552,7 @@ class WheelHybridBacktest:
                 
                 # Min premium check
                 if premium_per_share * 100 < 15.0:
-                    continue
+                    break
                 
                 success = self.portfolio.write_covered_call(
                     ticker,
@@ -556,9 +562,7 @@ class WheelHybridBacktest:
                     trade_date,
                 )
                 
-                if success:
-                    # Mark as covered (prevent duplicate writes on same ticker)
-                    covered_tickers.add(ticker)
+                if not success:
                     break
     
     def _write_cash_secured_puts(self, trade_date: date, prices: Dict[str, float]):
