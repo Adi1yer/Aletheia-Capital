@@ -75,6 +75,9 @@ def calculate_metrics(
     beta, corr = _beta_corr(fund_returns, spy_returns)
     alpha = _alpha(fund_returns, spy_returns, beta, periods_per_year=252.0)
     
+    # Upside/Downside capture
+    upside_capture, downside_capture = _capture_ratios(fund_returns, spy_returns)
+    
     # Hit rate
     wins = sum(1 for r in fund_returns if r > 0)
     hit_rate = (wins / len(fund_returns)) if fund_returns else 0.0
@@ -113,6 +116,8 @@ def calculate_metrics(
         "beta": round(beta, 2) if beta is not None else None,
         "correlation": round(corr, 2) if corr is not None else None,
         "alpha_annual_pct": round(alpha * 100.0, 2) if alpha is not None else None,
+        "upside_capture_pct": round(upside_capture * 100.0, 2) if upside_capture is not None else None,
+        "downside_capture_pct": round(downside_capture * 100.0, 2) if downside_capture is not None else None,
         "hit_rate_pct": round(hit_rate * 100.0, 1),
         "hit_sessions": wins,
         "total_sessions": len(fund_returns),
@@ -235,3 +240,49 @@ def _alpha(
     alpha_annual = alpha_daily * periods_per_year
     
     return alpha_annual
+
+
+def _capture_ratios(
+    fund_returns: List[float],
+    spy_returns: List[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Calculate upside and downside capture ratios.
+    
+    Upside capture = (average fund return when SPY > 0) / (average SPY return when SPY > 0)
+    Downside capture = (average fund return when SPY < 0) / (average SPY return when SPY < 0)
+    
+    Returns:
+        (upside_capture, downside_capture) as ratios (1.0 = 100% capture)
+    """
+    n = min(len(fund_returns), len(spy_returns))
+    
+    if n < 4:
+        return None, None
+    
+    fund = fund_returns[:n]
+    spy = spy_returns[:n]
+    
+    # Upside periods (SPY > 0)
+    upside_fund = [f for f, s in zip(fund, spy) if s > 0]
+    upside_spy = [s for s in spy if s > 0]
+    
+    upside_capture = None
+    if upside_fund and upside_spy:
+        avg_fund_up = sum(upside_fund) / len(upside_fund)
+        avg_spy_up = sum(upside_spy) / len(upside_spy)
+        if abs(avg_spy_up) > 1e-12:
+            upside_capture = avg_fund_up / avg_spy_up
+    
+    # Downside periods (SPY < 0)
+    downside_fund = [f for f, s in zip(fund, spy) if s < 0]
+    downside_spy = [s for s in spy if s < 0]
+    
+    downside_capture = None
+    if downside_fund and downside_spy:
+        avg_fund_down = sum(downside_fund) / len(downside_fund)
+        avg_spy_down = sum(downside_spy) / len(downside_spy)
+        if abs(avg_spy_down) > 1e-12:
+            downside_capture = avg_fund_down / avg_spy_down
+    
+    return upside_capture, downside_capture
