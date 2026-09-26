@@ -11,8 +11,8 @@ without disastrous DD blow-up (max DD worse by >10pp with only tiny Sharpe gain)
 
 ## Baseline (80/20)
 
-- **2020-2024:** Sharpe 1.010, Max DD -30.13%
-- **2010-2024:** Sharpe 0.000, Max DD 0.00%
+- **2020-2024:** Sharpe 0.000, Max DD 0.00%
+- **2010-2024:** Sharpe 1.080, Max DD -33.51%
 
 ---
 
@@ -20,16 +20,16 @@ without disastrous DD blow-up (max DD worse by >10pp with only tiny Sharpe gain)
 
 | Split | Window | Sharpe | Ann Ret | Max DD | vs 80/20 Sharpe | vs 80/20 DD | Verdict |
 |-------|--------|--------|---------|--------|-----------------|-------------|---------|
-| 90/10 | 2020_2024 | 0.990 | 20.56% | -30.02% | -0.020 | +0.11pp | ✗ |
-| 90_10 | 2010_2024 | N/A | N/A | N/A | N/A | N/A | NO DATA |
+| 90_10 | 2020_2024 | N/A | N/A | N/A | N/A | N/A | NO DATA |
+| 90/10 | 2010_2024 | 1.040 | 18.81% | -34.29% | -0.040 | -0.78pp | ✗ |
 | 90_10 | 2022_stress | N/A | N/A | N/A | N/A | N/A | NO DATA |
 | 90_10 | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | NO DATA |
-| 80/20 | 2020_2024 | 1.010 | 20.20% | -30.13% | +0.000 | +0.00pp | BASELINE |
-| 80_20 | 2010_2024 | N/A | N/A | N/A | N/A | N/A | NO DATA |
+| 80_20 | 2020_2024 | N/A | N/A | N/A | N/A | N/A | NO DATA |
+| 80/20 | 2010_2024 | 1.080 | 18.79% | -33.51% | +0.000 | +0.00pp | BASELINE |
 | 80_20 | 2022_stress | N/A | N/A | N/A | N/A | N/A | NO DATA |
 | 80_20 | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | NO DATA |
-| 70/30 | 2020_2024 | 0.990 | 19.18% | -30.24% | -0.020 | -0.11pp | ✗ |
-| 70_30 | 2010_2024 | N/A | N/A | N/A | N/A | N/A | NO DATA |
+| 70_30 | 2020_2024 | N/A | N/A | N/A | N/A | N/A | NO DATA |
+| 70/30 | 2010_2024 | 1.090 | 18.25% | -33.71% | +0.010 | -0.20pp | ✓ |
 | 70_30 | 2022_stress | N/A | N/A | N/A | N/A | N/A | NO DATA |
 | 70_30 | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | NO DATA |
 
