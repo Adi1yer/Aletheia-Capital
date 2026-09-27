@@ -13,19 +13,19 @@ with materially milder drawdowns than pure Arm C (without lagging Arm C badly on
 | Arm | Window | Strategy TR | SPY TR | vs SPY | Sharpe | Max DD | Verdict |
 |-----|--------|-------------|--------|--------|--------|--------|---------|
 | arm_1_pure_momentum | 2020_2024 | 110.9% | 95.3% | +15.6pp | 0.86 | -32.4% | ✓ BEATS (+15.6pp) |
-| arm_1_pure_momentum | 2010_2024 | 849.1% | 583.8% | +265.3pp | 1.05 | -27.1% | ✓ BEATS (+265.3pp) |
-| arm_1_pure_momentum | 2022_stress | -0.8% | -18.6% | +17.8pp | 0.05 | -13.8% | ✓ PASS (+17.8pp) |
-| arm_1_pure_momentum | 2000_2002_stress | -15.9% | -37.0% | +21.1pp | -0.12 | -33.1% | ✓ PASS (+21.1pp) |
+| arm_1_pure_momentum | 2010_2024 | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
+| arm_1_pure_momentum | 2022_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
+| arm_1_pure_momentum | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_1_pure_momentum | 2008_2009_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
-| arm_2_momentum_div_drip | 2020_2024 | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
+| arm_2_momentum_div_drip | 2020_2024 | 127.4% | 95.3% | +32.1pp | 0.92 | -31.6% | ✓ BEATS (+32.1pp) |
 | arm_2_momentum_div_drip | 2010_2024 | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_2_momentum_div_drip | 2022_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
-| arm_2_momentum_div_drip | 2000_2002_stress | -14.8% | -37.0% | +22.3pp | -0.19 | -27.2% | ✓ PASS (+22.3pp) |
+| arm_2_momentum_div_drip | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_2_momentum_div_drip | 2008_2009_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
-| arm_3_momentum_div_cc_drip | 2020_2024 | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
+| arm_3_momentum_div_cc_drip | 2020_2024 | 125.0% | 95.3% | +29.7pp | 0.92 | -31.6% | ✓ BEATS (+29.7pp) |
 | arm_3_momentum_div_cc_drip | 2010_2024 | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_3_momentum_div_cc_drip | 2022_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
-| arm_3_momentum_div_cc_drip | 2000_2002_stress | -14.3% | -37.0% | +22.7pp | -0.18 | -26.8% | ✓ PASS (+22.7pp) |
+| arm_3_momentum_div_cc_drip | 2000_2002_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 | arm_3_momentum_div_cc_drip | 2008_2009_stress | N/A | N/A | N/A | N/A | N/A | DATA UNAVAILABLE |
 
 ---
@@ -53,41 +53,11 @@ with materially milder drawdowns than pure Arm C (without lagging Arm C badly on
 - **Correlation:** 0.84
 - **Verdict:** ✓ BEATS (+15.6pp)
 
-**2010_2024** (2010-01-01 to 2024-12-31) - primary window
+**2010_2024** (2010-01-01 to 2024-12-31): *Data unavailable*
 
-- **Strategy Total Return:** 849.09% (ann. 16.22%)
-- **SPY Total Return:** 583.77% (ann. 13.70%)
-- **Excess Return:** +265.32pp (ann. +2.52pp)
-- **Sharpe Ratio:** 1.05
-- **Sortino Ratio:** 1.61
-- **Max Drawdown:** -27.10% (vs SPY -33.72%)
-- **Beta:** 0.75
-- **Correlation:** 0.83
-- **Verdict:** ✓ BEATS (+265.3pp)
+**2022_stress** (2022-01-01 to 2022-12-31): *Data unavailable*
 
-**2022_stress** (2022-01-01 to 2022-12-31) - stress test
-
-- **Strategy Total Return:** -0.83% (ann. -0.84%)
-- **SPY Total Return:** -18.65% (ann. -18.71%)
-- **Excess Return:** +17.81pp (ann. +17.88pp)
-- **Sharpe Ratio:** 0.05
-- **Sortino Ratio:** 0.07
-- **Max Drawdown:** -13.76% (vs SPY -24.50%)
-- **Beta:** 0.68
-- **Correlation:** 0.87
-- **Verdict:** ✓ PASS (+17.8pp)
-
-**2000_2002_stress** (2000-01-01 to 2002-12-31) - stress test
-
-- **Strategy Total Return:** -15.91% (ann. -5.65%)
-- **SPY Total Return:** -37.01% (ann. -14.37%)
-- **Excess Return:** +21.11pp (ann. +8.72pp)
-- **Sharpe Ratio:** -0.12
-- **Sortino Ratio:** -0.17
-- **Max Drawdown:** -33.12% (vs SPY -47.52%)
-- **Beta:** 0.92
-- **Correlation:** 0.91
-- **Verdict:** ✓ PASS (+21.1pp)
+**2000_2002_stress** (2000-01-01 to 2002-12-31): *Data unavailable*
 
 **2008_2009_stress** (2008-01-01 to 2009-12-31): *Data unavailable*
 
@@ -104,23 +74,23 @@ with materially milder drawdowns than pure Arm C (without lagging Arm C badly on
 
 ### Performance by Window
 
-**2020_2024** (2020-01-01 to 2024-12-31): *Data unavailable*
+**2020_2024** (2020-01-01 to 2024-12-31) - primary window
+
+- **Strategy Total Return:** 127.36% (ann. 17.90%)
+- **SPY Total Return:** 95.30% (ann. 14.36%)
+- **Excess Return:** +32.07pp (ann. +3.54pp)
+- **Sharpe Ratio:** 0.92
+- **Sortino Ratio:** 1.32
+- **Max Drawdown:** -31.62% (vs SPY -33.72%)
+- **Beta:** 0.93
+- **Correlation:** 0.97
+- **Verdict:** ✓ BEATS (+32.1pp)
 
 **2010_2024** (2010-01-01 to 2024-12-31): *Data unavailable*
 
 **2022_stress** (2022-01-01 to 2022-12-31): *Data unavailable*
 
-**2000_2002_stress** (2000-01-01 to 2002-12-31) - stress test
-
-- **Strategy Total Return:** -14.75% (ann. -5.21%)
-- **SPY Total Return:** -37.01% (ann. -14.37%)
-- **Excess Return:** +22.27pp (ann. +9.15pp)
-- **Sharpe Ratio:** -0.19
-- **Sortino Ratio:** -0.27
-- **Max Drawdown:** -27.22% (vs SPY -47.52%)
-- **Beta:** 0.71
-- **Correlation:** 0.91
-- **Verdict:** ✓ PASS (+22.3pp)
+**2000_2002_stress** (2000-01-01 to 2002-12-31): *Data unavailable*
 
 **2008_2009_stress** (2008-01-01 to 2009-12-31): *Data unavailable*
 
@@ -137,23 +107,23 @@ with materially milder drawdowns than pure Arm C (without lagging Arm C badly on
 
 ### Performance by Window
 
-**2020_2024** (2020-01-01 to 2024-12-31): *Data unavailable*
+**2020_2024** (2020-01-01 to 2024-12-31) - primary window
+
+- **Strategy Total Return:** 124.99% (ann. 17.65%)
+- **SPY Total Return:** 95.30% (ann. 14.36%)
+- **Excess Return:** +29.70pp (ann. +3.29pp)
+- **Sharpe Ratio:** 0.92
+- **Sortino Ratio:** 1.31
+- **Max Drawdown:** -31.62% (vs SPY -33.72%)
+- **Beta:** 0.92
+- **Correlation:** 0.97
+- **Verdict:** ✓ BEATS (+29.7pp)
 
 **2010_2024** (2010-01-01 to 2024-12-31): *Data unavailable*
 
 **2022_stress** (2022-01-01 to 2022-12-31): *Data unavailable*
 
-**2000_2002_stress** (2000-01-01 to 2002-12-31) - stress test
-
-- **Strategy Total Return:** -14.32% (ann. -5.05%)
-- **SPY Total Return:** -37.01% (ann. -14.37%)
-- **Excess Return:** +22.69pp (ann. +9.31pp)
-- **Sharpe Ratio:** -0.18
-- **Sortino Ratio:** -0.26
-- **Max Drawdown:** -26.83% (vs SPY -47.52%)
-- **Beta:** 0.71
-- **Correlation:** 0.91
-- **Verdict:** ✓ PASS (+22.7pp)
+**2000_2002_stress** (2000-01-01 to 2002-12-31): *Data unavailable*
 
 **2008_2009_stress** (2008-01-01 to 2009-12-31): *Data unavailable*
 

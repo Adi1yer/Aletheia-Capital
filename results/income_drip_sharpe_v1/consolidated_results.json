@@ -1,0 +1,478 @@
+{
+  "meta": {
+    "date": "2026-09-26",
+    "branch": "cursor/income-drip-bakeoff-8fc2",
+    "pr": "#11",
+    "status": "Complete (All 3 Goals)"
+  },
+  "goal_1_turnover_audit": {
+    "status": "KEEP",
+    "description": "Fixed full liquidation bug, implemented delta rebalancing",
+    "2020_2024": {
+      "before_fix": {
+        "start_nav": 10000.0,
+        "end_nav": 22736.26,
+        "abs_return_pct": 127.36,
+        "abs_return_usd": 12736.26,
+        "ann_return_pct": 17.9,
+        "spy_return_pct": 95.3,
+        "spy_ann_return_pct": 14.36,
+        "excess_return_pct": 32.07,
+        "excess_return_usd": 3206.71,
+        "excess_ann_return_pct": 3.54,
+        "max_drawdown_pct": -31.62,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.76,
+        "sharpe": 0.92,
+        "sortino": 1.32,
+        "beta": 0.93,
+        "correlation": 0.97,
+        "alpha_annual_pct": 3.98,
+        "hit_rate_pct": 56.0,
+        "hit_sessions": 703,
+        "total_sessions": 1256,
+        "turnover_annual": 14.32,
+        "trade_counts": {
+          "buys": 1000,
+          "sells": 935
+        },
+        "years": 4.99,
+        "arm": "arm_2_momentum_div_drip",
+        "benchmark": "SPY"
+      },
+      "after_fix": {
+        "start_nav": 10000.0,
+        "end_nav": 25032.64,
+        "abs_return_pct": 150.33,
+        "abs_return_usd": 15032.64,
+        "ann_return_pct": 20.2,
+        "spy_return_pct": 95.3,
+        "spy_ann_return_pct": 14.36,
+        "excess_return_pct": 55.03,
+        "excess_return_usd": 5503.09,
+        "excess_ann_return_pct": 5.84,
+        "max_drawdown_pct": -30.13,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.77,
+        "sharpe": 1.01,
+        "sortino": 1.45,
+        "beta": 0.95,
+        "correlation": 0.98,
+        "alpha_annual_pct": 5.6,
+        "hit_rate_pct": 55.2,
+        "hit_sessions": 693,
+        "total_sessions": 1256,
+        "turnover_annual": 1.06,
+        "trade_counts": {
+          "buys": 295,
+          "sells": 323
+        },
+        "years": 4.99,
+        "arm": "arm_2_momentum_div_drip",
+        "benchmark": "SPY"
+      }
+    },
+    "2010_2024": {
+      "before_fix": {
+        "start_nav": 10000.0,
+        "end_nav": 114980.31,
+        "abs_return_pct": 1049.8,
+        "abs_return_usd": 104980.31,
+        "ann_return_pct": 17.72,
+        "spy_return_pct": 583.77,
+        "spy_ann_return_pct": 13.7,
+        "excess_return_pct": 466.04,
+        "excess_return_usd": 46603.68,
+        "excess_ann_return_pct": 4.02,
+        "max_drawdown_pct": -32.96,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.76,
+        "sharpe": 1.08,
+        "sortino": 1.52,
+        "beta": 0.94,
+        "correlation": 0.98,
+        "alpha_annual_pct": 4.17,
+        "hit_rate_pct": 56.6,
+        "hit_sessions": 2136,
+        "total_sessions": 3772,
+        "turnover_annual": 42.71,
+        "trade_counts": {
+          "buys": 3000,
+          "sells": 2935
+        },
+        "years": 14.97,
+        "arm": "arm_2_momentum_div_drip",
+        "benchmark": "SPY"
+      },
+      "after_fix": {
+        "start_nav": 10000.0,
+        "end_nav": 131769.16,
+        "abs_return_pct": 1217.69,
+        "abs_return_usd": 121769.16,
+        "ann_return_pct": 18.79,
+        "spy_return_pct": 583.77,
+        "spy_ann_return_pct": 13.7,
+        "excess_return_pct": 633.93,
+        "excess_return_usd": 63392.51,
+        "excess_ann_return_pct": 5.09,
+        "max_drawdown_pct": -33.51,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.74,
+        "sharpe": 1.08,
+        "sortino": 1.53,
+        "beta": 1.0,
+        "correlation": 0.98,
+        "alpha_annual_pct": 4.47,
+        "hit_rate_pct": 56.9,
+        "hit_sessions": 2146,
+        "total_sessions": 3772,
+        "turnover_annual": 2.29,
+        "trade_counts": {
+          "buys": 861,
+          "sells": 1202
+        },
+        "years": 14.97,
+        "arm": "arm_2_momentum_div_drip",
+        "benchmark": "SPY"
+      }
+    }
+  },
+  "goal_2_sleeve_weight_grid": {
+    "status": "KEEP 80/20, ABANDON 90/10 and 70/30",
+    "description": "Tested 90/10, 80/20, 70/30 growth/ballast splits. 80/20 wins on both windows.",
+    "keep_bar": "Sharpe must improve on BOTH windows vs 80/20 baseline",
+    "2020_2024": {
+      "90_10": {
+        "start_nav": 10000.0,
+        "end_nav": 25414.27,
+        "abs_return_pct": 154.14,
+        "abs_return_usd": 15414.27,
+        "ann_return_pct": 20.56,
+        "spy_return_pct": 95.3,
+        "spy_ann_return_pct": 14.36,
+        "excess_return_pct": 58.85,
+        "excess_return_usd": 5884.72,
+        "excess_ann_return_pct": 6.2,
+        "max_drawdown_pct": -30.02,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.73,
+        "sharpe": 0.99,
+        "sortino": 1.42,
+        "beta": 0.99,
+        "correlation": 0.98,
+        "alpha_annual_pct": 5.46,
+        "hit_rate_pct": 55.0,
+        "hit_sessions": 691,
+        "total_sessions": 1256,
+        "turnover_annual": 1.09,
+        "trade_counts": {
+          "buys": 262,
+          "sells": 283
+        },
+        "years": 4.99,
+        "arm": "sleeve_90_10",
+        "benchmark": "SPY"
+      },
+      "80_20": {
+        "start_nav": 10000.0,
+        "end_nav": 25032.64,
+        "abs_return_pct": 150.33,
+        "abs_return_usd": 15032.64,
+        "ann_return_pct": 20.2,
+        "spy_return_pct": 95.3,
+        "spy_ann_return_pct": 14.36,
+        "excess_return_pct": 55.03,
+        "excess_return_usd": 5503.09,
+        "excess_ann_return_pct": 5.84,
+        "max_drawdown_pct": -30.13,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.77,
+        "sharpe": 1.01,
+        "sortino": 1.45,
+        "beta": 0.95,
+        "correlation": 0.98,
+        "alpha_annual_pct": 5.6,
+        "hit_rate_pct": 55.2,
+        "hit_sessions": 693,
+        "total_sessions": 1256,
+        "turnover_annual": 1.06,
+        "trade_counts": {
+          "buys": 295,
+          "sells": 323
+        },
+        "years": 4.99,
+        "arm": "sleeve_80_20",
+        "benchmark": "SPY"
+      },
+      "70_30": {
+        "start_nav": 10000.0,
+        "end_nav": 23992.08,
+        "abs_return_pct": 139.92,
+        "abs_return_usd": 13992.08,
+        "ann_return_pct": 19.18,
+        "spy_return_pct": 95.3,
+        "spy_ann_return_pct": 14.36,
+        "excess_return_pct": 44.63,
+        "excess_return_usd": 4462.53,
+        "excess_ann_return_pct": 4.82,
+        "max_drawdown_pct": -30.24,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.8,
+        "sharpe": 0.99,
+        "sortino": 1.42,
+        "beta": 0.92,
+        "correlation": 0.98,
+        "alpha_annual_pct": 5.13,
+        "hit_rate_pct": 55.3,
+        "hit_sessions": 694,
+        "total_sessions": 1256,
+        "turnover_annual": 1.01,
+        "trade_counts": {
+          "buys": 292,
+          "sells": 314
+        },
+        "years": 4.99,
+        "arm": "sleeve_70_30",
+        "benchmark": "SPY"
+      }
+    },
+    "2010_2024": {
+      "90_10": {
+        "start_nav": 10000.0,
+        "end_nav": 132062.32,
+        "abs_return_pct": 1220.62,
+        "abs_return_usd": 122062.32,
+        "ann_return_pct": 18.81,
+        "spy_return_pct": 583.77,
+        "spy_ann_return_pct": 13.7,
+        "excess_return_pct": 636.86,
+        "excess_return_usd": 63685.67,
+        "excess_ann_return_pct": 5.11,
+        "max_drawdown_pct": -34.29,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.66,
+        "sharpe": 1.04,
+        "sortino": 1.47,
+        "beta": 1.04,
+        "correlation": 0.98,
+        "alpha_annual_pct": 4.02,
+        "hit_rate_pct": 55.9,
+        "hit_sessions": 2110,
+        "total_sessions": 3772,
+        "turnover_annual": 2.4,
+        "trade_counts": {
+          "buys": 793,
+          "sells": 1099
+        },
+        "years": 14.97,
+        "arm": "sleeve_90_10",
+        "benchmark": "SPY"
+      },
+      "80_20": {
+        "start_nav": 10000.0,
+        "end_nav": 131715.42,
+        "abs_return_pct": 1217.15,
+        "abs_return_usd": 121715.42,
+        "ann_return_pct": 18.79,
+        "spy_return_pct": 583.77,
+        "spy_ann_return_pct": 13.7,
+        "excess_return_pct": 633.39,
+        "excess_return_usd": 63338.77,
+        "excess_ann_return_pct": 5.09,
+        "max_drawdown_pct": -33.51,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.74,
+        "sharpe": 1.08,
+        "sortino": 1.53,
+        "beta": 1.0,
+        "correlation": 0.98,
+        "alpha_annual_pct": 4.47,
+        "hit_rate_pct": 56.9,
+        "hit_sessions": 2146,
+        "total_sessions": 3772,
+        "turnover_annual": 2.29,
+        "trade_counts": {
+          "buys": 861,
+          "sells": 1202
+        },
+        "years": 14.97,
+        "arm": "sleeve_80_20",
+        "benchmark": "SPY"
+      },
+      "70_30": {
+        "start_nav": 10000.0,
+        "end_nav": 122959.03,
+        "abs_return_pct": 1129.59,
+        "abs_return_usd": 112959.03,
+        "ann_return_pct": 18.25,
+        "spy_return_pct": 583.77,
+        "spy_ann_return_pct": 13.7,
+        "excess_return_pct": 545.82,
+        "excess_return_usd": 54582.38,
+        "excess_ann_return_pct": 4.54,
+        "max_drawdown_pct": -33.71,
+        "spy_max_drawdown_pct": -33.72,
+        "current_drawdown_pct": -2.87,
+        "sharpe": 1.09,
+        "sortino": 1.55,
+        "beta": 0.96,
+        "correlation": 0.98,
+        "alpha_annual_pct": 4.47,
+        "hit_rate_pct": 56.9,
+        "hit_sessions": 2148,
+        "total_sessions": 3772,
+        "turnover_annual": 2.09,
+        "trade_counts": {
+          "buys": 889,
+          "sells": 1232
+        },
+        "years": 14.97,
+        "arm": "sleeve_70_30",
+        "benchmark": "SPY"
+      }
+    },
+    "verdicts": {
+      "90_10": {
+        "verdict": "ABANDON",
+        "reason": "Sharpe worse than 80/20 on BOTH windows",
+        "sharpe_delta_2020_2024": -0.02,
+        "sharpe_delta_2010_2024": -0.04
+      },
+      "80_20": {
+        "verdict": "KEEP",
+        "reason": "Best Sharpe on both windows (baseline winner)"
+      },
+      "70_30": {
+        "verdict": "ABANDON",
+        "reason": "Beats 80/20 on 2010-24 but worse on 2020-24; fails BOTH windows requirement",
+        "sharpe_delta_2020_2024": -0.02,
+        "sharpe_delta_2010_2024": 0.01
+      }
+    }
+  },
+  "goal_3_vol_target_overlay": {
+    "status": "ABANDON",
+    "description": "15% vol-targeting tested on post-fix 80/20 baseline",
+    "keep_bar": "Sharpe must improve on BOTH windows vs untargeted baseline",
+    "configuration": {
+      "target_vol_pct": 15.0,
+      "lookback_days": 63,
+      "method": "Exposure = min(1.0, target_vol / realized_vol_63d)",
+      "no_lookahead": true
+    },
+    "results": {
+      "2020_2024": {
+        "baseline": {
+          "start_nav": 10000.0,
+          "end_nav": 25032.637068896158,
+          "abs_return_pct": 150.33,
+          "ann_return_pct": 20.19,
+          "spy_return_pct": 95.3,
+          "spy_ann_return_pct": 14.35,
+          "excess_return_pct": 55.03,
+          "excess_ann_return_pct": 5.83,
+          "max_drawdown_pct": -30.13,
+          "spy_max_drawdown_pct": -33.72,
+          "current_drawdown_pct": -2.77,
+          "sharpe": 0.993,
+          "sortino": 1.424,
+          "ann_volatility_pct": 20.33,
+          "years": 4.99
+        },
+        "vol_target": {
+          "start_nav": 10000.0,
+          "end_nav": 19697.09733512648,
+          "abs_return_pct": 96.97,
+          "ann_return_pct": 14.55,
+          "spy_return_pct": 95.3,
+          "spy_ann_return_pct": 14.35,
+          "excess_return_pct": 1.68,
+          "excess_ann_return_pct": 0.2,
+          "max_drawdown_pct": -30.13,
+          "spy_max_drawdown_pct": -33.72,
+          "current_drawdown_pct": -2.77,
+          "sharpe": 0.825,
+          "sortino": 1.161,
+          "ann_volatility_pct": 17.64,
+          "years": 4.99,
+          "target_vol_pct": 15.0,
+          "lookback_days": 63,
+          "avg_exposure_pct": 87.8,
+          "min_exposure_pct": 25.5,
+          "max_exposure_pct": 100.0
+        },
+        "sharpe_delta": -0.168
+      },
+      "2010_2024": {
+        "baseline": {
+          "start_nav": 10000.0,
+          "end_nav": 131715.42218474625,
+          "abs_return_pct": 1217.15,
+          "ann_return_pct": 18.79,
+          "spy_return_pct": 583.77,
+          "spy_ann_return_pct": 13.7,
+          "excess_return_pct": 633.39,
+          "excess_ann_return_pct": 5.09,
+          "max_drawdown_pct": -33.51,
+          "spy_max_drawdown_pct": -33.72,
+          "current_drawdown_pct": -2.74,
+          "sharpe": 1.084,
+          "sortino": 1.535,
+          "ann_volatility_pct": 17.33,
+          "years": 14.97
+        },
+        "vol_target": {
+          "start_nav": 10000.0,
+          "end_nav": 90808.89300230065,
+          "abs_return_pct": 808.09,
+          "ann_return_pct": 15.88,
+          "spy_return_pct": 583.77,
+          "spy_ann_return_pct": 13.7,
+          "excess_return_pct": 224.32,
+          "excess_ann_return_pct": 2.18,
+          "max_drawdown_pct": -21.61,
+          "spy_max_drawdown_pct": -33.72,
+          "current_drawdown_pct": -2.74,
+          "sharpe": 1.164,
+          "sortino": 1.631,
+          "ann_volatility_pct": 13.64,
+          "years": 14.97,
+          "target_vol_pct": 15.0,
+          "lookback_days": 63,
+          "avg_exposure_pct": 90.6,
+          "min_exposure_pct": 23.8,
+          "max_exposure_pct": 100.0
+        },
+        "sharpe_delta": 0.08
+      }
+    },
+    "verdict": {
+      "decision": "ABANDON",
+      "reason": "Improves Sharpe on 2010-24 (+0.080) but hurts on 2020-24 (-0.168); fails BOTH windows requirement",
+      "2020_2024_verdict": "WORSE (Sharpe -0.168)",
+      "2010_2024_verdict": "BETTER (Sharpe +0.080)"
+    }
+  },
+  "production_baseline": {
+    "configuration": {
+      "growth_weight": 0.8,
+      "ballast_weight": 0.2,
+      "rebalance_frequency": "quarterly",
+      "trading_cost_pct": 0.0007
+    },
+    "expected_performance": {
+      "2020_2024": {
+        "sharpe": 1.01,
+        "ann_return_pct": 20.2,
+        "max_drawdown_pct": -30.13,
+        "turnover_annual": 1.06
+      },
+      "2010_2024": {
+        "sharpe": 1.08,
+        "ann_return_pct": 18.79,
+        "max_drawdown_pct": -33.51,
+        "turnover_annual": 2.29
+      }
+    }
+  }
+}

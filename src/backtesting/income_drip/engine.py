@@ -217,10 +217,13 @@ class IncomeDripBacktest:
         self.price_history: Dict[str, List[Tuple[date, float]]] = {}
         self.last_rebalance_date: Optional[date] = None
     
-    def load_price_history(self, ticker: str, data_provider):
-        """Load historical prices for a ticker."""
+    def load_price_history(self, ticker: str, data_provider, cache=None):
+        """Load historical prices for a ticker (with optional caching)."""
         try:
-            prices = data_provider.get_prices(ticker, self.start_date, self.end_date)
+            if cache:
+                prices = cache.get_prices(ticker, self.start_date, self.end_date, data_provider)
+            else:
+                prices = data_provider.get_prices(ticker, self.start_date, self.end_date)
             
             history = []
             for p in prices:
@@ -265,6 +268,7 @@ class IncomeDripBacktest:
         self,
         trade_date: date,
         data_provider,
+        cache=None,
     ):
         """
         Collect dividends for ballast holdings.
@@ -280,11 +284,19 @@ class IncomeDripBacktest:
             start = self.last_rebalance_date or date.fromisoformat(self.start_date)
             
             try:
-                dividends = data_provider.get_dividends(
-                    ticker,
-                    start.isoformat(),
-                    trade_date.isoformat(),
-                )
+                if cache:
+                    dividends = cache.get_dividends(
+                        ticker,
+                        start.isoformat(),
+                        trade_date.isoformat(),
+                        data_provider,
+                    )
+                else:
+                    dividends = data_provider.get_dividends(
+                        ticker,
+                        start.isoformat(),
+                        trade_date.isoformat(),
+                    )
                 
                 for div in dividends:
                     amount_per_share = div.amount
@@ -517,17 +529,14 @@ class IncomeDripBacktest:
         Rebalance portfolio to target sleeve weights + drip accumulated cash into growth.
         
         Steps:
-        1. Collect any pending dividends
+        1. Collect any pending dividends (already done before calling)
         2. Expire any matured CCs
         3. Combine cash + drip_cash for rebalancing
         4. Deploy to target sleeve weights (growth_weight%, ballast_weight%)
-        5. Allocate extra drip_cash to growth sleeve (buy more growth names)
+        5. Only trade deltas (not full liquidation/rebuild)
         6. Write new CCs on ballast (if enabled)
         """
         logger.info(f"Rebalancing on {trade_date}", drip_cash=self.portfolio.accumulated_drip_cash)
-        
-        # Collect dividends
-        # (Dividends are collected daily in run loop, so this is redundant but safe)
         
         # Expire CCs
         self.expire_covered_calls(trade_date, prices)
@@ -549,41 +558,74 @@ class IncomeDripBacktest:
         
         logger.info(f"Deploying drip cash to growth", drip_cash=drip_deployed, total_cash=total_cash)
         
-        # Liquidate all positions (simple rebalance)
+        # Get current holdings
         current_holdings = self.portfolio.get_holdings()
-        for ticker, shares in current_holdings.items():
-            price = prices.get(ticker)
-            if price and price > 0:
-                net_price = price * (1.0 - self.trading_cost_pct)
-                self.portfolio.sell_position(ticker, shares, net_price, trade_date)
         
-        # Reserve cash for trading costs
-        cost_reserve_factor = (len(growth_universe) + len(ballast_universe)) * self.trading_cost_pct
-        available_nav = self.portfolio.cash / (1.0 + cost_reserve_factor)
+        # Target allocations based on TOTAL NAV (not just cash)
+        # We use current_nav which includes both cash and positions
+        growth_target_nav = current_nav * self.growth_weight
+        ballast_target_nav = current_nav * self.ballast_weight
         
-        # Target allocations
-        growth_target_nav = available_nav * self.growth_weight
-        ballast_target_nav = available_nav * self.ballast_weight
+        # Calculate target $ values for each name
+        target_values = {}
         
-        # Buy growth names (equal weight within sleeve)
+        # Growth names (equal weight within growth sleeve)
         if growth_universe:
             target_per_name = growth_target_nav / len(growth_universe)
             for ticker in growth_universe:
-                price = prices.get(ticker)
-                if price and price > 0:
-                    shares = target_per_name / price
-                    net_price = price * (1.0 + self.trading_cost_pct)
-                    self.portfolio.add_position(ticker, shares, net_price, trade_date, "growth")
+                if ticker in prices and prices[ticker] > 0:
+                    target_values[ticker] = target_per_name
         
-        # Buy ballast names (equal weight within sleeve)
+        # Ballast names (equal weight within ballast sleeve)
         if ballast_universe:
             target_per_name = ballast_target_nav / len(ballast_universe)
             for ticker in ballast_universe:
+                if ticker in prices and prices[ticker] > 0:
+                    target_values[ticker] = target_per_name
+        
+        # Sell positions no longer in target
+        for ticker in list(current_holdings.keys()):
+            if ticker not in target_values:
                 price = prices.get(ticker)
                 if price and price > 0:
-                    shares = target_per_name / price
-                    net_price = price * (1.0 + self.trading_cost_pct)
-                    self.portfolio.add_position(ticker, shares, net_price, trade_date, "ballast")
+                    shares = current_holdings[ticker]
+                    net_price = price * (1.0 - self.trading_cost_pct)
+                    self.portfolio.sell_position(ticker, shares, net_price, trade_date)
+        
+        # Adjust positions to target
+        current_holdings = self.portfolio.get_holdings()  # Refresh after sells
+        
+        for ticker, target_value in target_values.items():
+            price = prices.get(ticker)
+            if not price or price <= 0:
+                continue
+            
+            current_shares = current_holdings.get(ticker, 0.0)
+            current_value = current_shares * price
+            
+            delta_value = target_value - current_value
+            
+            # Only trade if delta is significant (>$10 or >1% of target)
+            if abs(delta_value) < max(10.0, target_value * 0.01):
+                continue
+            
+            if delta_value > 0:
+                # Buy more
+                delta_shares = delta_value / price
+                net_price = price * (1.0 + self.trading_cost_pct)
+                
+                # Determine sleeve
+                if ticker in growth_universe:
+                    sleeve = "growth"
+                else:
+                    sleeve = "ballast"
+                
+                self.portfolio.add_position(ticker, delta_shares, net_price, trade_date, sleeve)
+            else:
+                # Sell some
+                delta_shares = abs(delta_value) / price
+                net_price = price * (1.0 - self.trading_cost_pct)
+                self.portfolio.sell_position(ticker, delta_shares, net_price, trade_date)
         
         # Write covered calls on ballast (if enabled)
         if self.cc_enabled:
@@ -593,6 +635,7 @@ class IncomeDripBacktest:
         self,
         data_provider,
         arm_name: str = "income_drip",
+        cache=None,
     ) -> Dict:
         """Run backtest simulation."""
         logger.info(
@@ -609,7 +652,7 @@ class IncomeDripBacktest:
         # Load benchmark
         benchmark_loaded = False
         for candidate in [self.benchmark_ticker, "SPY"]:
-            self.load_price_history(candidate, data_provider)
+            self.load_price_history(candidate, data_provider, cache)
             if self.price_history.get(candidate):
                 self.benchmark_ticker = candidate
                 benchmark_loaded = True
@@ -651,7 +694,7 @@ class IncomeDripBacktest:
         # Load price history for all tickers
         for ticker in set(growth_universe + ballast_universe):
             if ticker not in self.price_history:
-                self.load_price_history(ticker, data_provider)
+                self.load_price_history(ticker, data_provider, cache)
         
         # Get prices for first day
         prices = {t: self.get_price_on_date(t, first_date) or 0.0 for t in set(growth_universe + ballast_universe)}
@@ -662,11 +705,11 @@ class IncomeDripBacktest:
         
         # Daily loop
         for i, trade_date in enumerate(trading_dates[1:], start=1):
-            # Collect dividends daily (they accumulate)
-            self.collect_dividends(trade_date, data_provider)
-            
             # Check if rebalance needed
             if self.should_rebalance(trade_date):
+                # Collect dividends since last rebalance (do this BEFORE rebalancing)
+                self.collect_dividends(trade_date, data_provider, cache)
+                
                 # Refresh universes
                 growth_universe = get_point_in_time_quality_universe(
                     trade_date,
@@ -682,7 +725,7 @@ class IncomeDripBacktest:
                 # Load any new tickers
                 for ticker in set(growth_universe + ballast_universe):
                     if ticker not in self.price_history:
-                        self.load_price_history(ticker, data_provider)
+                        self.load_price_history(ticker, data_provider, cache)
                 
                 # Get prices
                 prices = {t: self.get_price_on_date(t, trade_date) or 0.0 for t in set(growth_universe + ballast_universe)}

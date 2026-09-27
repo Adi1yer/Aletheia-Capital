@@ -1,0 +1,31 @@
+{
+  "start_nav": 10000.0,
+  "end_nav": 23992.08,
+  "abs_return_pct": 139.92,
+  "abs_return_usd": 13992.08,
+  "ann_return_pct": 19.18,
+  "spy_return_pct": 95.3,
+  "spy_ann_return_pct": 14.36,
+  "excess_return_pct": 44.63,
+  "excess_return_usd": 4462.53,
+  "excess_ann_return_pct": 4.82,
+  "max_drawdown_pct": -30.24,
+  "spy_max_drawdown_pct": -33.72,
+  "current_drawdown_pct": -2.8,
+  "sharpe": 0.99,
+  "sortino": 1.42,
+  "beta": 0.92,
+  "correlation": 0.98,
+  "alpha_annual_pct": 5.13,
+  "hit_rate_pct": 55.3,
+  "hit_sessions": 694,
+  "total_sessions": 1256,
+  "turnover_annual": 1.01,
+  "trade_counts": {
+    "buys": 292,
+    "sells": 314
+  },
+  "years": 4.99,
+  "arm": "sleeve_70_30",
+  "benchmark": "SPY"
+}
