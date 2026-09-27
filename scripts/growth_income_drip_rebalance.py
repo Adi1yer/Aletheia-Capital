@@ -35,15 +35,15 @@ logger = structlog.get_logger()
 
 
 def get_drip_broker() -> AlpacaBroker:
-    """Create Alpaca broker using ALPACA_DRIP_* secrets."""
-    api_key = os.getenv("ALPACA_DRIP_API_KEY")
-    secret_key = os.getenv("ALPACA_DRIP_SECRET_KEY")
-    base_url = os.getenv("ALPACA_DRIP_BASE_URL", "https://paper-api.alpaca.markets")
+    """Create Alpaca broker using DRIP_ALPACA_* secrets."""
+    api_key = os.getenv("DRIP_ALPACA_API_KEY")
+    secret_key = os.getenv("DRIP_ALPACA_SECRET_KEY")
+    base_url = os.getenv("DRIP_ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
     
     if not api_key or not secret_key:
         raise ValueError(
-            "Missing ALPACA_DRIP_API_KEY or ALPACA_DRIP_SECRET_KEY. "
-            "Set these in GitHub Secrets for the second paper account."
+            "Missing DRIP_ALPACA_API_KEY or DRIP_ALPACA_SECRET_KEY. "
+            "Set these in GitHub Secrets for the drip paper account (requires separate Alpaca email)."
         )
     
     return AlpacaBroker(

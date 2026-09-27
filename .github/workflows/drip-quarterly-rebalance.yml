@@ -81,9 +81,9 @@ jobs:
 
       - name: Run quarterly rebalance
         env:
-          ALPACA_DRIP_API_KEY: ${{ secrets.ALPACA_DRIP_API_KEY }}
-          ALPACA_DRIP_SECRET_KEY: ${{ secrets.ALPACA_DRIP_SECRET_KEY }}
-          ALPACA_DRIP_BASE_URL: ${{ secrets.ALPACA_DRIP_BASE_URL }}
+          DRIP_ALPACA_API_KEY: ${{ secrets.DRIP_ALPACA_API_KEY }}
+          DRIP_ALPACA_SECRET_KEY: ${{ secrets.DRIP_ALPACA_SECRET_KEY }}
+          DRIP_ALPACA_BASE_URL: ${{ secrets.DRIP_ALPACA_BASE_URL }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}

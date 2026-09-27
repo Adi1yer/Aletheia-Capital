@@ -39,7 +39,7 @@ This track is a **completely separate** paper portfolio from the wheel-10k track
 | Aspect | Wheel Track | Drip Track |
 |--------|-------------|------------|
 | **Track ID** | `wheel-10k-paper-v1` | `growth-income-drip-v1` |
-| **Alpaca Secrets** | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL` | `ALPACA_DRIP_API_KEY`, `ALPACA_DRIP_SECRET_KEY`, `ALPACA_DRIP_BASE_URL` |
+| **Alpaca Secrets** | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL` | `DRIP_ALPACA_API_KEY`, `DRIP_ALPACA_SECRET_KEY`, `DRIP_ALPACA_BASE_URL` |
 | **Performance Path** | `data/performance/official/` | `data/performance/growth_income_drip_v1/` |
 | **Concurrency Group** | `aletheia-wheel-paper` | `aletheia-drip-paper` |
 | **Workflows** | `daily-wheel-scan.yml`, `wheel-options-daily.yml`, etc. | `drip-daily-snapshot.yml`, `drip-quarterly-rebalance.yml`, etc. |
@@ -47,30 +47,49 @@ This track is a **completely separate** paper portfolio from the wheel-10k track
 
 **Wheel workflows and secrets are NEVER read by drip workflows.**
 
+**Important:** Alpaca allows only **3 paper accounts per email**. This repo already uses all three:
+1. Main equity/wheel (`ALPACA_*`)
+2. Biotech (`BIOTECH_ALPACA_*`)
+3. Multi-sleeve satellite (`MULTI_SLEEVE_ALPACA_*`)
+
+To add drip, you must either:
+- **Create a second Alpaca login** (new email address) and generate keys from that account, OR
+- Disable one of the existing tracks (#2 or #3) to free a paper account slot
+
 ---
 
 ## Setup Instructions
 
-### 1. Create Second Alpaca Paper Account
+### 1. Create Alpaca Paper Account (Separate Email Required)
 
-1. Log in to [Alpaca](https://alpaca.markets/)
-2. Create a **new paper trading account** (separate from wheel account)
+**Important:** Alpaca allows only **3 paper accounts per email**. This repo already uses all three on the primary email. You have two options:
+
+**Option A: Create Second Alpaca Login (Recommended)**
+1. Sign up for Alpaca with a **new email address** (e.g., `your-email+drip@gmail.com` or a completely different email)
+2. Create a paper trading account under the new login
 3. Fund it with virtual capital (e.g., $10,000 to match track start NAV)
-4. Generate API keys for the new paper account:
+4. Generate API keys from the new account:
    - API Key ID
    - Secret Key
    - Base URL: `https://paper-api.alpaca.markets`
+
+**Option B: Free Up an Existing Paper Slot**
+1. Choose an existing track to disable (biotech or multi-sleeve satellite)
+2. Remove its workflows from GitHub Actions (or set `enabled: false` in `config/workflow_accounts.yaml`)
+3. Reuse that paper account for drip by generating new keys
 
 ### 2. Configure GitHub Secrets
 
 Add the following secrets to your repository (Settings > Secrets and variables > Actions):
 
-- `ALPACA_DRIP_API_KEY`: API key for the **drip paper account**
-- `ALPACA_DRIP_SECRET_KEY`: Secret key for the **drip paper account**
-- `ALPACA_DRIP_BASE_URL`: `https://paper-api.alpaca.markets` (or leave blank to use default)
+- `DRIP_ALPACA_API_KEY`: API key for the **drip paper account**
+- `DRIP_ALPACA_SECRET_KEY`: Secret key for the **drip paper account**
+- `DRIP_ALPACA_BASE_URL`: `https://paper-api.alpaca.markets` (optional, defaults to paper URL)
 
-**DO NOT overwrite or modify the existing `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` secrets!**  
-Those belong to the wheel track and must remain unchanged.
+**DO NOT overwrite or modify these existing secrets:**
+- `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` (wheel track)
+- `BIOTECH_ALPACA_API_KEY` / `BIOTECH_ALPACA_SECRET_KEY` (biotech)
+- `MULTI_SLEEVE_ALPACA_API_KEY` / `MULTI_SLEEVE_ALPACA_API_SECRET_KEY` (satellite)
 
 SMTP secrets (`SMTP_SERVER`, `SENDER_EMAIL`, etc.) are shared across tracks.
 
@@ -245,7 +264,8 @@ Potential improvements for later iterations:
 ## Troubleshooting
 
 ### Workflows Not Running
-- Check that secrets `ALPACA_DRIP_API_KEY` and `ALPACA_DRIP_SECRET_KEY` are set
+- Check that secrets `DRIP_ALPACA_API_KEY` and `DRIP_ALPACA_SECRET_KEY` are set
+- Verify they're from a **separate Alpaca email** (not reusing wheel/biotech/satellite keys)
 - Verify workflows are enabled in Actions tab
 - Check holiday/market gate in `scripts/should_run_daily_scan.py`
 

@@ -243,9 +243,9 @@ class TestSecretIsolation:
     def test_drip_secrets_distinct_from_wheel(self):
         """Test that drip uses separate secret names."""
         drip_secrets = {
-            "ALPACA_DRIP_API_KEY",
-            "ALPACA_DRIP_SECRET_KEY",
-            "ALPACA_DRIP_BASE_URL",
+            "DRIP_ALPACA_API_KEY",
+            "DRIP_ALPACA_SECRET_KEY",
+            "DRIP_ALPACA_BASE_URL",
         }
         
         wheel_secrets = {
@@ -258,28 +258,28 @@ class TestSecretIsolation:
         assert drip_secrets.isdisjoint(wheel_secrets)
     
     def test_drip_broker_requires_drip_secrets(self):
-        """Test that drip broker creation requires ALPACA_DRIP_* env vars."""
+        """Test that drip broker creation requires DRIP_ALPACA_* env vars."""
         # Clear drip secrets
-        old_api = os.environ.pop("ALPACA_DRIP_API_KEY", None)
-        old_secret = os.environ.pop("ALPACA_DRIP_SECRET_KEY", None)
+        old_api = os.environ.pop("DRIP_ALPACA_API_KEY", None)
+        old_secret = os.environ.pop("DRIP_ALPACA_SECRET_KEY", None)
         
         try:
             from scripts.growth_income_drip_rebalance import get_drip_broker
             
-            with pytest.raises(ValueError, match="ALPACA_DRIP"):
+            with pytest.raises(ValueError, match="DRIP_ALPACA"):
                 get_drip_broker()
         finally:
             # Restore if they existed
             if old_api:
-                os.environ["ALPACA_DRIP_API_KEY"] = old_api
+                os.environ["DRIP_ALPACA_API_KEY"] = old_api
             if old_secret:
-                os.environ["ALPACA_DRIP_SECRET_KEY"] = old_secret
+                os.environ["DRIP_ALPACA_SECRET_KEY"] = old_secret
     
     def test_drip_broker_uses_drip_base_url_default(self):
         """Test that drip broker defaults to paper URL."""
-        os.environ["ALPACA_DRIP_API_KEY"] = "test_key"
-        os.environ["ALPACA_DRIP_SECRET_KEY"] = "test_secret"
-        os.environ.pop("ALPACA_DRIP_BASE_URL", None)
+        os.environ["DRIP_ALPACA_API_KEY"] = "test_key"
+        os.environ["DRIP_ALPACA_SECRET_KEY"] = "test_secret"
+        os.environ.pop("DRIP_ALPACA_BASE_URL", None)
         
         try:
             from scripts.growth_income_drip_rebalance import get_drip_broker
@@ -292,8 +292,8 @@ class TestSecretIsolation:
                 args = mock_broker.call_args
                 assert args[1]["base_url"] == "https://paper-api.alpaca.markets"
         finally:
-            os.environ.pop("ALPACA_DRIP_API_KEY", None)
-            os.environ.pop("ALPACA_DRIP_SECRET_KEY", None)
+            os.environ.pop("DRIP_ALPACA_API_KEY", None)
+            os.environ.pop("DRIP_ALPACA_SECRET_KEY", None)
 
 
 class TestDeltaRebalance:
