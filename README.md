@@ -48,6 +48,18 @@ export POLYGON_API_KEY="your_key"
 
 Legacy **Beat SPY** (`beat-spy-10k`) remains in the repo but is **not** the scheduled paper runner.
 
+### Sibling Track: Growth-Income-Drip
+
+**NEW:** A second paper track (`growth-income-drip-v1`) runs on a separate Alpaca paper account to test a pure equity momentum+dividend strategy without options. See **[docs/GROWTH_INCOME_DRIP_PAPER_TRACK.md](docs/GROWTH_INCOME_DRIP_PAPER_TRACK.md)** for full details.
+
+**Key differences from wheel:**
+- 80% growth (Arm C 12-1 momentum) + 20% dividend ballast
+- Quarterly rebalance with delta trading only
+- NO covered calls, NO CSPs, NO vol-targeting
+- Dividends drip into growth sleeve at rebalance
+- Uses separate secrets: `ALPACA_DRIP_API_KEY`, `ALPACA_DRIP_SECRET_KEY`
+- Completely isolated: wheel workflows never touch drip account
+
 ## How It Works
 
 ```mermaid
