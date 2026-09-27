@@ -20,8 +20,16 @@ def test_resolve_legacy_stock():
 def test_single_primary_account_group():
     reg = load_workflow_registry()
     enabled = [w for w in reg.values() if w.enabled]
-    assert len(enabled) == 1
-    assert enabled[0].workflow_id == "weekly-scan"
+    # Now we have two enabled workflows: weekly-scan (wheel) and growth-income-drip
+    assert len(enabled) == 2
+    enabled_ids = {w.workflow_id for w in enabled}
+    assert "weekly-scan" in enabled_ids
+    assert "growth-income-drip" in enabled_ids
+    # Verify weekly-scan is primary account group
+    assert reg["weekly-scan"].account_group == "primary"
+    # Verify drip is its own account group
+    assert reg["growth-income-drip"].account_group == "drip"
+    # Verify satellite workflows are still primary (disabled)
     assert reg["hedge-weekly"].account_group == "primary"
     assert reg["options-income"].account_group == "primary"
 
