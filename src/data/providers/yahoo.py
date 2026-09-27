@@ -1,5 +1,12 @@
 """Yahoo Finance data provider (free)"""
 
+# IMPORTANT: Load websockets.asyncio before yfinance to avoid import error
+# See: https://github.com/ranaroussi/yfinance/issues/1729
+try:
+    import websockets.asyncio
+except ImportError:
+    pass  # Ignore if websockets < 13.0
+
 from typing import List, Optional
 from datetime import datetime, date
 from src.data.models import Price, FinancialMetrics, LineItem, CompanyNews
@@ -215,6 +222,50 @@ class YahooFinanceProvider(DataProvider):
             logger.debug("Could not fetch company news", ticker=ticker, error=str(e))
             return []
 
+    def get_dividends(
+        self,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+    ) -> List:
+        """
+        Fetch historical dividend data from Yahoo Finance.
+        
+        Returns list of objects with .date and .amount attributes.
+        """
+        import yfinance as yf
+        from dataclasses import dataclass
+        
+        @dataclass
+        class Dividend:
+            date: date
+            amount: float
+        
+        try:
+            stock = yf.Ticker(ticker)
+            df = stock.dividends
+            
+            if df.empty:
+                return []
+            
+            # Filter by date range
+            df = df[(df.index >= start_date) & (df.index <= end_date)]
+            
+            if df.empty:
+                return []
+            
+            dividends = []
+            for idx, amount in df.items():
+                div_date = idx.to_pydatetime().date() if hasattr(idx.to_pydatetime(), 'date') else idx.to_pydatetime()
+                dividends.append(Dividend(date=div_date, amount=float(amount)))
+            
+            logger.debug(f"Fetched dividends for {ticker}", count=len(dividends))
+            return dividends
+            
+        except Exception as e:
+            logger.debug(f"Error fetching dividends for {ticker}: {e}")
+            return []
+    
     def get_next_earnings_date(self, ticker: str) -> Optional[str]:
         """Next reported earnings date as YYYY-MM-DD, or None if unknown."""
         import yfinance as yf
