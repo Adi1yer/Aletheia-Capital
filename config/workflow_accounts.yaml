@@ -10,6 +10,15 @@ workflows:
     enabled: true
     label: Wheel-hybrid equity book (daily-wheel-scan)
 
+  growth-income-drip:
+    broker: alpaca
+    env_prefix: DRIP_ALPACA
+    snapshot_subdir: drip
+    data_dir: data/performance/growth_income_drip_v1
+    account_group: drip
+    enabled: true
+    label: Growth-income-drip quarterly momentum+dividend (drip-daily-snapshot)
+
   biotech-catalyst:
     broker: alpaca
     env_prefix: ALPACA

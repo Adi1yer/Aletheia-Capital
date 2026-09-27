@@ -2,13 +2,23 @@
 
 **GitHub repository:** [Adi1yer/Aletheia-Capital](https://github.com/Adi1yer/Aletheia-Capital) — commits should use the **Adi1yer** noreply email (`201507252+Adi1yer@users.noreply.github.com`). See [SETUP.md](../SETUP.md#git-commit-identity).
 
-Alpaca allows **3 paper accounts per email**. This repo uses:
+Alpaca allows **3 paper accounts per email**. This repo originally used:
 
 | # | Physical account | Env secrets | Sleeves |
 |---|------------------|-------------|---------|
-| 1 | Main equity | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | `weekly-scan` |
+| 1 | Main equity / wheel | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | `weekly-scan` (daily-wheel-scan) |
 | 2 | Biotech | `BIOTECH_ALPACA_API_KEY`, `BIOTECH_ALPACA_SECRET_KEY` | `biotech-catalyst` |
 | 3 | **Multi-sleeve satellite** | `MULTI_SLEEVE_ALPACA_API_KEY`, `MULTI_SLEEVE_ALPACA_API_SECRET_KEY` | hedge, options-income, congressional, macro-etf, crypto-weekly |
+
+**NEW:** Growth-income-drip track requires a **4th physical account** (separate Alpaca login/email or free a paper slot):
+
+| # | Physical account | Env secrets | Sleeves |
+|---|------------------|-------------|---------|
+| 4 | **Growth-income-drip** | `DRIP_ALPACA_API_KEY`, `DRIP_ALPACA_SECRET_KEY` | `growth-income-drip` (drip-daily-snapshot, drip-quarterly-rebalance) |
+
+**Important:** Since Alpaca limits 3 paper accounts per email, you must either:
+- Create a **second Alpaca login** (new email) for the drip account, OR
+- Disable and free up one of the existing satellite accounts (#2 or #3)
 
 Five workflows share account **#3**. They still write **separate ledgers** under `data/hedge/`, `data/options_income/`, etc., so you can see what each strategy did. Alpaca dashboard PnL is **one combined book** for all five.
 
@@ -18,7 +28,8 @@ IBKR sleeves (forex, futures, commodities) remain separate paper account IDs whe
 
 | Workflow | Script | Broker | Secrets | Snapshot dir |
 |----------|--------|--------|---------|--------------|
-| `weekly-scan.yml` | `weekly_scan_rebalancing.py` | Alpaca | `ALPACA_*` | `stock` |
+| `daily-wheel-scan.yml` | `weekly_scan_rebalancing.py` | Alpaca | `ALPACA_*` | `stock` |
+| `drip-daily-snapshot.yml` | `growth_income_drip_rebalance.py` | Alpaca | `DRIP_ALPACA_*` | `drip` |
 | `biotech-catalyst.yml` | `biotech_catalyst_scan.py` | Alpaca | `BIOTECH_ALPACA_*` | `biotech` |
 | `hedge-weekly.yml` | `hedge_scan.py` | Alpaca | `MULTI_SLEEVE_ALPACA_*` | `multi_sleeve` |
 | `options-income.yml` | `options_income_scan.py` | Alpaca | (same) | `multi_sleeve` |
@@ -31,11 +42,17 @@ IBKR sleeves (forex, futures, commodities) remain separate paper account IDs whe
 
 Registry: [`config/workflow_accounts.yaml`](../config/workflow_accounts.yaml)
 
-## Setup (3 Alpaca accounts)
+## Setup (Alpaca accounts)
 
-1. **Equity** — keys → `ALPACA_*`
+**Original 3 accounts (same email):**
+1. **Equity / Wheel** — keys → `ALPACA_*`
 2. **Biotech** — keys → `BIOTECH_ALPACA_*`
 3. **Satellite** — keys → `MULTI_SLEEVE_ALPACA_*` in GitHub (or keep `HEDGE_ALPACA_*` if you already created the beta-hedge account; code accepts either)
+
+**Growth-income-drip (requires 4th account — separate email or free a slot):**
+4. **Drip** — keys → `DRIP_ALPACA_*`
+
+Create a **second Alpaca login** (new email address) to get 3 more paper account slots, then allocate one to drip.
 
 Only **one** secret pair needed for all five satellite workflows in CI.
 

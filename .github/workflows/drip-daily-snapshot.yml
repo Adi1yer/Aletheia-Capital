@@ -1,0 +1,109 @@
+name: Growth-Income-Drip Daily Snapshot
+
+on:
+  schedule:
+    # 15:00 UTC ≈ 10:00 AM EST / 11:00 AM EDT - after market open
+    - cron: '0 15 * * 1-5'
+  workflow_dispatch:
+
+# Separate concurrency group from wheel track
+concurrency:
+  group: aletheia-drip-paper
+  cancel-in-progress: false
+
+jobs:
+  market-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Decide whether to run today
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — bypassing holiday gate."
+            exit 0
+          fi
+          python3 scripts/should_run_daily_scan.py --github-output
+
+  daily-snapshot:
+    needs: market-gate
+    if: needs.market-gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
+
+      - name: Restore drip performance data
+        uses: actions/cache/restore@v4
+        id: drip_cache_restore
+        with:
+          path: data/performance/growth_income_drip_v1
+          key: drip-perf-${{ github.repository }}-v1-${{ github.run_id }}
+          restore-keys: |
+            drip-perf-${{ github.repository }}-v1-
+            drip-perf-${{ github.repository }}-v1
+
+      - name: Cache restore diagnostics
+        run: |
+          mkdir -p data/performance/growth_income_drip_v1
+          echo "drip performance cache hit: ${{ steps.drip_cache_restore.outputs.cache-hit }}"
+          echo "performance files:" && ls -la data/performance/growth_income_drip_v1/ 2>/dev/null || true
+
+      - name: Run daily snapshot (no rebalance)
+        env:
+          DRIP_ALPACA_API_KEY: ${{ secrets.DRIP_ALPACA_API_KEY }}
+          DRIP_ALPACA_SECRET_KEY: ${{ secrets.DRIP_ALPACA_SECRET_KEY }}
+          DRIP_ALPACA_BASE_URL: ${{ secrets.DRIP_ALPACA_BASE_URL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: |
+          poetry run python scripts/growth_income_drip_rebalance.py --execute
+
+      - name: Upload daily snapshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drip-daily-snapshot-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            data/performance/growth_income_drip_v1/
+          if-no-files-found: ignore
+
+      - name: Save drip performance data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/performance/growth_income_drip_v1
+          key: drip-perf-${{ github.repository }}-v1-${{ github.run_id }}
