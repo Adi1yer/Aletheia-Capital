@@ -38,7 +38,6 @@ def get_drip_broker() -> AlpacaBroker:
     """Create Alpaca broker using DRIP_ALPACA_* secrets."""
     api_key = os.getenv("DRIP_ALPACA_API_KEY")
     secret_key = os.getenv("DRIP_ALPACA_SECRET_KEY")
-    base_url = os.getenv("DRIP_ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
     
     if not api_key or not secret_key:
         raise ValueError(
@@ -49,7 +48,6 @@ def get_drip_broker() -> AlpacaBroker:
     return AlpacaBroker(
         api_key=api_key,
         secret_key=secret_key,
-        base_url=base_url,
     )
 
 
