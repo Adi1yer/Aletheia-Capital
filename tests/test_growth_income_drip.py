@@ -276,8 +276,8 @@ class TestSecretIsolation:
             if old_secret:
                 os.environ["DRIP_ALPACA_SECRET_KEY"] = old_secret
     
-    def test_drip_broker_uses_drip_base_url_default(self):
-        """Test that drip broker defaults to paper URL."""
+    def test_drip_broker_uses_paper_only(self):
+        """Test that drip broker constructs without base_url (hardcoded in AlpacaBroker)."""
         os.environ["DRIP_ALPACA_API_KEY"] = "test_key"
         os.environ["DRIP_ALPACA_SECRET_KEY"] = "test_secret"
         os.environ.pop("DRIP_ALPACA_BASE_URL", None)
@@ -288,10 +288,30 @@ class TestSecretIsolation:
             with patch("scripts.growth_income_drip_rebalance.AlpacaBroker") as mock_broker:
                 get_drip_broker()
                 
-                # Verify AlpacaBroker was called with paper URL
-                mock_broker.assert_called_once()
-                args = mock_broker.call_args
-                assert args[1]["base_url"] == "https://paper-api.alpaca.markets"
+                # Verify AlpacaBroker was called with only api_key and secret_key (no base_url)
+                mock_broker.assert_called_once_with(
+                    api_key="test_key",
+                    secret_key="test_secret",
+                )
+        finally:
+            os.environ.pop("DRIP_ALPACA_API_KEY", None)
+            os.environ.pop("DRIP_ALPACA_SECRET_KEY", None)
+    
+    def test_drip_broker_construction_no_unsupported_kwargs(self):
+        """Test that drip broker construction succeeds with real AlpacaBroker (no unsupported kwargs)."""
+        os.environ["DRIP_ALPACA_API_KEY"] = "test_key"
+        os.environ["DRIP_ALPACA_SECRET_KEY"] = "test_secret"
+        
+        try:
+            from scripts.growth_income_drip_rebalance import get_drip_broker
+            from src.broker.alpaca import AlpacaBroker
+            
+            # This should not raise TypeError about unexpected keyword arguments
+            # (If it does, the fix didn't work)
+            broker = get_drip_broker()
+            
+            # Verify it's an AlpacaBroker instance
+            assert isinstance(broker, AlpacaBroker)
         finally:
             os.environ.pop("DRIP_ALPACA_API_KEY", None)
             os.environ.pop("DRIP_ALPACA_SECRET_KEY", None)
