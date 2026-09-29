@@ -1,6 +1,7 @@
 """Send weekly digest for growth-income-drip track."""
 
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -142,14 +143,19 @@ def main():
     
     # Send email
     try:
-        notifier = get_email_notifier()
-        if notifier:
-            subject = f"[{TRACK_ID}] Weekly Digest"
-            notifier.send_email(subject, body)
-            logger.info("Weekly digest sent")
-        else:
-            logger.warning("Email notifier not configured")
+        recipient = os.getenv("RECIPIENT_EMAIL")
+        if not recipient:
+            logger.warning("RECIPIENT_EMAIL not set")
             print(body)
+        else:
+            notifier = get_email_notifier()
+            if notifier:
+                subject = f"[{TRACK_ID}] Weekly Digest"
+                notifier.send_email(recipient, subject, body)
+                logger.info("Weekly digest sent", recipient=recipient)
+            else:
+                logger.warning("Email notifier not configured")
+                print(body)
     except Exception as e:
         logger.error("Failed to send digest", error=str(e))
         print(body)

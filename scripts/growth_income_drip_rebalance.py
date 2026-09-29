@@ -351,10 +351,14 @@ def main():
     
     # Send email notification
     try:
-        notifier = get_email_notifier()
-        if notifier:
-            subject = f"[{TRACK_ID}] Daily Snapshot"
-            body = f"""
+        recipient = os.getenv("RECIPIENT_EMAIL")
+        if not recipient:
+            logger.info("RECIPIENT_EMAIL not set, skipping email")
+        else:
+            notifier = get_email_notifier()
+            if notifier:
+                subject = f"[{TRACK_ID}] Daily Snapshot"
+                body = f"""
 Growth-Income-Drip Daily Snapshot
 
 NAV: ${nav:,.2f}
@@ -366,8 +370,8 @@ Last Rebalance: {last_rebalance}
 
 Track: {TRACK_ID}
             """
-            notifier.send_email(subject, body)
-            logger.info("Email sent")
+                notifier.send_email(recipient, subject, body)
+                logger.info("Email sent", recipient=recipient)
     except Exception as e:
         logger.warning("Failed to send email", error=str(e))
 
