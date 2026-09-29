@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from src.utils.email import EmailNotifier
 
 
@@ -95,3 +97,35 @@ def test_html_email_contains_diagnostics_blocks():
     assert "Learned policy" in html
     assert "Learning changelog" in html
     assert "buy_conf=62" in html
+
+
+def test_send_email_requires_recipient_argument():
+    """
+    Ensure send_email() requires recipient as first positional argument.
+    
+    This test prevents regression of the TypeError from run 36621846098:
+    'EmailNotifier.send_email() missing 1 required positional argument: body_text'
+    
+    The correct signature is:
+        send_email(recipient: str, subject: str, body_text: str, body_html: Optional[str] = None)
+    
+    Wrong usage (missing recipient):
+        notifier.send_email(subject, body)  # WRONG - TypeError
+    
+    Correct usage:
+        notifier.send_email(recipient, subject, body_text)  # RIGHT
+    """
+    notifier = EmailNotifier()
+    
+    # Calling without recipient should raise TypeError
+    with pytest.raises(TypeError, match="missing 1 required positional argument"):
+        notifier.send_email("Subject", "Body text")  # noqa: type: ignore
+    
+    # Calling with wrong argument names should also fail  
+    with pytest.raises(TypeError):
+        notifier.send_email(subject="Test", body="Text")  # noqa: type: ignore
+    
+    # The correct signature should work (even if notifier is not configured)
+    # send_email returns False when notifier is not configured, not raise
+    result = notifier.send_email("test@example.com", "Subject", "Body text")
+    assert result is False  # Not configured, so returns False
