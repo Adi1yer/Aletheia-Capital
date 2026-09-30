@@ -30,6 +30,7 @@ from src.performance.drip_track import (
     TRACK_ID,
 )
 from src.utils.email import get_email_notifier
+from src.portfolio.manager import PortfolioDecision
 
 logger = structlog.get_logger()
 
@@ -138,23 +139,46 @@ def execute_delta_rebalance(
     """
     actions = {"buys": [], "sells": [], "holds": []}
     
-    # Get current prices
+    # Get current prices using batch API
     all_tickers = list(set(target_allocations.keys()) | set(current_positions.keys()))
-    prices = {}
-    for ticker in all_tickers:
-        try:
-            quote = broker.get_quote(ticker)
-            prices[ticker] = quote.get("price", 0)
-        except Exception as e:
-            logger.warning("Failed to get price", ticker=ticker, error=str(e))
-            prices[ticker] = 0
+    
+    if not all_tickers:
+        logger.info("No tickers to rebalance")
+        return actions
+    
+    try:
+        prices = broker.get_last_equity_prices(all_tickers)
+        logger.info("Fetched prices", count=len(prices), requested=len(all_tickers))
+    except Exception as e:
+        logger.error("Failed to fetch prices in batch", error=str(e))
+        raise RuntimeError(f"Price fetch failed for rebalance: {e}")
+    
+    # Check if we got any prices
+    if not prices:
+        logger.error("No prices available for any ticker", tickers=all_tickers[:10])
+        raise RuntimeError(f"No prices available for {len(all_tickers)} tickers; cannot rebalance")
+    
+    # Warn about missing prices but continue
+    missing_prices = [t for t in all_tickers if t not in prices or prices[t] <= 0]
+    if missing_prices:
+        logger.warning(
+            "Missing prices for some tickers",
+            count=len(missing_prices),
+            tickers=missing_prices[:10],
+        )
     
     # Calculate deltas and execute trades
+    trades_attempted = 0
     for ticker in all_tickers:
         target_usd = target_allocations.get(ticker, 0)
         current_qty = current_positions.get(ticker, {}).get("qty", 0)
-        current_usd = current_qty * prices.get(ticker, 0)
+        price = prices.get(ticker, 0)
         
+        if price <= 0:
+            logger.warning("Skipping ticker with invalid price", ticker=ticker, target_usd=target_usd)
+            continue
+        
+        current_usd = current_qty * price
         delta_usd = target_usd - current_usd
         
         # Skip small deltas
@@ -167,31 +191,33 @@ def execute_delta_rebalance(
                 })
             continue
         
-        price = prices.get(ticker, 0)
-        if price <= 0:
-            logger.warning("Invalid price for rebalance", ticker=ticker)
-            continue
-        
         # Calculate shares to trade
         delta_shares = int(delta_usd / price)
         
         if delta_shares > 0:
             # Buy
+            trades_attempted += 1
             try:
-                order = broker.submit_market_order(
-                    ticker,
-                    delta_shares,
-                    "buy",
+                decision = PortfolioDecision(
+                    action="buy",
+                    quantity=delta_shares,
+                    confidence=80,
+                    reasoning=f"Drip quarterly rebalance buy to ${target_usd:.2f}",
                 )
-                actions["buys"].append({
-                    "ticker": ticker,
-                    "shares": delta_shares,
-                    "target_usd": target_usd,
-                    "order_id": order.get("id"),
-                })
-                logger.info("Submitted buy", ticker=ticker, shares=delta_shares)
+                order = broker.execute_order(ticker, decision, current_price=price)
+                
+                if order and order.get("success"):
+                    actions["buys"].append({
+                        "ticker": ticker,
+                        "shares": delta_shares,
+                        "target_usd": target_usd,
+                        "order_id": order.get("order_id"),
+                    })
+                    logger.info("Submitted buy", ticker=ticker, shares=delta_shares)
+                else:
+                    logger.error("Buy order failed", ticker=ticker, shares=delta_shares, result=order)
             except Exception as e:
-                logger.error("Buy failed", ticker=ticker, shares=delta_shares, error=str(e))
+                logger.error("Buy exception", ticker=ticker, shares=delta_shares, error=str(e))
                 
         elif delta_shares < 0:
             # Sell
@@ -200,21 +226,41 @@ def execute_delta_rebalance(
                 shares_to_sell = current_qty
             
             if shares_to_sell > 0:
+                trades_attempted += 1
                 try:
-                    order = broker.submit_market_order(
-                        ticker,
-                        shares_to_sell,
-                        "sell",
+                    decision = PortfolioDecision(
+                        action="sell",
+                        quantity=shares_to_sell,
+                        confidence=80,
+                        reasoning=f"Drip quarterly rebalance sell to ${target_usd:.2f}",
                     )
-                    actions["sells"].append({
-                        "ticker": ticker,
-                        "shares": shares_to_sell,
-                        "target_usd": target_usd,
-                        "order_id": order.get("id"),
-                    })
-                    logger.info("Submitted sell", ticker=ticker, shares=shares_to_sell)
+                    order = broker.execute_order(ticker, decision, current_price=price)
+                    
+                    if order and order.get("success"):
+                        actions["sells"].append({
+                            "ticker": ticker,
+                            "shares": shares_to_sell,
+                            "target_usd": target_usd,
+                            "order_id": order.get("order_id"),
+                        })
+                        logger.info("Submitted sell", ticker=ticker, shares=shares_to_sell)
+                    else:
+                        logger.error("Sell order failed", ticker=ticker, shares=shares_to_sell, result=order)
                 except Exception as e:
-                    logger.error("Sell failed", ticker=ticker, shares=shares_to_sell, error=str(e))
+                    logger.error("Sell exception", ticker=ticker, shares=shares_to_sell, error=str(e))
+    
+    # Validate that we executed at least some trades if targets exist
+    total_executed = len(actions["buys"]) + len(actions["sells"])
+    if trades_attempted > 0 and total_executed == 0:
+        logger.error(
+            "Zero trades executed despite non-empty targets",
+            trades_attempted=trades_attempted,
+            target_count=len(target_allocations),
+        )
+        raise RuntimeError(
+            f"Rebalance failed: {trades_attempted} trades attempted but 0 executed. "
+            "Check broker connectivity and credentials."
+        )
     
     return actions
 
@@ -357,9 +403,13 @@ def main():
         else:
             notifier = get_email_notifier()
             if notifier:
-                subject = f"[{TRACK_ID}] Daily Snapshot"
+                if rebalance_due and args.execute:
+                    subject = f"[{TRACK_ID}] Quarterly Rebalance Executed"
+                else:
+                    subject = f"[{TRACK_ID}] Daily Snapshot"
+                
                 body = f"""
-Growth-Income-Drip Daily Snapshot
+Growth-Income-Drip {'Quarterly Rebalance' if (rebalance_due and args.execute) else 'Daily Snapshot'}
 
 NAV: ${nav:,.2f}
 Cash: ${cash:,.2f}
