@@ -317,6 +317,36 @@ class TestSecretIsolation:
             os.environ.pop("DRIP_ALPACA_SECRET_KEY", None)
 
 
+class FakeBroker:
+    """Fake broker for testing execute_delta_rebalance."""
+    
+    def __init__(self, prices=None, fail_orders=False):
+        self.prices = prices or {}
+        self.fail_orders = fail_orders
+        self.orders_submitted = []
+        self.get_last_equity_prices_calls = []
+    
+    def get_last_equity_prices(self, symbols):
+        """Track calls and return prices."""
+        self.get_last_equity_prices_calls.append(symbols)
+        return {s: self.prices.get(s, 0) for s in symbols if s in self.prices}
+    
+    def execute_order(self, ticker, decision, current_price=None):
+        """Track orders submitted."""
+        self.orders_submitted.append({
+            "ticker": ticker,
+            "action": decision.action,
+            "quantity": decision.quantity,
+            "current_price": current_price,
+        })
+        if self.fail_orders:
+            return {"success": False, "error": "test_failure"}
+        return {
+            "success": True,
+            "order_id": f"test_order_{len(self.orders_submitted)}",
+        }
+
+
 class TestDeltaRebalance:
     """Tests for delta rebalance logic."""
     
@@ -360,6 +390,96 @@ class TestDeltaRebalance:
         )
         
         assert targets == {}
+    
+    def test_execute_delta_rebalance_uses_batch_pricing(self):
+        """Test that rebalance uses batch get_last_equity_prices API."""
+        from scripts.growth_income_drip_rebalance import execute_delta_rebalance
+        
+        broker = FakeBroker(prices={"AAPL": 150.0, "MSFT": 300.0})
+        targets = {"AAPL": 3000.0, "MSFT": 3000.0}
+        current_positions = {}
+        
+        actions = execute_delta_rebalance(broker, targets, current_positions)
+        
+        # Verify batch pricing was called
+        assert len(broker.get_last_equity_prices_calls) == 1
+        assert set(broker.get_last_equity_prices_calls[0]) == {"AAPL", "MSFT"}
+        
+        # Verify orders were submitted via execute_order
+        assert len(broker.orders_submitted) == 2
+        assert broker.orders_submitted[0]["action"] == "buy"
+        assert broker.orders_submitted[1]["action"] == "buy"
+    
+    def test_execute_delta_rebalance_uses_execute_order(self):
+        """Test that rebalance uses execute_order, not submit_market_order."""
+        from scripts.growth_income_drip_rebalance import execute_delta_rebalance
+        
+        broker = FakeBroker(prices={"AAPL": 100.0})
+        targets = {"AAPL": 1000.0}
+        current_positions = {}
+        
+        actions = execute_delta_rebalance(broker, targets, current_positions)
+        
+        # Verify execute_order was called with correct parameters
+        assert len(broker.orders_submitted) == 1
+        order = broker.orders_submitted[0]
+        assert order["ticker"] == "AAPL"
+        assert order["action"] == "buy"
+        assert order["quantity"] == 10
+        assert order["current_price"] == 100.0
+    
+    def test_execute_delta_rebalance_fails_on_zero_prices(self):
+        """Test that rebalance fails when no prices are available."""
+        from scripts.growth_income_drip_rebalance import execute_delta_rebalance
+        
+        broker = FakeBroker(prices={})
+        targets = {"AAPL": 3000.0, "MSFT": 3000.0}
+        current_positions = {}
+        
+        with pytest.raises(RuntimeError, match="No prices available"):
+            execute_delta_rebalance(broker, targets, current_positions)
+    
+    def test_execute_delta_rebalance_fails_on_zero_trades_with_targets(self):
+        """Test that rebalance fails when zero trades execute despite non-empty targets."""
+        from scripts.growth_income_drip_rebalance import execute_delta_rebalance
+        
+        broker = FakeBroker(prices={"AAPL": 100.0, "MSFT": 200.0}, fail_orders=True)
+        targets = {"AAPL": 3000.0, "MSFT": 3000.0}
+        current_positions = {}
+        
+        with pytest.raises(RuntimeError, match="Rebalance failed.*0 executed"):
+            execute_delta_rebalance(broker, targets, current_positions)
+    
+    def test_execute_delta_rebalance_skips_invalid_prices(self):
+        """Test that rebalance skips tickers with invalid prices."""
+        from scripts.growth_income_drip_rebalance import execute_delta_rebalance
+        
+        broker = FakeBroker(prices={"AAPL": 100.0, "MSFT": 0})
+        targets = {"AAPL": 1000.0, "MSFT": 1000.0}
+        current_positions = {}
+        
+        actions = execute_delta_rebalance(broker, targets, current_positions)
+        
+        # Only AAPL should be traded
+        assert len(broker.orders_submitted) == 1
+        assert broker.orders_submitted[0]["ticker"] == "AAPL"
+        assert len(actions["buys"]) == 1
+    
+    def test_execute_delta_rebalance_sells_before_buys(self):
+        """Test that sells are executed before buys."""
+        from scripts.growth_income_drip_rebalance import execute_delta_rebalance
+        
+        broker = FakeBroker(prices={"AAPL": 100.0, "MSFT": 200.0})
+        targets = {"AAPL": 1000.0, "MSFT": 0}
+        current_positions = {"MSFT": {"qty": 10}}
+        
+        actions = execute_delta_rebalance(broker, targets, current_positions)
+        
+        # Verify both buy and sell happened
+        assert len(actions["buys"]) == 1
+        assert len(actions["sells"]) == 1
+        assert actions["buys"][0]["ticker"] == "AAPL"
+        assert actions["sells"][0]["ticker"] == "MSFT"
 
 
 class TestConcurrencyIsolation:

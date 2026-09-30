@@ -102,6 +102,8 @@ class AlpacaBroker:
             secret_key=sec,
             paper=True,
         )
+        self._api_key = key
+        self._secret_key = sec
         logger.info(
             "Initialized Alpaca broker for paper trading",
             base_url=paper_base_url,
@@ -169,8 +171,8 @@ class AlpacaBroker:
             from alpaca.data.historical import StockHistoricalDataClient
             from alpaca.data.requests import StockLatestQuoteRequest
 
-            key = settings.alpaca_api_key
-            sec = settings.alpaca_secret_key
+            key = self._api_key
+            sec = self._secret_key
             if not key or not sec:
                 return out
             client = StockHistoricalDataClient(key, sec)
@@ -751,8 +753,8 @@ class AlpacaBroker:
             from alpaca.data.historical.option import OptionHistoricalDataClient
             from alpaca.data.requests import OptionLatestQuoteRequest
 
-            key = settings.alpaca_api_key
-            sec = settings.alpaca_secret_key
+            key = self._api_key
+            sec = self._secret_key
             if not key or not sec:
                 return contracts
             client = OptionHistoricalDataClient(key, sec)
