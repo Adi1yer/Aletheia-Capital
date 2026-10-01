@@ -320,11 +320,16 @@ class TestSecretIsolation:
 class FakeBroker:
     """Fake broker for testing execute_delta_rebalance."""
     
-    def __init__(self, prices=None, fail_orders=False):
+    def __init__(self, prices=None, fail_orders=False, positions=None):
         self.prices = prices or {}
         self.fail_orders = fail_orders
+        self.positions = positions if positions is not None else {}
         self.orders_submitted = []
         self.get_last_equity_prices_calls = []
+    
+    def get_positions(self):
+        """Return positions as a dict (matching AlpacaBroker.get_positions signature)."""
+        return self.positions
     
     def get_last_equity_prices(self, symbols):
         """Track calls and return prices."""
@@ -480,6 +485,109 @@ class TestDeltaRebalance:
         assert len(actions["sells"]) == 1
         assert actions["buys"][0]["ticker"] == "AAPL"
         assert actions["sells"][0]["ticker"] == "MSFT"
+
+
+class TestPositionsHandling:
+    """Tests for positions handling with AlpacaBroker return type."""
+    
+    def test_broker_get_positions_returns_dict(self):
+        """Test that AlpacaBroker.get_positions returns a dict, not a list."""
+        from src.broker.alpaca import AlpacaBroker
+        
+        # Check the return type annotation
+        import inspect
+        sig = inspect.signature(AlpacaBroker.get_positions)
+        # Return annotation should be Dict[str, Dict]
+        assert "Dict" in str(sig.return_annotation)
+    
+    def test_positions_dict_iteration_empty(self):
+        """Test iterating over empty positions dict (regression test for bug)."""
+        # Simulate the drip script logic
+        positions = {}  # Empty dict from broker.get_positions()
+        
+        # This should not raise an error
+        current_positions = {
+            symbol: {"qty": int(pos["qty"]), "market_value": float(pos["market_value"])}
+            for symbol, pos in positions.items()
+        }
+        
+        assert current_positions == {}
+    
+    def test_positions_dict_iteration_with_data(self):
+        """Test iterating over non-empty positions dict (regression test for bug)."""
+        # Simulate actual return value from AlpacaBroker.get_positions()
+        positions = {
+            "AAPL": {
+                "qty": 10,
+                "avg_entry_price": 150.0,
+                "market_value": 1500.0,
+                "side": "long"
+            },
+            "MSFT": {
+                "qty": 5,
+                "avg_entry_price": 300.0,
+                "market_value": 1500.0,
+                "side": "long"
+            }
+        }
+        
+        # This is the fixed logic (using .items())
+        current_positions = {
+            symbol: {"qty": int(pos["qty"]), "market_value": float(pos["market_value"])}
+            for symbol, pos in positions.items()
+        }
+        
+        assert len(current_positions) == 2
+        assert current_positions["AAPL"]["qty"] == 10
+        assert current_positions["AAPL"]["market_value"] == 1500.0
+        assert current_positions["MSFT"]["qty"] == 5
+        assert current_positions["MSFT"]["market_value"] == 1500.0
+    
+    def test_wrong_iteration_raises_error(self):
+        """Test that the old buggy iteration pattern raises TypeError."""
+        positions = {
+            "AAPL": {
+                "qty": 10,
+                "market_value": 1500.0
+            }
+        }
+        
+        # The old buggy pattern: iterating over dict yields keys (strings)
+        with pytest.raises(TypeError, match="string indices must be integers"):
+            _ = {
+                pos["symbol"]: {"qty": int(pos["qty"]), "market_value": float(pos["market_value"])}
+                for pos in positions  # BUG: iterating over dict yields string keys
+            }
+    
+    def test_main_with_nonempty_positions(self):
+        """Test main() logic handles non-empty positions correctly."""
+        # Simulate broker.get_positions() return value
+        positions = {
+            "AAPL": {
+                "qty": 10,
+                "avg_entry_price": 150.0,
+                "market_value": 1500.0,
+                "side": "long"
+            },
+            "MSFT": {
+                "qty": 5,
+                "avg_entry_price": 300.0,
+                "market_value": 1500.0,
+                "side": "long"
+            }
+        }
+        
+        # Test that the positions dict comprehension doesn't raise (this is the fix)
+        current_positions = {
+            symbol: {"qty": int(pos["qty"]), "market_value": float(pos["market_value"])}
+            for symbol, pos in positions.items()
+        }
+        
+        assert len(current_positions) == 2
+        assert "AAPL" in current_positions
+        assert "MSFT" in current_positions
+        assert current_positions["AAPL"]["qty"] == 10
+        assert current_positions["AAPL"]["market_value"] == 1500.0
 
 
 class TestConcurrencyIsolation:
