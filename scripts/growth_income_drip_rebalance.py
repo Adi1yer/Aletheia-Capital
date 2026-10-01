@@ -311,8 +311,8 @@ def main():
     # Get current positions
     positions = broker.get_positions()
     current_positions = {
-        pos["symbol"]: {"qty": int(pos["qty"]), "market_value": float(pos["market_value"])}
-        for pos in positions
+        symbol: {"qty": int(pos["qty"]), "market_value": float(pos["market_value"])}
+        for symbol, pos in positions.items()
     }
     
     logger.info(
