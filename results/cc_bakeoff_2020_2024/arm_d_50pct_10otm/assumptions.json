@@ -1,0 +1,12 @@
+{
+  "start_date": "2020-01-02",
+  "benchmark": "SPY",
+  "end_date": "2024-12-31",
+  "initial_nav": 10000.0,
+  "wheel_pct": 0.7,
+  "directional_pct": 0.3,
+  "cc_target_otm_pct": 0.1,
+  "cc_overwrite_pct": 0.5,
+  "rf_rate": 0.0,
+  "vol_window": 21
+}
