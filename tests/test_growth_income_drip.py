@@ -1030,9 +1030,56 @@ class TestDividendDripExecution:
         assert len(manager.dividend_history) == 2
     
     def test_execute_dividend_drip_with_sufficient_cash(self):
-        """Test dividend drip execution when sufficient cash is available."""
+        """Test dividend drip execution with redistribution of sub-share allocations."""
         from scripts.growth_income_drip_rebalance import execute_dividend_drip
         
+        # Use prices where redistribution will work: $400 with AAPL @ $150, MSFT @ $250
+        broker = FakeBroker(prices={"AAPL": 150.0, "MSFT": 250.0})
+        manager = DividendDripManager()
+        
+        # Record dividends
+        ex_date = datetime(2026, 10, 1)
+        manager.record_dividend("PG", 400.0, ex_date, ex_date)
+        
+        growth_tickers = ["AAPL", "MSFT"]
+        result = execute_dividend_drip(broker, manager, growth_tickers, min_drip_amount=100.0)
+        
+        # With $400 split across AAPL ($150) and MSFT ($250):
+        # - AAPL gets $200 allocation -> 1 share @ $150, $50 leftover
+        # - MSFT gets $200 allocation -> 0 shares @ $250, $200 leftover
+        # - Total leftover: $250
+        # - Redistribution: MSFT needs $50 more (has $200, needs $250), leftover has $250
+        #   So MSFT gets 1 share @ $250
+        # Result: 2 drip buys (AAPL: 1 share, MSFT: 1 share via redistribution)
+        assert len(result["drip_buys"]) == 2, f"Expected 2 drip buys, got {len(result['drip_buys'])}: {result['drip_buys']}"
+        
+        # Verify both tickers got orders
+        aapl_buy = next((b for b in result["drip_buys"] if b["ticker"] == "AAPL"), None)
+        msft_buy = next((b for b in result["drip_buys"] if b["ticker"] == "MSFT"), None)
+        
+        assert aapl_buy is not None, "AAPL should have a drip buy"
+        assert msft_buy is not None, "MSFT should have a drip buy with redistributed cash"
+        
+        # AAPL: 1 share @ $150
+        assert aapl_buy["shares"] == 1
+        assert aapl_buy["drip_amount"] == 150.0
+        
+        # MSFT: 1 share @ $250 (base allocation + redistributed leftover)
+        assert msft_buy["shares"] == 1
+        assert msft_buy["drip_amount"] == 250.0
+        
+        # Total dripped: $400
+        total_dripped = sum(b["drip_amount"] for b in result["drip_buys"])
+        assert total_dripped == 400.0
+        
+        # Accumulated cash should be reduced by what was dripped
+        assert manager.get_drip_amount() == 0.0
+    
+    def test_execute_dividend_drip_with_redistribution_to_affordable_ticker(self):
+        """Test that leftover is redistributed to tickers that can afford another share."""
+        from scripts.growth_income_drip_rebalance import execute_dividend_drip
+        
+        # Case where MSFT can't afford a share, but AAPL can use the leftover
         broker = FakeBroker(prices={"AAPL": 150.0, "MSFT": 300.0})
         manager = DividendDripManager()
         
@@ -1043,13 +1090,26 @@ class TestDividendDripExecution:
         growth_tickers = ["AAPL", "MSFT"]
         result = execute_dividend_drip(broker, manager, growth_tickers, min_drip_amount=100.0)
         
-        # Should execute drip buys
-        assert len(result["drip_buys"]) == 2
-        assert any(b["ticker"] == "AAPL" for b in result["drip_buys"])
-        assert any(b["ticker"] == "MSFT" for b in result["drip_buys"])
+        # With $300 split across AAPL ($150) and MSFT ($300):
+        # - AAPL gets $150 allocation -> 1 share @ $150, $0 leftover
+        # - MSFT gets $150 allocation -> 0 shares @ $300, $150 leftover
+        # - Total leftover: $150
+        # - Redistribution: 
+        #   * AAPL needs $150 for another share (gap = $150 - $0 = $150)
+        #   * MSFT needs $300 for a share (gap = $300 - $150 = $150)
+        #   * AAPL is sorted first (same gap but checked first)
+        #   * AAPL gets the $150 leftover -> 2 shares total
+        #   * MSFT can't afford even with remaining $0
+        # Result: 1 drip buy (AAPL with 2 shares), $0 left unspent
+        assert len(result["drip_buys"]) == 1
         
-        # Accumulated cash should be reduced
-        assert manager.get_drip_amount() < 300.0
+        aapl_buy = result["drip_buys"][0]
+        assert aapl_buy["ticker"] == "AAPL"
+        assert aapl_buy["shares"] == 2  # Got the redistributed leftover
+        assert aapl_buy["drip_amount"] == 300.0
+        
+        # All $300 was dripped
+        assert manager.get_drip_amount() == 0.0
     
     def test_execute_dividend_drip_with_insufficient_cash(self):
         """Test dividend drip skips when insufficient cash."""

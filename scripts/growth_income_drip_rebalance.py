@@ -535,9 +535,13 @@ def execute_dividend_drip(
         logger.warning("No prices available for drip")
         return {"drip_buys": []}
     
-    # Allocate drip cash equally across growth tickers
+    # Allocate drip cash equally across growth tickers, with redistribution
     drip_buys = []
     per_ticker_cash = drip_cash / len(growth_tickers)
+    
+    # First pass: allocate whole shares and track leftover
+    allocations = []
+    total_leftover = 0.0
     
     for ticker in growth_tickers:
         price = prices.get(ticker, 0)
@@ -545,33 +549,72 @@ def execute_dividend_drip(
             continue
         
         shares = int(per_ticker_cash / price)
-        if shares < 1:
+        allocated_cash = shares * price
+        leftover = per_ticker_cash - allocated_cash
+        
+        allocations.append({
+            "ticker": ticker,
+            "price": price,
+            "shares": shares,
+            "allocated_cash": allocated_cash,
+            "leftover": leftover,
+        })
+        total_leftover += leftover
+    
+    # Second pass: redistribute leftover to tickers that can buy another share
+    # Sort by how close they are to affording another share
+    if total_leftover > 0:
+        # Find tickers that can benefit from redistribution
+        can_buy_more = [(alloc, alloc["price"] - alloc["leftover"]) 
+                        for alloc in allocations 
+                        if alloc["price"] - alloc["leftover"] <= total_leftover]
+        
+        # Sort by gap (smallest gap first = closest to buying another share)
+        can_buy_more.sort(key=lambda x: x[1])
+        
+        remaining_leftover = total_leftover
+        for alloc, gap in can_buy_more:
+            if remaining_leftover >= gap and remaining_leftover >= alloc["price"]:
+                # Give this ticker one more share
+                alloc["shares"] += 1
+                alloc["allocated_cash"] += alloc["price"]
+                remaining_leftover -= alloc["price"]
+                logger.info(
+                    "Redistributed leftover to buy additional share",
+                    ticker=alloc["ticker"],
+                    additional_cost=alloc["price"],
+                    remaining_leftover=remaining_leftover,
+                )
+    
+    # Third pass: execute orders
+    for alloc in allocations:
+        if alloc["shares"] < 1:
             continue
         
         try:
             decision = PortfolioDecision(
                 action="buy",
-                quantity=shares,
+                quantity=alloc["shares"],
                 confidence=80,
-                reasoning=f"Dividend drip reinvestment (${per_ticker_cash:.2f})",
+                reasoning=f"Dividend drip reinvestment (${alloc['allocated_cash']:.2f})",
             )
-            order = broker.execute_order(ticker, decision, current_price=price)
+            order = broker.execute_order(alloc["ticker"], decision, current_price=alloc["price"])
             
             if order and order.get("success"):
                 drip_buys.append({
-                    "ticker": ticker,
-                    "shares": shares,
-                    "drip_amount": shares * price,
+                    "ticker": alloc["ticker"],
+                    "shares": alloc["shares"],
+                    "drip_amount": alloc["allocated_cash"],
                     "order_id": order.get("order_id"),
                 })
                 logger.info(
                     "Drip buy executed",
-                    ticker=ticker,
-                    shares=shares,
-                    amount=shares * price,
+                    ticker=alloc["ticker"],
+                    shares=alloc["shares"],
+                    amount=alloc["allocated_cash"],
                 )
         except Exception as e:
-            logger.error("Drip buy failed", ticker=ticker, shares=shares, error=str(e))
+            logger.error("Drip buy failed", ticker=alloc["ticker"], shares=alloc["shares"], error=str(e))
     
     # Mark drip as executed
     total_dripped = sum(b["drip_amount"] for b in drip_buys)
