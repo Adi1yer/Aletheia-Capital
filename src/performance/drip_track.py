@@ -78,6 +78,7 @@ def record_snapshot(
     growth_nav: Optional[float] = None,
     ballast_nav: Optional[float] = None,
     dividend_cash: Optional[float] = None,
+    spy_level: Optional[float] = None,
 ) -> Path:
     """
     Record a daily snapshot of the drip track.
@@ -91,6 +92,7 @@ def record_snapshot(
         growth_nav: Growth sleeve NAV
         ballast_nav: Ballast sleeve NAV
         dividend_cash: Accumulated dividend cash
+        spy_level: SPY closing price for benchmark comparison
         
     Returns:
         Path to snapshot file
@@ -111,6 +113,7 @@ def record_snapshot(
         "growth_nav": growth_nav,
         "ballast_nav": ballast_nav,
         "dividend_cash": dividend_cash,
+        "spy_level": spy_level,
         "positions": positions,
         "config_fingerprint": config_fingerprint(run_config),
         "timestamp": datetime.now(ET).isoformat(),
@@ -141,7 +144,7 @@ def calculate_returns(
     snapshots: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Calculate return metrics from snapshots.
+    Calculate return metrics from snapshots including SPY comparison.
     
     Args:
         snapshots: List of snapshot dictionaries
@@ -181,7 +184,19 @@ def calculate_returns(
     else:
         sharpe = 0.0
     
-    return {
+    # Calculate SPY returns if available
+    spy_levels = [
+        _finite(s.get("spy_level"))
+        for s in sorted_snaps
+        if _finite(s.get("spy_level")) and _finite(s.get("spy_level")) > 0
+    ]
+    spy_return_pct = None
+    excess_return_pct = None
+    if len(spy_levels) >= 2:
+        spy_return_pct = (spy_levels[-1] / spy_levels[0] - 1.0) * 100.0
+        excess_return_pct = (total_return * 100.0) - spy_return_pct
+    
+    result = {
         "start_date": START_DATE.isoformat(),
         "latest_date": sorted_snaps[-1]["date"],
         "start_nav": start_nav,
@@ -190,6 +205,12 @@ def calculate_returns(
         "sharpe_ratio": sharpe,
         "num_snapshots": len(sorted_snaps),
     }
+    
+    if spy_return_pct is not None:
+        result["spy_return_pct"] = spy_return_pct
+        result["excess_return_pct"] = excess_return_pct
+    
+    return result
 
 
 def is_quarterly_rebalance_due(last_rebalance: Optional[date] = None) -> bool:
