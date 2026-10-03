@@ -78,7 +78,7 @@ jobs:
           echo "drip performance cache hit: ${{ steps.drip_cache_restore.outputs.cache-hit }}"
           echo "performance files:" && ls -la data/performance/growth_income_drip_v1/ 2>/dev/null || true
 
-      - name: Run daily snapshot (no rebalance)
+      - name: Run daily snapshot (with residual cash deployment)
         env:
           DRIP_ALPACA_API_KEY: ${{ secrets.DRIP_ALPACA_API_KEY }}
           DRIP_ALPACA_SECRET_KEY: ${{ secrets.DRIP_ALPACA_SECRET_KEY }}
@@ -88,7 +88,7 @@ jobs:
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: |
-          poetry run python scripts/growth_income_drip_rebalance.py
+          poetry run python scripts/growth_income_drip_rebalance.py --execute
 
       - name: Upload daily snapshot artifact
         if: always()

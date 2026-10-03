@@ -119,6 +119,138 @@ def calculate_target_allocations(
     return targets
 
 
+def has_excess_cash(cash: float, nav: float, threshold_pct: float = 0.10) -> bool:
+    """
+    Check if account has excess cash above threshold.
+    
+    Args:
+        cash: Current cash balance
+        nav: Net asset value
+        threshold_pct: Threshold as percentage of NAV (default 10%)
+        
+    Returns:
+        True if cash exceeds threshold
+    """
+    if nav <= 0:
+        return False
+    cash_pct = cash / nav
+    return cash_pct > threshold_pct
+
+
+def deploy_residual_cash(
+    broker: AlpacaBroker,
+    current_positions: Dict[str, Dict],
+    cash_to_deploy: float,
+    min_trade_usd: float = 100.0,
+) -> Dict[str, List[Dict]]:
+    """
+    Deploy residual cash into current positions proportionally.
+    
+    This maintains the current portfolio allocation while deploying idle cash.
+    
+    Args:
+        broker: Alpaca broker instance
+        current_positions: Current positions from broker
+        cash_to_deploy: Amount of cash to deploy
+        min_trade_usd: Minimum trade size in USD (default 100)
+        
+    Returns:
+        Dictionary with 'buys', 'sells', and 'holds' lists
+    """
+    actions = {"buys": [], "sells": [], "holds": []}
+    
+    if not current_positions or cash_to_deploy < min_trade_usd:
+        logger.info("No positions or insufficient cash to deploy", 
+                   positions=len(current_positions), 
+                   cash=cash_to_deploy)
+        return actions
+    
+    # Calculate total current market value
+    total_market_value = sum(pos["market_value"] for pos in current_positions.values())
+    
+    if total_market_value <= 0:
+        logger.warning("No market value in current positions")
+        return actions
+    
+    # Get prices for all current positions
+    tickers = list(current_positions.keys())
+    
+    try:
+        prices = broker.get_last_equity_prices(tickers)
+        logger.info("Fetched prices for residual cash deployment", 
+                   count=len(prices), 
+                   requested=len(tickers))
+    except Exception as e:
+        logger.error("Failed to fetch prices for residual cash deployment", error=str(e))
+        return actions
+    
+    if not prices:
+        logger.error("No prices available for residual cash deployment")
+        return actions
+    
+    # Deploy cash proportionally to current positions
+    trades_attempted = 0
+    for ticker in tickers:
+        price = prices.get(ticker, 0)
+        
+        if price <= 0:
+            logger.warning("Skipping ticker with invalid price in residual deploy", 
+                          ticker=ticker)
+            continue
+        
+        # Calculate proportional allocation
+        current_value = current_positions[ticker]["market_value"]
+        proportion = current_value / total_market_value
+        target_deploy = cash_to_deploy * proportion
+        
+        if target_deploy < min_trade_usd:
+            continue
+        
+        # Calculate shares to buy
+        shares_to_buy = int(target_deploy / price)
+        
+        if shares_to_buy <= 0:
+            continue
+        
+        trades_attempted += 1
+        try:
+            decision = PortfolioDecision(
+                action="buy",
+                quantity=shares_to_buy,
+                confidence=80,
+                reasoning=f"Residual cash deployment (${target_deploy:.2f})",
+            )
+            order = broker.execute_order(ticker, decision, current_price=price)
+            
+            if order and order.get("success"):
+                actions["buys"].append({
+                    "ticker": ticker,
+                    "shares": shares_to_buy,
+                    "allocated_usd": target_deploy,
+                    "order_id": order.get("order_id"),
+                })
+                logger.info("Submitted residual cash buy", 
+                           ticker=ticker, 
+                           shares=shares_to_buy)
+            else:
+                logger.error("Residual cash buy order failed", 
+                            ticker=ticker, 
+                            shares=shares_to_buy, 
+                            result=order)
+        except Exception as e:
+            logger.error("Residual cash buy exception", 
+                        ticker=ticker, 
+                        shares=shares_to_buy, 
+                        error=str(e))
+    
+    logger.info("Residual cash deployment complete", 
+               trades_attempted=trades_attempted,
+               trades_executed=len(actions["buys"]),
+               total_deployed=sum(b["allocated_usd"] for b in actions["buys"]))
+    
+    return actions
+
+
 def execute_delta_rebalance(
     broker: AlpacaBroker,
     target_allocations: Dict[str, float],
@@ -379,8 +511,34 @@ def main():
         # Record rebalance
         record_last_rebalance()
         
+    elif args.execute and has_excess_cash(cash, nav, threshold_pct=0.10):
+        # Deploy residual cash into current positions if above 10% threshold
+        logger.info(
+            "Excess cash detected, deploying into current positions",
+            cash=cash,
+            nav=nav,
+            cash_pct=cash/nav*100,
+        )
+        
+        actions = deploy_residual_cash(
+            broker,
+            current_positions,
+            cash,
+        )
+        
+        logger.info(
+            "Residual cash deployment complete",
+            buys=len(actions["buys"]),
+            total_deployed=sum(b.get("allocated_usd", 0) for b in actions["buys"]),
+        )
+        
     else:
-        logger.info("No rebalance due", last_rebalance=last_rebalance, force=args.force_rebalance)
+        logger.info(
+            "No action taken", 
+            rebalance_due=rebalance_due, 
+            execute=args.execute,
+            cash_pct=cash/nav*100 if nav > 0 else 0,
+        )
     
     # Always record daily snapshot
     record_snapshot(
@@ -403,17 +561,27 @@ def main():
         else:
             notifier = get_email_notifier()
             if notifier:
+                # Determine what action was taken
+                action_type = "Daily Snapshot"
                 if rebalance_due and args.execute:
-                    subject = f"[{TRACK_ID}] Quarterly Rebalance Executed"
-                else:
-                    subject = f"[{TRACK_ID}] Daily Snapshot"
+                    action_type = "Quarterly Rebalance Executed"
+                elif args.execute and has_excess_cash(cash, nav, threshold_pct=0.10):
+                    action_type = "Residual Cash Deployed"
+                    
+                subject = f"[{TRACK_ID}] {action_type}"
+                
+                # Get fresh account info for email
+                account = broker.get_account()
+                email_nav = float(account.get("equity", 0))
+                email_cash = float(account.get("cash", 0))
+                email_positions = broker.get_positions()
                 
                 body = f"""
-Growth-Income-Drip {'Quarterly Rebalance' if (rebalance_due and args.execute) else 'Daily Snapshot'}
+Growth-Income-Drip {action_type}
 
-NAV: ${nav:,.2f}
-Cash: ${cash:,.2f}
-Positions: {len(current_positions)}
+NAV: ${email_nav:,.2f}
+Cash: ${email_cash:,.2f} ({email_cash/email_nav*100:.1f}%)
+Positions: {len(email_positions)}
 
 Rebalance Due: {rebalance_due}
 Last Rebalance: {last_rebalance}

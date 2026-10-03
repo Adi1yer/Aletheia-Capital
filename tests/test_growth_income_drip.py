@@ -615,6 +615,160 @@ class TestConcurrencyIsolation:
             assert drip_group not in wheel_content
 
 
+class TestResidualCashDeployment:
+    """Tests for residual cash deployment feature."""
+    
+    def test_has_excess_cash_above_threshold(self):
+        """Test excess cash detection above threshold."""
+        from scripts.growth_income_drip_rebalance import has_excess_cash
+        
+        # 15% cash should trigger with 10% threshold
+        assert has_excess_cash(cash=1500.0, nav=10000.0, threshold_pct=0.10)
+        
+        # 45% cash should definitely trigger
+        assert has_excess_cash(cash=4500.0, nav=10000.0, threshold_pct=0.10)
+    
+    def test_has_excess_cash_below_threshold(self):
+        """Test excess cash detection below threshold."""
+        from scripts.growth_income_drip_rebalance import has_excess_cash
+        
+        # 5% cash should not trigger with 10% threshold
+        assert not has_excess_cash(cash=500.0, nav=10000.0, threshold_pct=0.10)
+        
+        # Exactly at threshold should not trigger
+        assert not has_excess_cash(cash=1000.0, nav=10000.0, threshold_pct=0.10)
+    
+    def test_has_excess_cash_zero_nav(self):
+        """Test excess cash detection with zero NAV."""
+        from scripts.growth_income_drip_rebalance import has_excess_cash
+        
+        assert not has_excess_cash(cash=1000.0, nav=0.0, threshold_pct=0.10)
+    
+    def test_deploy_residual_cash_proportional_allocation(self):
+        """Test that residual cash is deployed proportionally to current positions."""
+        from scripts.growth_income_drip_rebalance import deploy_residual_cash
+        
+        # Set up current positions with 2 holdings
+        current_positions = {
+            "AAPL": {"qty": 10, "market_value": 3000.0},  # 60% of portfolio
+            "MSFT": {"qty": 5, "market_value": 2000.0},   # 40% of portfolio
+        }
+        
+        broker = FakeBroker(prices={"AAPL": 150.0, "MSFT": 200.0})
+        cash_to_deploy = 1000.0
+        
+        actions = deploy_residual_cash(broker, current_positions, cash_to_deploy)
+        
+        # Should have submitted 2 buy orders
+        assert len(actions["buys"]) == 2
+        
+        # Find AAPL and MSFT orders
+        aapl_order = next((b for b in actions["buys"] if b["ticker"] == "AAPL"), None)
+        msft_order = next((b for b in actions["buys"] if b["ticker"] == "MSFT"), None)
+        
+        assert aapl_order is not None
+        assert msft_order is not None
+        
+        # AAPL should get ~60% of deployment ($600), which is 4 shares at $150
+        assert aapl_order["shares"] == 4
+        assert abs(aapl_order["allocated_usd"] - 600.0) < 1.0
+        
+        # MSFT should get ~40% of deployment ($400), which is 2 shares at $200
+        assert msft_order["shares"] == 2
+        assert abs(msft_order["allocated_usd"] - 400.0) < 1.0
+    
+    def test_deploy_residual_cash_no_positions(self):
+        """Test that residual cash deployment does nothing with no positions."""
+        from scripts.growth_income_drip_rebalance import deploy_residual_cash
+        
+        broker = FakeBroker(prices={})
+        actions = deploy_residual_cash(broker, {}, 1000.0)
+        
+        assert len(actions["buys"]) == 0
+        assert len(broker.orders_submitted) == 0
+    
+    def test_deploy_residual_cash_below_min_trade(self):
+        """Test that residual cash deployment respects min trade size."""
+        from scripts.growth_income_drip_rebalance import deploy_residual_cash
+        
+        current_positions = {
+            "AAPL": {"qty": 1, "market_value": 150.0},
+        }
+        
+        broker = FakeBroker(prices={"AAPL": 150.0})
+        
+        # Only $50 to deploy, below $100 min trade
+        actions = deploy_residual_cash(broker, current_positions, 50.0, min_trade_usd=100.0)
+        
+        assert len(actions["buys"]) == 0
+    
+    def test_deploy_residual_cash_skips_invalid_prices(self):
+        """Test that residual cash deployment skips tickers with invalid prices."""
+        from scripts.growth_income_drip_rebalance import deploy_residual_cash
+        
+        current_positions = {
+            "AAPL": {"qty": 10, "market_value": 1500.0},
+            "MSFT": {"qty": 5, "market_value": 1500.0},
+        }
+        
+        # Only provide price for AAPL
+        broker = FakeBroker(prices={"AAPL": 150.0})
+        
+        actions = deploy_residual_cash(broker, current_positions, 1000.0)
+        
+        # Should only deploy to AAPL
+        assert len(actions["buys"]) == 1
+        assert actions["buys"][0]["ticker"] == "AAPL"
+    
+    def test_deploy_residual_cash_multiple_positions(self):
+        """Test residual cash deployment across many positions."""
+        from scripts.growth_income_drip_rebalance import deploy_residual_cash
+        
+        # Create 5 equal-weight positions
+        current_positions = {
+            f"TICK{i}": {"qty": 10, "market_value": 1000.0}
+            for i in range(5)
+        }
+        
+        prices = {f"TICK{i}": 100.0 for i in range(5)}
+        broker = FakeBroker(prices=prices)
+        
+        actions = deploy_residual_cash(broker, current_positions, 5000.0)
+        
+        # Should deploy to all 5 positions
+        assert len(actions["buys"]) == 5
+        
+        # Each should get ~$1000 (20% of $5000)
+        for buy in actions["buys"]:
+            assert abs(buy["allocated_usd"] - 1000.0) < 1.0
+            assert buy["shares"] == 10  # $1000 / $100 per share
+
+
+class TestConcurrencyIsolation:
+    """Tests for workflow concurrency group isolation."""
+    
+    def test_concurrency_groups_distinct(self):
+        """Test that drip and wheel use different concurrency groups."""
+        drip_group = "aletheia-drip-paper"
+        wheel_group = "aletheia-wheel-paper"
+        
+        assert drip_group != wheel_group
+        
+        # Verify in workflow files
+        drip_workflow = Path(".github/workflows/drip-daily-snapshot.yml")
+        wheel_workflow = Path(".github/workflows/daily-wheel-scan.yml")
+        
+        if drip_workflow.exists():
+            drip_content = drip_workflow.read_text()
+            assert drip_group in drip_content
+            assert wheel_group not in drip_content
+        
+        if wheel_workflow.exists():
+            wheel_content = wheel_workflow.read_text()
+            assert wheel_group in wheel_content
+            assert drip_group not in wheel_content
+
+
 class TestPerformancePathIsolation:
     """Tests for performance data path isolation."""
     
