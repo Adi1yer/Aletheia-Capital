@@ -4,12 +4,17 @@ from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from src.options.wheel_lifecycle import parse_occ_symbol, should_manage_short
-from src.options.wheel_universe import WheelCandidate, extract_price_adv, screen_wheel_candidates
+from src.options.wheel_universe import (
+    WheelCandidate,
+    extract_price_adv,
+    screen_wheel_candidates,
+)
 from src.portfolio.models import Portfolio, Position
 from src.portfolio.wheel_allocator import allocate_wheel_hybrid_book
 from src.portfolio.wheel_policy import apply_wheel_defaults
 from src.trading.execution_status import can_submit_live_orders
-from src.trading.run_config import load_run_profile, merge_run_profile, apply_wheel_defaults as apply_wh_rc
+from src.trading.run_config import apply_wheel_defaults as apply_wh_rc
+from src.trading.run_config import load_run_profile, merge_run_profile
 
 
 def test_wheel_profile_enables_cc_csp():
@@ -107,7 +112,11 @@ def test_allocate_builds_100_share_lot():
     )
     assert decisions["F"].action == "buy"
     assert decisions["F"].quantity == 100
-    assert "F" in diag["csp_candidates"] or "F" in diag["cc_lot_tickers"] or decisions["F"].quantity == 100
+    assert (
+        "F" in diag["csp_candidates"]
+        or "F" in diag["cc_lot_tickers"]
+        or decisions["F"].quantity == 100
+    )
     assert diag.get("cc_lot_build_count", 0) >= 1
 
 
@@ -167,7 +176,15 @@ def test_allocate_keeps_held_directional_outside_top_n():
             "IT": Position(long=1, long_cost_basis=180.0),
         },
     )
-    prices = {"F": 12.0, "IT": 180.0, "ACN": 180.0, "CTSH": 60.0, "MAS": 70.0, "NTNX": 70.0, "FOO": 50.0}
+    prices = {
+        "F": 12.0,
+        "IT": 180.0,
+        "ACN": 180.0,
+        "CTSH": 60.0,
+        "MAS": 70.0,
+        "NTNX": 70.0,
+        "FOO": 50.0,
+    }
     wheel = [WheelCandidate("F", 12.0, 80_000_000, 500, 0.9)]
     decisions, diag = allocate_wheel_hybrid_book(
         portfolio=portfolio,
@@ -264,7 +281,7 @@ def test_can_submit_live_orders_cutoff():
 
 def test_wheel_late_job_equity_and_options_cutoffs():
     """Test wheel strategy with late GitHub Actions job start.
-    
+
     Equity cutoff 15:50, options cutoff 15:55 allow late jobs to still trade.
     Previously: 15:30 equity cutoff blocked directional buys when job started late.
     """
@@ -274,7 +291,7 @@ def test_wheel_late_job_equity_and_options_cutoffs():
     options_ok, options_reason = can_submit_live_orders(dt_1540, cutoff_et="15:55")
     assert equity_ok is True, f"Equity at 15:40 ET should submit: {equity_reason}"
     assert options_ok is True, f"Options at 15:40 ET should submit: {options_reason}"
-    
+
     # 15:52 ET — past equity cutoff, options still ok
     dt_1552 = datetime(2026, 9, 15, 19, 52, tzinfo=ZoneInfo("UTC"))
     equity_ok2, equity_reason2 = can_submit_live_orders(dt_1552, cutoff_et="15:50")
@@ -282,7 +299,7 @@ def test_wheel_late_job_equity_and_options_cutoffs():
     assert equity_ok2 is False, "Equity at 15:52 ET should be blocked"
     assert "past_cutoff:15:50" in equity_reason2
     assert options_ok2 is True, f"Options at 15:52 ET should still submit: {options_reason2}"
-    
+
     # 15:56 ET — both past cutoff
     dt_1556 = datetime(2026, 9, 15, 19, 56, tzinfo=ZoneInfo("UTC"))
     equity_ok3, equity_reason3 = can_submit_live_orders(dt_1556, cutoff_et="15:50")
@@ -350,9 +367,27 @@ def test_underhedge_trim_orders_keeps_covered_lot():
         },
     )
     opts = [
-        {"symbol": "F260918C00012000", "side": "short", "qty": 1, "option_type": "call", "underlying": "F"},
-        {"symbol": "NOK260918C00006000", "side": "short", "qty": 1, "option_type": "call", "underlying": "NOK"},
-        {"symbol": "ITUB260918C00007000", "side": "short", "qty": 1, "option_type": "call", "underlying": "ITUB"},
+        {
+            "symbol": "F260918C00012000",
+            "side": "short",
+            "qty": 1,
+            "option_type": "call",
+            "underlying": "F",
+        },
+        {
+            "symbol": "NOK260918C00006000",
+            "side": "short",
+            "qty": 1,
+            "option_type": "call",
+            "underlying": "NOK",
+        },
+        {
+            "symbol": "ITUB260918C00007000",
+            "side": "short",
+            "qty": 1,
+            "option_type": "call",
+            "underlying": "ITUB",
+        },
         # CPNG has extra shares but no short — atomic unwind, not this trim
     ]
     orders = dict(underhedge_trim_orders(port, opts))
@@ -428,9 +463,7 @@ def test_underhedge_trim_credits_session_fill_when_broker_shorts_stale():
         }
     ]
     # Inferred floor is prior + filled (1+1), not live + filled.
-    assert underhedge_trim_orders(
-        port, stale_opts, extra_short_calls={"F": 2}
-    ) == []
+    assert underhedge_trim_orders(port, stale_opts, extra_short_calls={"F": 2}) == []
 
     class StaleBroker:
         def sync_portfolio(self):
@@ -592,11 +625,30 @@ def test_underhedge_trim_credits_working_short_call_order():
 def test_short_call_qty_zero_is_not_one():
     from src.options.covered_calls import short_call_qty_by_underlying
 
+    assert (
+        short_call_qty_by_underlying(
+            [
+                {
+                    "symbol": "F260918C00012000",
+                    "side": "short",
+                    "qty": 0,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+        )
+        == {}
+    )
     assert short_call_qty_by_underlying(
-        [{"symbol": "F260918C00012000", "side": "short", "qty": 0, "option_type": "call", "underlying": "F"}]
-    ) == {}
-    assert short_call_qty_by_underlying(
-        [{"symbol": "F260918C00012000", "side": "short", "qty": 2, "option_type": "call", "underlying": "F"}]
+        [
+            {
+                "symbol": "F260918C00012000",
+                "side": "short",
+                "qty": 2,
+                "option_type": "call",
+                "underlying": "F",
+            }
+        ]
     ) == {"F": 2}
 
 
@@ -608,7 +660,15 @@ def test_identify_callable_normalizes_ticker_case():
     cands = mgr.identify_callable_positions(
         portfolio,
         ["f"],
-        [{"symbol": "F261002C00013000", "side": "short", "underlying": "F", "option_type": "call", "qty": 1}],
+        [
+            {
+                "symbol": "F261002C00013000",
+                "side": "short",
+                "underlying": "F",
+                "option_type": "call",
+                "qty": 1,
+            }
+        ],
     )
     assert len(cands) == 1
     assert cands[0]["ticker"] == "F"
@@ -969,7 +1029,11 @@ def test_manage_or_roll_never_rolls_puts_into_calls():
     )
     assert any(r.get("status") == "would_btc" for r in results)
     assert not any(r.get("status") in ("would_roll", "roll_executed") for r in results)
-    assert all(r.get("option_type") != "call" or r.get("status") == "hold" for r in results if r.get("status") == "would_btc")
+    assert all(
+        r.get("option_type") != "call" or r.get("status") == "hold"
+        for r in results
+        if r.get("status") == "would_btc"
+    )
     btc = next(r for r in results if r.get("status") == "would_btc")
     assert btc.get("option_type") == "put"
 
@@ -1008,8 +1072,14 @@ def test_orphan_blocked_when_short_option_open():
         short_option_underlyings={"ADBE"},
         preflight_ok={"F"},
     )
-    assert "ADBE" not in decisions or decisions.get("ADBE") is None or getattr(decisions.get("ADBE"), "action", None) != "sell"
-    assert any(s.get("reason") == "orphan_blocked_open_short_option" for s in diag.get("skipped") or [])
+    assert (
+        "ADBE" not in decisions
+        or decisions.get("ADBE") is None
+        or getattr(decisions.get("ADBE"), "action", None) != "sell"
+    )
+    assert any(
+        s.get("reason") == "orphan_blocked_open_short_option" for s in diag.get("skipped") or []
+    )
 
 
 def test_directional_capped_at_99():
@@ -1118,7 +1188,15 @@ def test_underhedged_identifies_top_up_lots():
     cands = mgr.identify_callable_positions(
         portfolio,
         ["F"],
-        [{"symbol": "F261002C00013000", "side": "short", "underlying": "F", "option_type": "call", "qty": 1}],
+        [
+            {
+                "symbol": "F261002C00013000",
+                "side": "short",
+                "underlying": "F",
+                "option_type": "call",
+                "qty": 1,
+            }
+        ],
     )
     assert len(cands) == 1
     assert cands[0]["callable_lots"] == 1
@@ -1128,7 +1206,9 @@ def test_zero_mark_does_not_trigger_profit_take():
     from src.options.wheel_lifecycle import short_option_profit_pct
 
     assert short_option_profit_pct({"avg_entry_price": 0.40, "current_price": 0.0}) is None
-    assert abs(short_option_profit_pct({"avg_entry_price": 0.40, "current_price": 0.10}) - 0.75) < 1e-9
+    assert (
+        abs(short_option_profit_pct({"avg_entry_price": 0.40, "current_price": 0.10}) - 0.75) < 1e-9
+    )
 
 
 def test_wait_for_order_fill_success_and_timeout():
@@ -1279,9 +1359,7 @@ def test_select_contract_widens_band_when_floor_above_hi():
                 }
             ]
 
-    contract, reason = mgr.select_contract(
-        "F", 12.0, 55, _Broker(), strike_floor_otm=0.10
-    )
+    contract, reason = mgr.select_contract("F", 12.0, 55, _Broker(), strike_floor_otm=0.10)
     assert contract is not None, reason
     assert captured["strike_gte"] > 12.0 * 1.08
     assert captured["strike_lte"] >= 12.0 * 1.12
@@ -1539,9 +1617,7 @@ def test_csp_skips_underlying_that_already_has_short_put():
         csp_scores={"NU": 60},
         current_prices={"NU": 13.5},
         max_collateral_usd=5000.0,
-        option_positions=[
-            {"symbol": "NU261030P00013000", "side": "short", "qty": 1}
-        ],
+        option_positions=[{"symbol": "NU261030P00013000", "side": "short", "qty": 1}],
     )
     assert results and results[0]["status"] == "skipped"
     assert results[0]["reason"] == "already_has_short_put"
@@ -1870,9 +1946,7 @@ def test_losing_itm_mark_is_not_fake_profit_take():
     from src.options.wheel_lifecycle import short_option_profit_pct, should_manage_short
 
     # Per-share mark already (Alpaca path). Losing short must not look like 95% profit.
-    pct = short_option_profit_pct(
-        {"avg_entry_price": 0.40, "current_price": 2.05}
-    )
+    pct = short_option_profit_pct({"avg_entry_price": 0.40, "current_price": 2.05})
     assert pct is not None and pct < 0.01
     manage, reason = should_manage_short(
         option_type="call",
