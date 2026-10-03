@@ -789,5 +789,157 @@ class TestPerformancePathIsolation:
         assert not str(wheel_path).startswith(str(drip_path))
 
 
+class TestDripEmail:
+    """Tests for drip email formatting."""
+    
+    def test_build_drip_daily_email_basic(self):
+        """Test basic email building with minimal data."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {
+            "AAPL": {"qty": 10, "market_value": 1500.0},
+            "MSFT": {"qty": 5, "market_value": 1500.0},
+        }
+        
+        subject, body = build_drip_daily_email(
+            nav=10500.0,
+            cash=500.0,
+            positions=positions,
+            last_rebalance="2026-09-27",
+            rebalance_due=False,
+        )
+        
+        # Verify subject
+        assert "growth-income-drip-v1" in subject
+        assert "10,500" in subject or "10500" in subject
+        
+        # Verify body contains required fields
+        assert "PORTFOLIO ALLOCATION" in body
+        assert "Cash:" in body
+        assert "Invested:" in body
+        assert "SLEEVE BREAKDOWN" in body
+        assert "TOP HOLDINGS" in body
+        assert "AAPL" in body
+        assert "MSFT" in body
+        assert "REBALANCE STATUS" in body
+    
+    def test_email_contains_cash_percentage(self):
+        """Test that email includes cash as percentage of NAV."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {"AAPL": {"qty": 10, "market_value": 9500.0}}
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=500.0,
+            positions=positions,
+        )
+        
+        # Should show cash percentage (5% in this case)
+        assert "Cash:" in body
+        assert "500" in body
+        assert "5.0%" in body or "(5%" in body
+    
+    def test_email_contains_invested_dollars_and_percent(self):
+        """Test that email includes invested dollars and percentage."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {
+            "AAPL": {"qty": 10, "market_value": 5000.0},
+            "MSFT": {"qty": 5, "market_value": 3000.0},
+        }
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=2000.0,
+            positions=positions,
+        )
+        
+        # Should show invested amount and percentage
+        assert "Invested:" in body
+        assert "8,000" in body or "8000" in body
+        assert "80.0%" in body or "(80%" in body
+    
+    def test_email_contains_sleeve_breakdown(self):
+        """Test that email includes growth vs ballast sleeve breakdown."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {
+            "AAPL": {"qty": 10, "market_value": 6000.0},
+            "JNJ": {"qty": 5, "market_value": 2000.0},
+        }
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=2000.0,
+            positions=positions,
+            growth_nav=6000.0,
+            ballast_nav=2000.0,
+        )
+        
+        # Should show sleeve breakdown
+        assert "SLEEVE BREAKDOWN" in body
+        assert "Growth sleeve:" in body
+        assert "Dividend ballast:" in body
+        assert "6,000" in body or "6000" in body
+        assert "2,000" in body or "2000" in body
+        assert "60.0%" in body or "(60%" in body
+        assert "20.0%" in body or "(20%" in body
+        assert "target 80%" in body
+        assert "target 20%" in body
+    
+    def test_email_contains_top_holdings(self):
+        """Test that email includes top holdings detail."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {
+            "AAPL": {"qty": 10, "market_value": 5000.0},
+            "MSFT": {"qty": 5, "market_value": 3000.0},
+            "GOOGL": {"qty": 2, "market_value": 2000.0},
+            "AMZN": {"qty": 1, "market_value": 1000.0},
+        }
+        
+        subject, body = build_drip_daily_email(
+            nav=12000.0,
+            cash=1000.0,
+            positions=positions,
+        )
+        
+        # Should show top holdings
+        assert "TOP HOLDINGS" in body
+        assert "AAPL" in body
+        assert "10 shares" in body
+        assert "MSFT" in body
+        assert "5 shares" in body
+    
+    def test_email_contains_spy_comparison(self):
+        """Test that email includes SPY since start and excess return."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {"AAPL": {"qty": 10, "market_value": 9000.0}}
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=1000.0,
+            positions=positions,
+            spy_since_start_pct=5.0,
+            excess_return_pct=2.5,
+            track_return_pct=7.5,
+        )
+        
+        # Should show SPY comparison
+        assert "TRACK PERFORMANCE" in body
+        assert "SPY since start:" in body
+        assert "+5.00%" in body
+        assert "Excess return:" in body
+        assert "+2.50%" in body
+        assert "Track return:" in body
+        assert "+7.50%" in body
+        
+        # Subject should also include SPY data
+        assert "SPY" in subject
+        assert "excess" in subject
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

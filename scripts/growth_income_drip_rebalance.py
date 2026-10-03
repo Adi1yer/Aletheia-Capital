@@ -27,9 +27,13 @@ from src.performance.drip_track import (
     is_quarterly_rebalance_due,
     record_last_rebalance,
     get_last_rebalance_date,
+    calculate_returns,
     TRACK_ID,
+    START_DATE,
+    START_NAV_USD,
 )
 from src.utils.email import get_email_notifier
+from src.utils.drip_email import build_drip_daily_email
 from src.portfolio.manager import PortfolioDecision
 
 logger = structlog.get_logger()
@@ -78,6 +82,40 @@ def get_liquid_universe(size: int = 200) -> List[str]:
         "KEYS", "ROK", "ANET", "EXC", "FTV", "PKI", "TDY", "AWK", "AEE", "LNT",
     ]
     return universe[:size]
+
+
+def calculate_sleeve_breakdown(
+    positions: Dict[str, Dict],
+    growth_tickers: Optional[List[str]] = None,
+    ballast_tickers: Optional[List[str]] = None,
+) -> Tuple[float, float]:
+    """
+    Calculate growth and ballast sleeve market values from positions.
+    
+    Args:
+        positions: Current positions dictionary
+        growth_tickers: List of growth sleeve tickers (if known)
+        ballast_tickers: List of ballast sleeve tickers (if known)
+        
+    Returns:
+        Tuple of (growth_nav, ballast_nav)
+    """
+    growth_set = set(growth_tickers or [])
+    ballast_set = set(ballast_tickers or [])
+    
+    growth_nav = 0.0
+    ballast_nav = 0.0
+    
+    for ticker, pos in positions.items():
+        market_value = pos.get("market_value", 0)
+        if ticker in growth_set:
+            growth_nav += market_value
+        elif ticker in ballast_set:
+            ballast_nav += market_value
+        # If ticker is in neither set, we can't classify it
+        # This happens when we don't have the latest selection data
+    
+    return growth_nav, ballast_nav
 
 
 def calculate_target_allocations(
@@ -540,6 +578,40 @@ def main():
             cash_pct=cash/nav*100 if nav > 0 else 0,
         )
     
+    # Fetch SPY data for benchmark comparison
+    spy_level = None
+    try:
+        spy_prices = broker.get_last_equity_prices(["SPY"])
+        spy_level = spy_prices.get("SPY")
+        if spy_level:
+            logger.info("Fetched SPY level", spy_level=spy_level)
+    except Exception as e:
+        logger.warning("Failed to fetch SPY data", error=str(e))
+    
+    # Calculate sleeve breakdown if we have selection data
+    growth_nav = None
+    ballast_nav = None
+    growth_tickers = []
+    ballast_tickers = []
+    
+    # Try to infer sleeve breakdown from latest snapshot or use current positions
+    # For daily snapshots without rebalance, we don't have fresh selection data
+    # So we'll leave growth_nav and ballast_nav as None unless we just rebalanced
+    if rebalance_due and args.execute:
+        # We have fresh selection data from rebalance
+        try:
+            universe = get_liquid_universe(200)
+            momentum = MomentumSelector(lookback_months=12, skip_months=1, top_n=30)
+            growth_tickers = momentum.select(universe)
+            ballast = DividendBallastSelector(min_dividend_yield=0.02, max_holdings=15)
+            ballast_tickers = ballast.select(universe)
+            growth_nav, ballast_nav = calculate_sleeve_breakdown(
+                current_positions, growth_tickers, ballast_tickers
+            )
+            logger.info("Calculated sleeve breakdown", growth_nav=growth_nav, ballast_nav=ballast_nav)
+        except Exception as e:
+            logger.warning("Failed to calculate sleeve breakdown", error=str(e))
+    
     # Always record daily snapshot
     record_snapshot(
         nav=nav,
@@ -549,9 +621,34 @@ def main():
             "growth_weight": args.growth_weight,
             "ballast_weight": args.ballast_weight,
         },
+        growth_nav=growth_nav,
+        ballast_nav=ballast_nav,
+        spy_level=spy_level,
     )
     
     logger.info("Snapshot recorded")
+    
+    # Load historical snapshots to calculate returns
+    from src.performance.drip_track import snapshot_dir
+    snapshots = []
+    try:
+        snap_dir = snapshot_dir()
+        if snap_dir.exists():
+            for snap_file in sorted(snap_dir.glob("snapshot_*.json")):
+                try:
+                    import json
+                    with open(snap_file) as f:
+                        snapshots.append(json.load(f))
+                except Exception as e:
+                    logger.warning("Failed to load snapshot", file=snap_file, error=str(e))
+    except Exception as e:
+        logger.warning("Failed to load snapshots", error=str(e))
+    
+    # Calculate returns for email
+    returns = calculate_returns(snapshots) if snapshots else {}
+    spy_since_start_pct = returns.get("spy_return_pct")
+    excess_return_pct = returns.get("excess_return_pct")
+    track_return_pct = returns.get("total_return_pct")
     
     # Send email notification
     try:
@@ -561,33 +658,31 @@ def main():
         else:
             notifier = get_email_notifier()
             if notifier:
-                # Determine what action was taken
-                action_type = "Daily Snapshot"
-                if rebalance_due and args.execute:
-                    action_type = "Quarterly Rebalance Executed"
-                elif args.execute and has_excess_cash(cash, nav, threshold_pct=0.10):
-                    action_type = "Residual Cash Deployed"
-                    
-                subject = f"[{TRACK_ID}] {action_type}"
-                
-                # Get fresh account info for email
+                # Get fresh account info after trades for accurate email
                 account = broker.get_account()
                 email_nav = float(account.get("equity", 0))
                 email_cash = float(account.get("cash", 0))
                 email_positions = broker.get_positions()
+                email_positions_dict = {
+                    symbol: {"qty": int(pos["qty"]), "market_value": float(pos["market_value"])}
+                    for symbol, pos in email_positions.items()
+                }
                 
-                body = f"""
-Growth-Income-Drip {action_type}
-
-NAV: ${email_nav:,.2f}
-Cash: ${email_cash:,.2f} ({email_cash/email_nav*100:.1f}%)
-Positions: {len(email_positions)}
-
-Rebalance Due: {rebalance_due}
-Last Rebalance: {last_rebalance}
-
-Track: {TRACK_ID}
-            """
+                subject, body = build_drip_daily_email(
+                    nav=email_nav,
+                    cash=email_cash,
+                    positions=email_positions_dict,
+                    last_rebalance=str(last_rebalance) if last_rebalance else None,
+                    rebalance_due=rebalance_due,
+                    growth_nav=growth_nav,
+                    ballast_nav=ballast_nav,
+                    spy_since_start_pct=spy_since_start_pct,
+                    excess_return_pct=excess_return_pct,
+                    track_return_pct=track_return_pct,
+                    track_id=TRACK_ID,
+                    start_date=START_DATE.isoformat(),
+                    start_nav=START_NAV_USD,
+                )
                 notifier.send_email(recipient, subject, body)
                 logger.info("Email sent", recipient=recipient)
     except Exception as e:
