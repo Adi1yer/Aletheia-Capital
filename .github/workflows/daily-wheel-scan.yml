@@ -2,10 +2,10 @@ name: Daily Wheel Scan & Rebalance
 
 on:
   schedule:
-    # 14:30 UTC ≈ 9:30 AM EST / 10:30 AM EDT. Winter starts at the open; summer
-    # starts one hour after. GH delay buffer remains; pipeline also waits if
-    # before_open and rechecks cutoff before equity/CC submits.
-    - cron: '30 14 * * 1-5'
+    # 13:30 UTC = 9:30 AM EDT / 8:30 AM EST. Summer starts at open; winter waits
+    # until 9:30 ET via before_open logic. Earlier schedule reduces GH Actions delay
+    # impact: job still submits equity orders when starting late but in-session.
+    - cron: '30 13 * * 1-5'
   workflow_dispatch:
     inputs:
       force_full_rebalance:
