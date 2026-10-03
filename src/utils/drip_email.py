@@ -47,6 +47,8 @@ def build_drip_daily_email(
     track_id: str = "growth-income-drip-v1",
     start_date: str = "2026-09-27",
     start_nav: float = 10000.0,
+    dividend_cash: Optional[float] = None,
+    drip_buys: Optional[List[Dict]] = None,
 ) -> Tuple[str, str]:
     """
     Build enhanced daily snapshot email for drip track.
@@ -65,6 +67,8 @@ def build_drip_daily_email(
         track_id: Track identifier
         start_date: Track start date
         start_nav: Track starting NAV
+        dividend_cash: Accumulated dividend cash for drip
+        drip_buys: List of dividend drip buy trades executed
         
     Returns:
         Tuple of (subject, body_text)
@@ -164,9 +168,31 @@ def build_drip_daily_email(
     lines.append(f"  Last rebalance: {last_rebalance or 'Never'}")
     lines.append("")
     
+    # Dividend drip status
+    if dividend_cash is not None or (drip_buys and len(drip_buys) > 0):
+        lines.append("DIVIDEND DRIP")
+        lines.append("-" * 40)
+        if dividend_cash is not None:
+            lines.append(f"  Accumulated dividend cash: ${dividend_cash:,.2f}")
+        if drip_buys and len(drip_buys) > 0:
+            lines.append(f"  Drip buys executed: {len(drip_buys)}")
+            for buy in drip_buys[:5]:  # Show first 5
+                ticker = buy.get("ticker", "?")
+                shares = buy.get("shares", 0)
+                amount = _f(buy.get("drip_amount", 0))
+                lines.append(f"    {ticker}: {shares} shares @ ${amount:,.2f}")
+            if len(drip_buys) > 5:
+                lines.append(f"    ... and {len(drip_buys) - 5} more")
+        else:
+            lines.append("  No drip trades executed today")
+        lines.append("")
+    
     # Footer
     lines.append("-" * 72)
-    lines.append("This is an automated daily snapshot. No trades executed.")
+    if drip_buys and len(drip_buys) > 0:
+        lines.append("Trades executed: Dividend drip reinvestment into growth sleeve.")
+    else:
+        lines.append("This is an automated daily snapshot. No trades executed.")
     lines.append(f"Track: {track_id} | Strategy: 80% growth momentum, 20% dividend ballast")
     
     body = "\n".join(lines)

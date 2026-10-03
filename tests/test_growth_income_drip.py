@@ -145,6 +145,57 @@ class TestDividendDripManager:
         
         assert manager.accumulated_cash == 0.0
         assert manager.dividend_history == []
+    
+    def test_state_persistence(self, tmp_path):
+        """Test state persistence to file."""
+        state_file = tmp_path / "drip_state.json"
+        
+        # Create manager and record dividends
+        manager1 = DividendDripManager(data_file=str(state_file))
+        ex_date = datetime(2026, 3, 15)
+        payment_date = datetime(2026, 3, 30)
+        
+        manager1.record_dividend("AAPL", 100.0, ex_date, payment_date, activity_id="act_1")
+        manager1.record_dividend("MSFT", 50.0, ex_date, payment_date, activity_id="act_2")
+        
+        assert manager1.accumulated_cash == 150.0
+        assert len(manager1.dividend_history) == 2
+        
+        # Create new manager with same file - should load state
+        manager2 = DividendDripManager(data_file=str(state_file))
+        assert manager2.accumulated_cash == 150.0
+        assert len(manager2.dividend_history) == 2
+        assert "act_1" in manager2.processed_activity_ids
+        assert "act_2" in manager2.processed_activity_ids
+    
+    def test_duplicate_activity_prevention(self, tmp_path):
+        """Test that duplicate activities are not recorded twice."""
+        state_file = tmp_path / "drip_state.json"
+        manager = DividendDripManager(data_file=str(state_file))
+        ex_date = datetime(2026, 3, 15)
+        payment_date = datetime(2026, 3, 30)
+        
+        # Record same activity twice
+        manager.record_dividend("AAPL", 100.0, ex_date, payment_date, activity_id="act_1")
+        manager.record_dividend("AAPL", 100.0, ex_date, payment_date, activity_id="act_1")
+        
+        # Should only be recorded once
+        assert manager.accumulated_cash == 100.0
+        assert len(manager.dividend_history) == 1
+    
+    def test_execute_drip_saves_state(self, tmp_path):
+        """Test that execute_drip saves state."""
+        state_file = tmp_path / "drip_state.json"
+        manager = DividendDripManager(data_file=str(state_file))
+        ex_date = datetime(2026, 3, 15)
+        payment_date = datetime(2026, 3, 30)
+        
+        manager.record_dividend("AAPL", 100.0, ex_date, payment_date)
+        manager.execute_drip(60.0)
+        
+        # Load new manager - should reflect drip execution
+        manager2 = DividendDripManager(data_file=str(state_file))
+        assert manager2.accumulated_cash == 40.0
 
 
 class TestDripTrack:
@@ -939,6 +990,122 @@ class TestDripEmail:
         # Subject should also include SPY data
         assert "SPY" in subject
         assert "excess" in subject
+
+
+class TestDividendDripExecution:
+    """Tests for dividend drip execution in daily workflow."""
+    
+    def test_process_dividends(self):
+        """Test processing dividend activities from broker."""
+        from scripts.growth_income_drip_rebalance import process_dividends
+        
+        # Mock broker with dividend activities
+        class MockBroker:
+            def get_account_activities(self, activity_types=None, date_start=None, date_end=None):
+                return [
+                    {
+                        "activity_type": "DIV",
+                        "date": "2026-10-01T12:00:00+00:00",
+                        "net_amount": 50.0,
+                        "symbol": "AAPL",
+                        "description": "Dividend from AAPL",
+                        "id": "div_1",
+                    },
+                    {
+                        "activity_type": "DIV",
+                        "date": "2026-10-02T12:00:00+00:00",
+                        "net_amount": 30.0,
+                        "symbol": "MSFT",
+                        "description": "Dividend from MSFT",
+                        "id": "div_2",
+                    },
+                ]
+        
+        broker = MockBroker()
+        manager = DividendDripManager()
+        
+        dividend_cash = process_dividends(broker, manager)
+        
+        assert dividend_cash == 80.0
+        assert len(manager.dividend_history) == 2
+    
+    def test_execute_dividend_drip_with_sufficient_cash(self):
+        """Test dividend drip execution when sufficient cash is available."""
+        from scripts.growth_income_drip_rebalance import execute_dividend_drip
+        
+        broker = FakeBroker(prices={"AAPL": 150.0, "MSFT": 300.0})
+        manager = DividendDripManager()
+        
+        # Record dividends
+        ex_date = datetime(2026, 10, 1)
+        manager.record_dividend("PG", 300.0, ex_date, ex_date)
+        
+        growth_tickers = ["AAPL", "MSFT"]
+        result = execute_dividend_drip(broker, manager, growth_tickers, min_drip_amount=100.0)
+        
+        # Should execute drip buys
+        assert len(result["drip_buys"]) == 2
+        assert any(b["ticker"] == "AAPL" for b in result["drip_buys"])
+        assert any(b["ticker"] == "MSFT" for b in result["drip_buys"])
+        
+        # Accumulated cash should be reduced
+        assert manager.get_drip_amount() < 300.0
+    
+    def test_execute_dividend_drip_with_insufficient_cash(self):
+        """Test dividend drip skips when insufficient cash."""
+        from scripts.growth_income_drip_rebalance import execute_dividend_drip
+        
+        broker = FakeBroker(prices={"AAPL": 150.0})
+        manager = DividendDripManager()
+        
+        # Record small dividend
+        ex_date = datetime(2026, 10, 1)
+        manager.record_dividend("PG", 50.0, ex_date, ex_date)
+        
+        growth_tickers = ["AAPL"]
+        result = execute_dividend_drip(broker, manager, growth_tickers, min_drip_amount=100.0)
+        
+        # Should not execute drip
+        assert len(result["drip_buys"]) == 0
+        
+        # Cash should remain unchanged
+        assert manager.get_drip_amount() == 50.0
+    
+    def test_execute_dividend_drip_with_no_growth_tickers(self):
+        """Test dividend drip skips when no growth tickers available."""
+        from scripts.growth_income_drip_rebalance import execute_dividend_drip
+        
+        broker = FakeBroker(prices={})
+        manager = DividendDripManager()
+        
+        # Record dividends
+        ex_date = datetime(2026, 10, 1)
+        manager.record_dividend("PG", 300.0, ex_date, ex_date)
+        
+        result = execute_dividend_drip(broker, manager, [], min_drip_amount=100.0)
+        
+        # Should not execute drip
+        assert len(result["drip_buys"]) == 0
+        
+        # Cash should remain unchanged
+        assert manager.get_drip_amount() == 300.0
+    
+    def test_dividend_drip_uses_drip_alpaca_only(self):
+        """Test that dividend drip uses DRIP_ALPACA secrets."""
+        from scripts.growth_income_drip_rebalance import get_drip_broker
+        
+        # Verify get_drip_broker requires DRIP_ALPACA secrets
+        old_api = os.environ.pop("DRIP_ALPACA_API_KEY", None)
+        old_secret = os.environ.pop("DRIP_ALPACA_SECRET_KEY", None)
+        
+        try:
+            with pytest.raises(ValueError, match="DRIP_ALPACA"):
+                get_drip_broker()
+        finally:
+            if old_api:
+                os.environ["DRIP_ALPACA_API_KEY"] = old_api
+            if old_secret:
+                os.environ["DRIP_ALPACA_SECRET_KEY"] = old_secret
 
 
 if __name__ == "__main__":

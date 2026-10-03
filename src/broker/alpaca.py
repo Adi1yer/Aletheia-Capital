@@ -298,6 +298,74 @@ class AlpacaBroker:
             logger.error("Error fetching recent orders", error=str(e))
             return []
 
+    def get_account_activities(
+        self,
+        activity_types: Optional[List[str]] = None,
+        date_start: Optional[date] = None,
+        date_end: Optional[date] = None,
+        page_size: int = 100,
+    ) -> List[Dict]:
+        """
+        Get account activities (dividends, fees, etc.) from Alpaca.
+        
+        Args:
+            activity_types: List of activity types to filter (e.g., ['DIV', 'DIVCGL'])
+                           If None, defaults to dividend types
+            date_start: Start date for activities (inclusive)
+            date_end: End date for activities (inclusive)
+            page_size: Number of records per page (max 100)
+            
+        Returns:
+            List of activity dictionaries with keys:
+                - activity_type: Type of activity (DIV, DIVCGL, etc.)
+                - date: Date of activity
+                - net_amount: Net amount in USD
+                - symbol: Stock ticker (for dividends)
+                - description: Activity description
+                - id: Activity ID
+        """
+        try:
+            from alpaca.trading.requests import GetAccountActivitiesRequest
+            from alpaca.trading.enums import ActivityType
+            
+            # Default to dividend types if not specified
+            if activity_types is None:
+                activity_types = ['DIV', 'DIVCGL']
+            
+            # Convert string types to enum
+            try:
+                enum_types = [ActivityType[t] for t in activity_types]
+            except KeyError as e:
+                logger.warning("Invalid activity type", error=str(e), types=activity_types)
+                enum_types = [ActivityType.DIV]
+            
+            req = GetAccountActivitiesRequest(
+                activity_types=enum_types,
+                date=date_start,
+                until=date_end,
+                page_size=min(page_size, 100),
+            )
+            
+            activities = alpaca_call_with_retry(
+                lambda: self.client.get_activities(req),
+                op="get_account_activities",
+            )
+            
+            return [
+                {
+                    "activity_type": getattr(a.activity_type, "value", str(a.activity_type)),
+                    "date": str(a.date) if hasattr(a, "date") and a.date else str(a.transaction_time) if hasattr(a, "transaction_time") else None,
+                    "net_amount": float(a.net_amount) if hasattr(a, "net_amount") else 0.0,
+                    "symbol": str(a.symbol) if hasattr(a, "symbol") and a.symbol else None,
+                    "description": str(a.description) if hasattr(a, "description") and a.description else "",
+                    "id": str(a.id) if hasattr(a, "id") else None,
+                }
+                for a in (activities or [])
+            ]
+        except Exception as e:
+            logger.error("Error fetching account activities", error=str(e))
+            return []
+
     def execute_order(
         self,
         ticker: str,
