@@ -10,7 +10,7 @@ Implements quarterly rebalance with:
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -435,6 +435,201 @@ def execute_delta_rebalance(
     return actions
 
 
+def process_dividends(broker: AlpacaBroker, drip_manager: DividendDripManager) -> float:
+    """
+    Fetch recent dividend activities and record them in the drip manager.
+    
+    Args:
+        broker: Alpaca broker instance
+        drip_manager: Dividend drip manager
+        
+    Returns:
+        Accumulated dividend cash available for drip
+    """
+    from datetime import timedelta
+    
+    # Fetch activities from the last 90 days
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=90)
+    
+    activities = broker.get_account_activities(
+        activity_types=['DIV', 'DIVCGL'],
+        date_start=start_date,
+        date_end=end_date,
+    )
+    
+    # Record new dividends
+    for activity in activities:
+        if activity.get('net_amount', 0) > 0:
+            try:
+                # Parse date
+                date_str = activity.get('date')
+                if date_str:
+                    activity_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                else:
+                    activity_date = datetime.now()
+                
+                drip_manager.record_dividend(
+                    ticker=activity.get('symbol', 'UNKNOWN'),
+                    amount=float(activity.get('net_amount', 0)),
+                    ex_date=activity_date,
+                    payment_date=activity_date,
+                    activity_id=activity.get('id'),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to record dividend",
+                    activity=activity,
+                    error=str(e),
+                )
+    
+    return drip_manager.get_drip_amount()
+
+
+def execute_dividend_drip(
+    broker: AlpacaBroker,
+    drip_manager: DividendDripManager,
+    growth_tickers: List[str],
+    min_drip_amount: float = 100.0,
+) -> Dict[str, List[Dict]]:
+    """
+    Execute dividend drip into growth sleeve if sufficient cash accumulated.
+    
+    Args:
+        broker: Alpaca broker instance
+        drip_manager: Dividend drip manager
+        growth_tickers: List of growth sleeve tickers to drip into
+        min_drip_amount: Minimum cash to trigger drip (default $100)
+        
+    Returns:
+        Dictionary with 'drip_buys' list
+    """
+    drip_cash = drip_manager.get_drip_amount()
+    
+    if drip_cash < min_drip_amount:
+        logger.info(
+            "Insufficient drip cash",
+            drip_cash=drip_cash,
+            min_drip_amount=min_drip_amount,
+        )
+        return {"drip_buys": []}
+    
+    if not growth_tickers:
+        logger.warning("No growth tickers available for drip")
+        return {"drip_buys": []}
+    
+    logger.info(
+        "Executing dividend drip",
+        drip_cash=drip_cash,
+        growth_tickers_count=len(growth_tickers),
+    )
+    
+    # Get prices for growth tickers
+    try:
+        prices = broker.get_last_equity_prices(growth_tickers)
+    except Exception as e:
+        logger.error("Failed to fetch prices for drip", error=str(e))
+        return {"drip_buys": []}
+    
+    if not prices:
+        logger.warning("No prices available for drip")
+        return {"drip_buys": []}
+    
+    # Allocate drip cash equally across growth tickers, with redistribution
+    drip_buys = []
+    per_ticker_cash = drip_cash / len(growth_tickers)
+    
+    # First pass: allocate whole shares and track leftover
+    allocations = []
+    total_leftover = 0.0
+    
+    for ticker in growth_tickers:
+        price = prices.get(ticker, 0)
+        if price <= 0:
+            continue
+        
+        shares = int(per_ticker_cash / price)
+        allocated_cash = shares * price
+        leftover = per_ticker_cash - allocated_cash
+        
+        allocations.append({
+            "ticker": ticker,
+            "price": price,
+            "shares": shares,
+            "allocated_cash": allocated_cash,
+            "leftover": leftover,
+        })
+        total_leftover += leftover
+    
+    # Second pass: redistribute leftover to tickers that can buy another share
+    # Sort by how close they are to affording another share
+    if total_leftover > 0:
+        # Find tickers that can benefit from redistribution
+        can_buy_more = [(alloc, alloc["price"] - alloc["leftover"]) 
+                        for alloc in allocations 
+                        if alloc["price"] - alloc["leftover"] <= total_leftover]
+        
+        # Sort by gap (smallest gap first = closest to buying another share)
+        can_buy_more.sort(key=lambda x: x[1])
+        
+        remaining_leftover = total_leftover
+        for alloc, gap in can_buy_more:
+            if remaining_leftover >= gap and remaining_leftover >= alloc["price"]:
+                # Give this ticker one more share
+                alloc["shares"] += 1
+                alloc["allocated_cash"] += alloc["price"]
+                remaining_leftover -= alloc["price"]
+                logger.info(
+                    "Redistributed leftover to buy additional share",
+                    ticker=alloc["ticker"],
+                    additional_cost=alloc["price"],
+                    remaining_leftover=remaining_leftover,
+                )
+    
+    # Third pass: execute orders
+    for alloc in allocations:
+        if alloc["shares"] < 1:
+            continue
+        
+        try:
+            decision = PortfolioDecision(
+                action="buy",
+                quantity=alloc["shares"],
+                confidence=80,
+                reasoning=f"Dividend drip reinvestment (${alloc['allocated_cash']:.2f})",
+            )
+            order = broker.execute_order(alloc["ticker"], decision, current_price=alloc["price"])
+            
+            if order and order.get("success"):
+                drip_buys.append({
+                    "ticker": alloc["ticker"],
+                    "shares": alloc["shares"],
+                    "drip_amount": alloc["allocated_cash"],
+                    "order_id": order.get("order_id"),
+                })
+                logger.info(
+                    "Drip buy executed",
+                    ticker=alloc["ticker"],
+                    shares=alloc["shares"],
+                    amount=alloc["allocated_cash"],
+                )
+        except Exception as e:
+            logger.error("Drip buy failed", ticker=alloc["ticker"], shares=alloc["shares"], error=str(e))
+    
+    # Mark drip as executed
+    total_dripped = sum(b["drip_amount"] for b in drip_buys)
+    if total_dripped > 0:
+        drip_manager.execute_drip(total_dripped)
+        logger.info(
+            "Dividend drip complete",
+            total_dripped=total_dripped,
+            buys=len(drip_buys),
+            remaining=drip_manager.get_drip_amount(),
+        )
+    
+    return {"drip_buys": drip_buys}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Growth-income-drip quarterly rebalancer"
@@ -461,6 +656,12 @@ def main():
         default=0.20,
         help="Ballast sleeve weight (default 0.20)",
     )
+    parser.add_argument(
+        "--min-drip-amount",
+        type=float,
+        default=100.0,
+        help="Minimum cash to trigger dividend drip (default 100.0)",
+    )
     
     args = parser.parse_args()
     
@@ -472,6 +673,10 @@ def main():
     
     # Get broker
     broker = get_drip_broker()
+    
+    # Initialize dividend drip manager
+    drip_data_file = Path("data/performance/growth_income_drip_v1/dividend_drip_state.json")
+    drip_manager = DividendDripManager(data_file=str(drip_data_file))
     
     # Get account info
     account = broker.get_account()
@@ -492,9 +697,16 @@ def main():
         positions=len(current_positions),
     )
     
+    # Process dividends
+    dividend_cash = process_dividends(broker, drip_manager)
+    logger.info("Dividend cash available", dividend_cash=dividend_cash)
+    
     # Check if quarterly rebalance is due
     last_rebalance = get_last_rebalance_date()
     rebalance_due = args.force_rebalance or is_quarterly_rebalance_due(last_rebalance)
+    
+    growth_tickers = []
+    drip_actions = {"drip_buys": []}
     
     if rebalance_due and args.execute:
         logger.info("Quarterly rebalance due", last_rebalance=last_rebalance)
@@ -612,6 +824,27 @@ def main():
         except Exception as e:
             logger.warning("Failed to calculate sleeve breakdown", error=str(e))
     
+    # Execute dividend drip (daily, independent of quarterly rebalance)
+    if args.execute and dividend_cash >= args.min_drip_amount:
+        # If we just rebalanced, use the growth tickers from selection
+        # Otherwise, use current growth positions as drip targets
+        if not growth_tickers:
+            # Get growth positions (assuming positions without high dividend yields are growth)
+            growth_tickers = list(current_positions.keys())[:30]  # Top 30 by market value
+        
+        drip_actions = execute_dividend_drip(
+            broker,
+            drip_manager,
+            growth_tickers,
+            min_drip_amount=args.min_drip_amount,
+        )
+        
+        logger.info(
+            "Dividend drip complete",
+            drip_buys=len(drip_actions["drip_buys"]),
+            remaining_dividend_cash=drip_manager.get_drip_amount(),
+        )
+    
     # Always record daily snapshot
     record_snapshot(
         nav=nav,
@@ -624,9 +857,13 @@ def main():
         growth_nav=growth_nav,
         ballast_nav=ballast_nav,
         spy_level=spy_level,
+        dividend_cash=drip_manager.get_drip_amount(),
     )
     
-    logger.info("Snapshot recorded")
+    logger.info(
+        "Snapshot recorded",
+        dividend_cash=drip_manager.get_drip_amount(),
+    )
     
     # Load historical snapshots to calculate returns
     from src.performance.drip_track import snapshot_dir
@@ -682,7 +919,10 @@ def main():
                     track_id=TRACK_ID,
                     start_date=START_DATE.isoformat(),
                     start_nav=START_NAV_USD,
+                    dividend_cash=drip_manager.get_drip_amount(),
+                    drip_buys=drip_actions.get("drip_buys", []),
                 )
+                
                 notifier.send_email(recipient, subject, body)
                 logger.info("Email sent", recipient=recipient)
     except Exception as e:
