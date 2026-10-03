@@ -35,7 +35,7 @@ def apply_wheel_defaults(run_config: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("cash_buffer_pct", 0.06)
     out.setdefault("manage_dte_threshold", 7)
     out.setdefault("manage_itm_pct", 0.02)
-    out.setdefault("execute_cutoff_et", "15:30")
+    out.setdefault("execute_cutoff_et", "15:50")
     out.setdefault("options_execute_cutoff_et", "15:55")
     out.setdefault("cc_min_premium_usd", 15.0)
     out.setdefault("cc_min_premium_pct", 0.004)

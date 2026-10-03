@@ -250,12 +250,45 @@ def test_parse_occ_and_manage_rules():
 def test_can_submit_live_orders_cutoff():
     # 2026-09-15 Tuesday 14:00 ET — should be ok
     dt = datetime(2026, 9, 15, 18, 0, tzinfo=ZoneInfo("UTC"))  # 14:00 ET
-    ok, reason = can_submit_live_orders(dt, cutoff_et="15:30")
+    ok, reason = can_submit_live_orders(dt, cutoff_et="15:50")
     assert ok is True
+    # 15:45 ET — still ok with extended cutoff (late job scenario)
+    dt_late = datetime(2026, 9, 15, 19, 45, tzinfo=ZoneInfo("UTC"))  # 15:45 ET
+    ok_late, reason_late = can_submit_live_orders(dt_late, cutoff_et="15:50")
+    assert ok_late is True, f"Late job at 15:45 ET should still submit orders: {reason_late}"
     # 16:00 ET — past cutoff
     dt2 = datetime(2026, 9, 15, 20, 0, tzinfo=ZoneInfo("UTC"))
-    ok2, reason2 = can_submit_live_orders(dt2, cutoff_et="15:30")
+    ok2, reason2 = can_submit_live_orders(dt2, cutoff_et="15:50")
     assert ok2 is False
+
+
+def test_wheel_late_job_equity_and_options_cutoffs():
+    """Test wheel strategy with late GitHub Actions job start.
+    
+    Equity cutoff 15:50, options cutoff 15:55 allow late jobs to still trade.
+    Previously: 15:30 equity cutoff blocked directional buys when job started late.
+    """
+    # 15:40 ET — late job, both equity and options ok
+    dt_1540 = datetime(2026, 9, 15, 19, 40, tzinfo=ZoneInfo("UTC"))
+    equity_ok, equity_reason = can_submit_live_orders(dt_1540, cutoff_et="15:50")
+    options_ok, options_reason = can_submit_live_orders(dt_1540, cutoff_et="15:55")
+    assert equity_ok is True, f"Equity at 15:40 ET should submit: {equity_reason}"
+    assert options_ok is True, f"Options at 15:40 ET should submit: {options_reason}"
+    
+    # 15:52 ET — past equity cutoff, options still ok
+    dt_1552 = datetime(2026, 9, 15, 19, 52, tzinfo=ZoneInfo("UTC"))
+    equity_ok2, equity_reason2 = can_submit_live_orders(dt_1552, cutoff_et="15:50")
+    options_ok2, options_reason2 = can_submit_live_orders(dt_1552, cutoff_et="15:55")
+    assert equity_ok2 is False, "Equity at 15:52 ET should be blocked"
+    assert "past_cutoff:15:50" in equity_reason2
+    assert options_ok2 is True, f"Options at 15:52 ET should still submit: {options_reason2}"
+    
+    # 15:56 ET — both past cutoff
+    dt_1556 = datetime(2026, 9, 15, 19, 56, tzinfo=ZoneInfo("UTC"))
+    equity_ok3, equity_reason3 = can_submit_live_orders(dt_1556, cutoff_et="15:50")
+    options_ok3, options_reason3 = can_submit_live_orders(dt_1556, cutoff_et="15:55")
+    assert equity_ok3 is False
+    assert options_ok3 is False
 
 
 def test_atomic_unwind_tickers_from_cc_skips():
