@@ -1,0 +1,87 @@
+{
+  "bakeoff_metadata": {
+    "start_date": "2020-01-01",
+    "end_date": "2024-12-31",
+    "initial_nav": 10000.0,
+    "universe_type": "bluechip",
+    "universe_tickers": [
+      "F",
+      "T",
+      "BAC",
+      "INTC",
+      "PFE",
+      "GE"
+    ],
+    "benchmark": "^SPXTR"
+  },
+  "arm_a_bluechip_ew_baseline": {
+    "start_nav": 10000.0,
+    "end_nav": 15499.57,
+    "abs_return_pct": 55.0,
+    "abs_return_usd": 5499.57,
+    "spy_return_pct": 95.3,
+    "excess_return_pct": -40.3,
+    "excess_return_usd": -4029.97,
+    "max_drawdown_pct": -37.67,
+    "current_drawdown_pct": -5.83,
+    "sharpe": 0.5,
+    "sortino": 0.69,
+    "beta": 0.77,
+    "correlation": 0.71,
+    "alpha_annual_pct": -0.63,
+    "hit_rate_pct": 53.9,
+    "hit_sessions": 677,
+    "total_sessions": 1256,
+    "turnover": 1.56,
+    "premium_collected": 6981.07,
+    "trade_counts": {
+      "buys": 12,
+      "sells": 2,
+      "cc_writes": 195,
+      "csp_writes": 12,
+      "btc_calls": 184,
+      "btc_puts": 8,
+      "assignments_call": 2,
+      "assignments_put": 2
+    }
+  },
+  "arm_b_spy_buyhold": {
+    "start_nav": 10000.0,
+    "end_nav": 12786.98,
+    "abs_return_pct": 27.87,
+    "abs_return_usd": 2786.98,
+    "spy_return_pct": 95.3,
+    "excess_return_pct": -67.43,
+    "excess_return_usd": -6742.56,
+    "max_drawdown_pct": -31.33,
+    "current_drawdown_pct": -12.91,
+    "sharpe": 0.37,
+    "sortino": 0.51,
+    "beta": 0.5,
+    "correlation": 0.61,
+    "alpha_annual_pct": -1.37,
+    "hit_rate_pct": 53.7,
+    "hit_sessions": 674,
+    "total_sessions": 1256,
+    "turnover": 1.82,
+    "premium_collected": 7453.49,
+    "trade_counts": {
+      "buys": 10,
+      "sells": 2,
+      "cc_writes": 211,
+      "csp_writes": 8,
+      "btc_calls": 202,
+      "btc_puts": 5,
+      "assignments_call": 2,
+      "assignments_put": 1
+    }
+  },
+  "deltas": {
+    "abs_return_pct": -27.13,
+    "excess_vs_spy_pct": -27.13000000000001,
+    "sharpe": -0.13,
+    "turnover": 0.26
+  },
+  "recommendation": "ABANDON",
+  "keep_threshold_pp": 2.0
+}

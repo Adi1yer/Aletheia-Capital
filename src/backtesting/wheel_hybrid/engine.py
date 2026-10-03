@@ -53,6 +53,8 @@ class WheelHybridBacktest:
         regime_detector: Optional[object] = None,
         vix_regime_provider: Optional[object] = None,
         benchmark_ticker: str = "^SPXTR",
+        directional_sleeve_mode: str = "bluechip_ew",
+        directional_rebalance_band_pct: float = 0.05,
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -81,6 +83,13 @@ class WheelHybridBacktest:
         
         # Benchmark (Phase 2: SPY total return via ^SPXTR, or fallback to SPY price-only)
         self.benchmark_ticker = benchmark_ticker
+        
+        # Directional sleeve mode: bluechip_ew (equal-weight from universe) or spy_buyhold (buy-and-hold SPY/benchmark)
+        self.directional_sleeve_mode = directional_sleeve_mode
+        self.directional_rebalance_band_pct = directional_rebalance_band_pct
+        
+        # Track if we've done initial SPY buy (for spy_buyhold mode)
+        self.spy_buyhold_initialized = False
         
         self.portfolio = WheelPortfolio(initial_nav)
         self.equity_curve: List[Tuple[str, float]] = []
@@ -183,6 +192,23 @@ class WheelHybridBacktest:
         for ticker in universe:
             if ticker not in self.price_history:
                 self.load_price_history(ticker, data_provider)
+        
+        # If spy_buyhold mode, ensure benchmark is loaded for directional sleeve
+        if self.directional_sleeve_mode == "spy_buyhold":
+            if self.benchmark_ticker not in self.price_history or not self.price_history.get(self.benchmark_ticker):
+                logger.info("Loading benchmark for directional sleeve", ticker=self.benchmark_ticker)
+                self.load_price_history(self.benchmark_ticker, data_provider)
+            
+            # Fallback to SPY if benchmark not available
+            if not self.price_history.get(self.benchmark_ticker):
+                logger.warning("Benchmark not available, trying SPY for directional", benchmark=self.benchmark_ticker)
+                if "SPY" not in self.price_history:
+                    self.load_price_history("SPY", data_provider)
+                if self.price_history.get("SPY"):
+                    logger.info("Using SPY for directional sleeve instead of benchmark")
+                else:
+                    logger.error("Neither benchmark nor SPY available for spy_buyhold mode!")
+                    return {}
         
         # Get trading dates from benchmark
         spy_history = self.price_history.get(self.benchmark_ticker, [])
@@ -397,6 +423,16 @@ class WheelHybridBacktest:
         
         prices = {t: self.get_price_on_date(t, trade_date) for t in universe}
         prices = {t: p for t, p in prices.items() if p is not None and p > 0}
+        
+        # Add benchmark price for spy_buyhold mode
+        if self.directional_sleeve_mode == "spy_buyhold":
+            benchmark_price = self.get_price_on_date(self.benchmark_ticker, trade_date)
+            if benchmark_price:
+                prices[self.benchmark_ticker] = benchmark_price
+            elif "SPY" not in prices:
+                spy_price = self.get_price_on_date("SPY", trade_date)
+                if spy_price:
+                    prices["SPY"] = spy_price
         
         if not prices:
             return
@@ -640,6 +676,14 @@ class WheelHybridBacktest:
     def _buy_directional(self, trade_date: date, prices: Dict[str, float], target_amount: float):
         """Buy directional positions with residual cash."""
         
+        if self.directional_sleeve_mode == "spy_buyhold":
+            self._buy_directional_spy_buyhold(trade_date, prices, target_amount)
+        else:
+            self._buy_directional_bluechip_ew(trade_date, prices, target_amount)
+    
+    def _buy_directional_bluechip_ew(self, trade_date: date, prices: Dict[str, float], target_amount: float):
+        """Buy directional positions with equal-weight bluechip universe (original behavior)."""
+        
         # Count existing directional names
         directional_tickers = {pos.ticker for pos in self.portfolio.directional}
         
@@ -671,6 +715,88 @@ class WheelHybridBacktest:
                 continue
             
             self.portfolio.add_directional_position(ticker, shares, price, trade_date)
+    
+    def _buy_directional_spy_buyhold(self, trade_date: date, prices: Dict[str, float], target_amount: float):
+        """Buy-and-hold SPY/benchmark for directional sleeve (static allocation with rebalance band)."""
+        
+        # Use benchmark ticker for directional sleeve
+        spy_ticker = self.benchmark_ticker
+        spy_price = prices.get(spy_ticker)
+        
+        if spy_price is None or spy_price <= 0:
+            # Fallback to SPY if benchmark not in prices
+            spy_ticker = "SPY"
+            spy_price = prices.get(spy_ticker)
+            
+            if spy_price is None or spy_price <= 0:
+                logger.warning("No SPY/benchmark price available for directional sleeve")
+                return
+        
+        # Calculate current SPY position value
+        current_spy_position = next(
+            (pos for pos in self.portfolio.directional if pos.ticker == spy_ticker),
+            None
+        )
+        
+        current_nav = self._estimate_nav(trade_date, prices)
+        if current_nav <= 0:
+            return
+        
+        target_spy_value = current_nav * self.directional_pct
+        
+        if current_spy_position is None:
+            # Initial buy
+            if not self.spy_buyhold_initialized:
+                shares_to_buy = target_spy_value / spy_price
+                
+                if shares_to_buy * spy_price > self.portfolio.cash:
+                    shares_to_buy = self.portfolio.cash / spy_price
+                
+                if shares_to_buy >= 0.01:
+                    success = self.portfolio.add_directional_position(spy_ticker, shares_to_buy, spy_price, trade_date)
+                    if success:
+                        self.spy_buyhold_initialized = True
+                        logger.info(
+                            "Initial SPY buyhold position",
+                            ticker=spy_ticker,
+                            shares=shares_to_buy,
+                            price=spy_price,
+                            cost=shares_to_buy * spy_price,
+                            target_pct=self.directional_pct
+                        )
+        else:
+            # Check if rebalance needed (drift outside band)
+            current_spy_value = current_spy_position.shares * spy_price
+            drift_pct = abs(current_spy_value - target_spy_value) / target_spy_value if target_spy_value > 0 else 0
+            
+            if drift_pct > self.directional_rebalance_band_pct:
+                # Rebalance
+                delta_value = target_spy_value - current_spy_value
+                
+                if delta_value > 0:
+                    # Need to buy more
+                    shares_to_buy = delta_value / spy_price
+                    if shares_to_buy * spy_price <= self.portfolio.cash and shares_to_buy >= 0.01:
+                        self.portfolio.add_directional_position(spy_ticker, shares_to_buy, spy_price, trade_date)
+                        logger.info(
+                            "SPY buyhold rebalance (buy)",
+                            ticker=spy_ticker,
+                            shares=shares_to_buy,
+                            drift_pct=drift_pct,
+                            band=self.directional_rebalance_band_pct
+                        )
+                else:
+                    # Need to sell some
+                    shares_to_sell = -delta_value / spy_price
+                    if shares_to_sell >= 0.01 and shares_to_sell <= current_spy_position.shares:
+                        self.portfolio.sell_directional_position(spy_ticker, shares_to_sell, spy_price, trade_date)
+                        logger.info(
+                            "SPY buyhold rebalance (sell)",
+                            ticker=spy_ticker,
+                            shares=shares_to_sell,
+                            drift_pct=drift_pct,
+                            band=self.directional_rebalance_band_pct
+                        )
     
     def _estimate_nav(self, trade_date: date, prices: Dict[str, float]) -> float:
         """Estimate current NAV."""
@@ -768,6 +894,8 @@ class WheelHybridBacktest:
             "directional_pct": self.directional_pct,
             "rf_rate": self.rf_rate,
             "vol_window": self.vol_window,
+            "directional_sleeve_mode": self.directional_sleeve_mode,
+            "directional_rebalance_band_pct": self.directional_rebalance_band_pct,
         }
         
         with open(output_dir / "assumptions.json", "w") as f:

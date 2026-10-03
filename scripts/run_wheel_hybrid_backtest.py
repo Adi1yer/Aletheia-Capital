@@ -118,6 +118,19 @@ def main():
         default="^SPXTR",
         help="Benchmark ticker (default: ^SPXTR = SPY total return, fallback to SPY price-only if unavailable)",
     )
+    parser.add_argument(
+        "--directional-sleeve-mode",
+        type=str,
+        default="bluechip_ew",
+        choices=["bluechip_ew", "spy_buyhold"],
+        help="Directional sleeve mode: bluechip_ew (equal-weight from universe) or spy_buyhold (buy-and-hold SPY/benchmark). Default: bluechip_ew.",
+    )
+    parser.add_argument(
+        "--directional-rebalance-band",
+        type=float,
+        default=0.05,
+        help="Rebalance band for spy_buyhold mode (trigger rebalance if drift > this %). Default: 0.05 (5%%).",
+    )
     
     args = parser.parse_args()
     
@@ -137,6 +150,7 @@ def main():
         nav=args.nav,
         universe=universe,
         edge_mode=args.edge_mode,
+        directional_sleeve_mode=args.directional_sleeve_mode,
     )
     
     # Initialize IV provider, edge gate, and regime detector based on edge mode
@@ -214,6 +228,8 @@ def main():
         edge_gate=edge_gate,
         regime_detector=regime_detector,
         benchmark_ticker=args.benchmark,
+        directional_sleeve_mode=args.directional_sleeve_mode,
+        directional_rebalance_band_pct=args.directional_rebalance_band,
     )
     
     # Run with Yahoo Finance provider
