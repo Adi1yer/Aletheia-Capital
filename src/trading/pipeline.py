@@ -2388,6 +2388,12 @@ class TradingPipeline:
         agents = self.registry.get_active(active_agent_keys)
         agent_signals = {}
         self._agent_errors = {}
+        
+        # Track consecutive LLM timeouts across agents for DeepSeek bail
+        self._consecutive_agent_timeouts = 0
+        self._total_agent_timeouts = 0
+        self._llm_bail_threshold = 3  # Bail after 3 consecutive agent-level timeouts
+        self._llm_bailed = False
 
         # For large universes, process in batches
         use_batching = len(tickers) > batch_size
@@ -2420,6 +2426,45 @@ class TradingPipeline:
                         signals = future.result()
                         agent_signals[agent_key] = signals
                         completed_agents += 1
+                        
+                        # Check if this agent had significant LLM issues
+                        # If so, increment consecutive timeout counter; otherwise reset
+                        from src.llm.utils import get_llm_issues_context
+                        llm_issues = get_llm_issues_context()
+                        agent_consecutive_timeouts = llm_issues.get("consecutive_timeouts", 0)
+                        agent_total_timeouts = llm_issues.get("timeout_count", 0)
+                        
+                        if agent_consecutive_timeouts >= 2:  # Agent itself had consecutive timeouts
+                            self._consecutive_agent_timeouts += 1
+                            self._total_agent_timeouts += agent_total_timeouts
+                            logger.warning(
+                                "Agent completed with consecutive LLM timeouts",
+                                agent=agent_key,
+                                agent_consecutive=agent_consecutive_timeouts,
+                                global_consecutive=self._consecutive_agent_timeouts,
+                            )
+                            
+                            # Bail if we've hit the threshold
+                            if self._consecutive_agent_timeouts >= self._llm_bail_threshold and not self._llm_bailed:
+                                self._llm_bailed = True
+                                logger.error(
+                                    "DeepSeek bail triggered: too many consecutive agent timeouts",
+                                    consecutive_agent_timeouts=self._consecutive_agent_timeouts,
+                                    total_timeouts=self._total_agent_timeouts,
+                                    threshold=self._llm_bail_threshold,
+                                )
+                                self._agent_errors["_llm_bail"] = (
+                                    f"Bailed after {self._consecutive_agent_timeouts} consecutive "
+                                    f"agent timeouts ({self._total_agent_timeouts} total LLM timeouts)"
+                                )
+                                # Cancel remaining futures to skip agents
+                                for f in futures:
+                                    if not f.done():
+                                        f.cancel()
+                                break
+                        else:
+                            # Reset consecutive counter on success
+                            self._consecutive_agent_timeouts = 0
 
                         # Log progress for larger runs
                         if total_agents > 5 or len(tickers) > 10:
@@ -2432,6 +2477,12 @@ class TradingPipeline:
                     except Exception as e:
                         logger.error("Agent execution failed", agent=agent_key, error=str(e))
                         self._agent_errors[agent_key] = str(e)
+                        # Check if it's a timeout-related failure
+                        if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                            self._consecutive_agent_timeouts += 1
+                            self._total_agent_timeouts += 1
+                        else:
+                            self._consecutive_agent_timeouts = 0
                         # Default to neutral signals on error
                         agent_signals[agent_key] = {
                             ticker: AgentSignal(
@@ -2442,6 +2493,13 @@ class TradingPipeline:
                         completed_agents += 1
 
             logger.info("All agents complete", total_agents=total_agents)
+            if self._llm_bailed:
+                logger.error(
+                    "LLM bail summary: skipped remaining agents due to consecutive timeouts",
+                    completed=completed_agents,
+                    total=total_agents,
+                    skipped=total_agents - completed_agents,
+                )
         else:
             # Sequential execution
             for agent_key, agent in agents.items():
@@ -2462,6 +2520,11 @@ class TradingPipeline:
         batch_size: int,
     ) -> Dict[str, AgentSignal]:
         """Run a single agent on tickers"""
+        from src.llm.utils import reset_llm_issues_context, get_llm_issues_context
+
+        # Reset LLM issues tracking for this agent
+        reset_llm_issues_context()
+
         dossiers = getattr(self, "_ticker_dossiers", {}) or {}
         deep = getattr(self, "_triage_deep_tickers", None)
         core_keys = getattr(self, "_triage_core_keys", None)
@@ -2532,6 +2595,12 @@ class TradingPipeline:
                     agent=agent.name,
                     signals_generated=len(all_signals),
                 )
+                # Check for LLM fallbacks/timeouts and track as agent degradation
+                llm_issues = get_llm_issues_context()
+                if llm_issues.get("fallback_count", 0) > 0 or llm_issues.get("timeout_count", 0) > 0:
+                    msg = f"LLM degraded: {llm_issues.get('fallback_count', 0)} fallbacks, {llm_issues.get('timeout_count', 0)} timeouts"
+                    logger.warning("Agent completed with LLM issues", agent=agent_key, **llm_issues)
+                    self._agent_errors[agent_key] = msg
                 return all_signals
             else:
                 # Process all at once (with limited parallel ticker processing for local Ollama)
@@ -2550,6 +2619,12 @@ class TradingPipeline:
                     agent=agent.name,
                     signals_generated=len(signals),
                 )
+                # Check for LLM fallbacks/timeouts and track as agent degradation
+                llm_issues = get_llm_issues_context()
+                if llm_issues.get("fallback_count", 0) > 0 or llm_issues.get("timeout_count", 0) > 0:
+                    msg = f"LLM degraded: {llm_issues.get('fallback_count', 0)} fallbacks, {llm_issues.get('timeout_count', 0)} timeouts"
+                    logger.warning("Agent completed with LLM issues", agent=agent_key, **llm_issues)
+                    self._agent_errors[agent_key] = msg
                 return signals
 
         except Exception as e:

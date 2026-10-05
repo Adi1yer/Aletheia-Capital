@@ -124,3 +124,81 @@ def test_champion_challenger_and_attestation():
 def test_verify_run_integrity_missing(tmp_path):
     out = verify_run_integrity(tmp_path)
     assert out["ok"] is False
+
+
+def test_go_no_go_zero_submits_in_execute_window():
+    """Test that zero submits with execute mode + RTH + decisions triggers warning."""
+    results = {
+        "decisions": {"AAPL": {"action": "buy", "quantity": 10}, "MSFT": {"action": "buy", "quantity": 5}},
+        "agent_errors": {},
+        "data_quality": {"score": 95},
+        "execution_status": {"submitted": 0, "filled": 0, "pending": 0, "run_in_rth": True},
+        "pretrade_simulation": {},
+        "learning_context": {},
+        "meta": {"config": {"execute": True}},
+    }
+    slo = evaluate_slos(results)
+    gate = build_go_no_go_report({**results, "slo": slo})
+    assert gate["go"] is True  # Not a blocker, just a warning
+    assert any("zero_submits_in_execute_window" in w for w in gate["warnings"])
+
+
+def test_go_no_go_agent_fallback_counted_as_error():
+    """Test that LLM fallbacks are counted in agent_errors."""
+    results = {
+        "decisions": {"AAPL": {"action": "hold"}},
+        "agent_errors": {
+            "growth_analyst": "LLM degraded: 5 fallbacks, 2 timeouts",
+            "value_analyst": "LLM degraded: 3 fallbacks, 1 timeouts",
+            "sentiment_analyst": "LLM degraded: 2 fallbacks, 0 timeouts",
+        },
+        "data_quality": {"score": 100},
+        "execution_status": {},
+        "pretrade_simulation": {},
+        "learning_context": {},
+    }
+    slo = evaluate_slos(results)
+    assert slo["agent_error_count"] == 3
+    assert not slo["checks"]["agent_error_budget_ok"]  # Fails if > 2
+
+
+def test_go_no_go_data_quality_not_hardcoded():
+    """Test that data_quality score is actually used, not hardcoded to 100."""
+    results = {
+        "decisions": {"AAPL": {"action": "buy"}},
+        "agent_errors": {},
+        "data_quality": {"score": 75},  # Below 80 threshold
+        "execution_status": {},
+        "pretrade_simulation": {},
+        "learning_context": {},
+    }
+    slo = evaluate_slos(results)
+    gate = build_go_no_go_report({**results, "slo": slo})
+    assert slo["data_quality_score"] == 75
+    assert not slo["checks"]["data_quality_ok"]
+    assert "data_quality_degraded" in gate["warnings"]
+
+
+def test_go_no_go_portfolio_metrics_live():
+    """Test that portfolio metrics use actual position data."""
+    results = {
+        "decisions": {},
+        "agent_errors": {},
+        "data_quality": {"score": 100},
+        "execution_status": {},
+        "pretrade_simulation": {},
+        "learning_context": {},
+        "portfolio": {
+            "equity": 100000.0,
+            "cash": 5000.0,
+            "positions": {
+                "AAPL": {"long": 100, "long_cost_basis": 150.0},
+                "MSFT": {"long": 50, "long_cost_basis": 300.0},
+            },
+        },
+    }
+    slo = evaluate_slos(results)
+    # Cash pct should be 5000 / 100000 = 0.05
+    assert abs(slo["cash_pct"] - 0.05) < 0.001
+    # Max position should be 50 * 300 / 100000 = 0.15
+    assert abs(slo["max_position_pct_est"] - 0.15) < 0.001

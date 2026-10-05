@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextvars import ContextVar
 from typing import Optional, Type, TypeVar
 
 from pydantic import BaseModel
@@ -12,6 +13,38 @@ import structlog
 logger = structlog.get_logger()
 
 T = TypeVar("T", bound=BaseModel)
+
+# Context for tracking LLM issues (fallbacks, timeouts) per agent
+_llm_issues_ctx: ContextVar[dict] = ContextVar("llm_issues_ctx", default=None)
+
+
+def get_llm_issues_context() -> dict:
+    """Get current LLM issues context (fallback_count, timeout_count, consecutive_timeouts)."""
+    ctx = _llm_issues_ctx.get()
+    if ctx is None:
+        ctx = {"fallback_count": 0, "timeout_count": 0, "consecutive_timeouts": 0}
+        _llm_issues_ctx.set(ctx)
+    return ctx
+
+
+def increment_llm_fallback() -> None:
+    """Increment fallback counter in current context."""
+    ctx = get_llm_issues_context()
+    ctx["fallback_count"] = ctx.get("fallback_count", 0) + 1
+    ctx["consecutive_timeouts"] = 0  # Reset consecutive on successful call with fallback
+
+
+def increment_llm_timeout() -> None:
+    """Increment timeout counter in current context."""
+    ctx = get_llm_issues_context()
+    ctx["timeout_count"] = ctx.get("timeout_count", 0) + 1
+    ctx["consecutive_timeouts"] = ctx.get("consecutive_timeouts", 0) + 1
+
+
+def reset_llm_issues_context() -> None:
+    """Reset LLM issues tracking for a new agent."""
+    _llm_issues_ctx.set({"fallback_count": 0, "timeout_count": 0, "consecutive_timeouts": 0})
+
 
 
 def _is_deepseek_llm(llm: object) -> bool:
@@ -172,6 +205,7 @@ def _make_fallback_output(output_model: Type[T], error: str) -> T:
     Create a safe neutral/hold fallback instance without raising,
     so agents and the PM keep working even if parsing fails.
     """
+    increment_llm_fallback()  # Track fallback usage
     fields = getattr(output_model, "model_fields", {}) or {}
     field_names = set(fields.keys())
 
@@ -307,8 +341,14 @@ def call_llm_with_retry(
                     error=str(e),
                     attempts=max_retries,
                 )
+                # Check if it's a timeout error
+                if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                    increment_llm_timeout()
                 return _make_fallback_output(output_model, str(e))
             logger.warning("LLM call failed, retrying", attempt=attempt + 1, error=str(e))
+            # Track timeout on retry
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                increment_llm_timeout()
 
     return _make_fallback_output(output_model, "LLM call failed")
 
