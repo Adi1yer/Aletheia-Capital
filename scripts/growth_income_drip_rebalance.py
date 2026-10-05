@@ -262,10 +262,10 @@ def deploy_residual_cash(
     
     # Second pass: redistribute leftover to tickers that can buy another share
     if total_leftover > 0:
-        # Find tickers that can benefit from redistribution
+        # Find tickers that can benefit from redistribution (including 0-share tickers)
         can_buy_more = [(alloc, alloc["price"] - alloc["leftover"]) 
                         for alloc in allocations 
-                        if alloc["shares"] > 0 and alloc["price"] - alloc["leftover"] <= total_leftover]
+                        if alloc["price"] - alloc["leftover"] <= total_leftover]
         
         # Sort by gap (smallest gap first = closest to buying another share)
         can_buy_more.sort(key=lambda x: x[1])
