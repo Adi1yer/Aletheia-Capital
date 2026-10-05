@@ -85,6 +85,7 @@ jobs:
 
       - name: Run daily snapshot (with residual cash deployment)
         env:
+          LOG_LEVEL: INFO
           DRIP_ALPACA_API_KEY: ${{ secrets.DRIP_ALPACA_API_KEY }}
           DRIP_ALPACA_SECRET_KEY: ${{ secrets.DRIP_ALPACA_SECRET_KEY }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}

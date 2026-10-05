@@ -132,6 +132,7 @@ jobs:
         id: scan
         if: github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true'
         env:
+          LOG_LEVEL: INFO
           SCAN_CACHE_KEEP_WEEKS: "26"
           CACHE_HIT_PERFORMANCE: ${{ steps.perf_cache_restore.outputs.cache-hit }}
           CACHE_HIT_SCAN: ${{ steps.scan_cache_restore.outputs.cache-hit }}
