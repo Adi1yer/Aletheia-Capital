@@ -57,6 +57,11 @@ class DataAggregator(DataProvider):
         logger.info("Initialized data aggregator", provider_count=len(self.providers))
         self._quality_metrics: Dict[str, int] = {"schema_failures": 0, "empty_payloads": 0}
         self._trust_metrics: Dict[str, int] = {}
+        
+        # Track expected failures for summary reporting
+        self._financial_metrics_failures: Dict[str, List[str]] = {}  # error_type -> [tickers]
+        self._prices_failures: Dict[str, List[str]] = {}  # error_type -> [tickers]
+        self._last_summary_log_count = {"financial_metrics": 0, "prices": 0}
 
     def provider_trust_scores(self) -> Dict[str, float]:
         metrics = getattr(self, "_trust_metrics", None) or {}
@@ -87,6 +92,40 @@ class DataAggregator(DataProvider):
             "provider_trust": trust,
         }
     
+    def _track_failure(self, category: str, error_key: str, ticker: str) -> None:
+        """Track expected failures for summary reporting instead of per-ticker logs."""
+        if category == "financial_metrics":
+            if error_key not in self._financial_metrics_failures:
+                self._financial_metrics_failures[error_key] = []
+            if ticker not in self._financial_metrics_failures[error_key]:
+                self._financial_metrics_failures[error_key].append(ticker)
+        elif category == "prices":
+            if error_key not in self._prices_failures:
+                self._prices_failures[error_key] = []
+            if ticker not in self._prices_failures[error_key]:
+                self._prices_failures[error_key].append(ticker)
+    
+    def _emit_failure_summary(self, category: str) -> None:
+        """Emit aggregated failure summary at intervals to reduce log noise."""
+        failures = self._financial_metrics_failures if category == "financial_metrics" else self._prices_failures
+        if not failures:
+            return
+        
+        total_failures = sum(len(tickers) for tickers in failures.values())
+        last_count = self._last_summary_log_count.get(category, 0)
+        
+        # Emit summary every ~100 failures to avoid both spam and silence
+        if total_failures - last_count >= 100:
+            for error_type, tickers in failures.items():
+                sample = tickers[:5]
+                logger.warning(
+                    f"Expected {category} failures (aggregated)",
+                    error_type=error_type,
+                    count=len(tickers),
+                    sample_tickers=sample,
+                )
+            self._last_summary_log_count[category] = total_failures
+    
     def get_prices(
         self,
         ticker: str,
@@ -113,7 +152,7 @@ class DataAggregator(DataProvider):
                             self.cache.set_prices(ticker, start_date, end_date, prices_dict)
                             return prices
                     except Exception as e:
-                        logger.warning("Crypto provider failed", ticker=ticker, error=str(e))
+                        logger.debug("Crypto provider failed", ticker=ticker, error=str(e))
                     break
 
         # Cache miss - fetch from provider
@@ -133,12 +172,18 @@ class DataAggregator(DataProvider):
                     self.record_provider_outcome(type(provider).__name__, True)
                     return prices
             except Exception as e:
-                logger.warning("Provider failed, trying next", provider=type(provider).__name__, error=str(e))
+                error_str = str(e)
+                # Track expected failures silently
+                if "404" in error_str or "401" in error_str or "403" in error_str:
+                    error_key = "http_404" if "404" in error_str else "http_401_403"
+                    self._track_failure("prices", error_key, ticker)
+                    self._emit_failure_summary("prices")
+                else:
+                    logger.debug("Provider failed, trying next", provider=type(provider).__name__, ticker=ticker, error=error_str)
                 self.record_provider_outcome(type(provider).__name__, False)
                 continue
         
-        # This is expected for some symbols (e.g., delisted/SPAC/ADR tickers); treat as a soft warning
-        logger.warning("All providers failed to fetch prices", ticker=ticker)
+        # Silently track empty results
         self._quality_metrics["empty_payloads"] += 1
         return []
     
@@ -173,10 +218,22 @@ class DataAggregator(DataProvider):
                     logger.debug("Cached financial metrics", ticker=ticker, count=len(metrics))
                     return metrics
             except Exception as e:
-                logger.warning("Provider failed, trying next", provider=type(provider).__name__, error=str(e))
+                error_str = str(e)
+                # Track expected HTTP errors silently; emit summary periodically
+                if "404" in error_str or "401" in error_str or "403" in error_str or "Rate limit" in error_str:
+                    if "404" in error_str:
+                        error_key = "http_404"
+                    elif "401" in error_str or "403" in error_str:
+                        error_key = "http_401_403_auth"
+                    else:
+                        error_key = "rate_limited"
+                    self._track_failure("financial_metrics", error_key, ticker)
+                    self._emit_failure_summary("financial_metrics")
+                else:
+                    logger.debug("Provider failed, trying next", provider=type(provider).__name__, ticker=ticker, error=error_str)
                 continue
         
-        logger.warning("All providers failed to fetch financial metrics", ticker=ticker)
+        # Silently track empty results
         self._quality_metrics["empty_payloads"] += 1
         return []
     
@@ -207,10 +264,10 @@ class DataAggregator(DataProvider):
                     logger.debug("Cached line items", ticker=ticker, count=len(items))
                     return items
             except Exception as e:
-                logger.warning("Provider failed, trying next", provider=type(provider).__name__, error=str(e))
+                logger.debug("Provider failed, trying next", provider=type(provider).__name__, ticker=ticker, error=str(e))
                 continue
         
-        logger.warning("All providers failed to fetch line items", ticker=ticker)
+        # Silently track empty results
         return []
     
     def get_insider_trades(

@@ -51,7 +51,7 @@ class YahooFinanceProvider(DataProvider):
             return prices
             
         except Exception as e:
-            logger.error("Error fetching prices", ticker=ticker, error=str(e))
+            logger.debug("Error fetching prices", ticker=ticker, error=str(e))
             return []
     
     def get_financial_metrics(
@@ -91,7 +91,7 @@ class YahooFinanceProvider(DataProvider):
             return [metrics]
             
         except Exception as e:
-            logger.error("Error fetching financial metrics", ticker=ticker, error=str(e))
+            logger.debug("Error fetching financial metrics", ticker=ticker, error=str(e))
             return []
     
     def get_line_items(
@@ -176,7 +176,7 @@ class YahooFinanceProvider(DataProvider):
             return [line_item]
             
         except Exception as e:
-            logger.error("Error fetching line items", ticker=ticker, error=str(e))
+            logger.debug("Error fetching line items", ticker=ticker, error=str(e))
             return []
 
     def get_company_news(

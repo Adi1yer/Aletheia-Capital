@@ -65,6 +65,7 @@ jobs:
 
       - name: Manage wheel options
         env:
+          LOG_LEVEL: INFO
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
