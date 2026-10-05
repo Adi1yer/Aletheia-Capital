@@ -2,8 +2,13 @@ name: Growth-Income-Drip Daily Snapshot
 
 on:
   schedule:
-    # 15:00 UTC ≈ 10:00 AM EST / 11:00 AM EDT - after market open
-    - cron: '0 15 * * 1-5'
+    # 08:00 UTC → with ~5-6h GH Actions free tier delay → job starts ~14:00 UTC
+    # 14:00 UTC = 9:00 AM EST (winter) / 10:00 AM EDT (summer)
+    # Market opens at 9:30 AM ET, so this lands after open. Residual cash deploy
+    # must complete before 16:00 ET equity close. With 6h delay: 08:00 UTC + 6h = 14:00 UTC
+    # = 9 AM EST / 10 AM EDT. Even if execution takes 1h, finishes by 10-11 AM ET, well
+    # before 16:00 ET close. Oct 5 2026 run started 21:50 UTC (5:50 PM EDT), past close.
+    - cron: '0 8 * * 1-5'
   workflow_dispatch:
 
 # Separate concurrency group from wheel track
