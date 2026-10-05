@@ -94,6 +94,12 @@ class DataAggregator(DataProvider):
     
     def _track_failure(self, category: str, error_key: str, ticker: str) -> None:
         """Track expected failures for summary reporting instead of per-ticker logs."""
+        # Initialize tracking dicts if not present (for backward compatibility with tests)
+        if not hasattr(self, '_financial_metrics_failures'):
+            self._financial_metrics_failures = {}
+        if not hasattr(self, '_prices_failures'):
+            self._prices_failures = {}
+        
         if category == "financial_metrics":
             if error_key not in self._financial_metrics_failures:
                 self._financial_metrics_failures[error_key] = []
@@ -107,6 +113,14 @@ class DataAggregator(DataProvider):
     
     def _emit_failure_summary(self, category: str) -> None:
         """Emit aggregated failure summary at intervals to reduce log noise."""
+        # Initialize tracking dicts if not present (for backward compatibility with tests)
+        if not hasattr(self, '_financial_metrics_failures'):
+            self._financial_metrics_failures = {}
+        if not hasattr(self, '_prices_failures'):
+            self._prices_failures = {}
+        if not hasattr(self, '_last_summary_log_count'):
+            self._last_summary_log_count = {"financial_metrics": 0, "prices": 0}
+        
         failures = self._financial_metrics_failures if category == "financial_metrics" else self._prices_failures
         if not failures:
             return
