@@ -49,6 +49,7 @@ def build_drip_daily_email(
     start_nav: float = 10000.0,
     dividend_cash: Optional[float] = None,
     drip_buys: Optional[List[Dict]] = None,
+    residual_buys: Optional[List[Dict]] = None,
 ) -> Tuple[str, str]:
     """
     Build enhanced daily snapshot email for drip track.
@@ -69,6 +70,7 @@ def build_drip_daily_email(
         start_nav: Track starting NAV
         dividend_cash: Accumulated dividend cash for drip
         drip_buys: List of dividend drip buy trades executed
+        residual_buys: List of residual cash deployment buy trades executed
         
     Returns:
         Tuple of (subject, body_text)
@@ -187,10 +189,32 @@ def build_drip_daily_email(
             lines.append("  No drip trades executed today")
         lines.append("")
     
+    # Residual cash deployment
+    if residual_buys and len(residual_buys) > 0:
+        lines.append("RESIDUAL CASH DEPLOYMENT")
+        lines.append("-" * 40)
+        lines.append(f"  Buys executed: {len(residual_buys)}")
+        total_deployed = sum(_f(buy.get("allocated_usd", 0)) for buy in residual_buys)
+        lines.append(f"  Total deployed: ${total_deployed:,.2f}")
+        for buy in residual_buys[:5]:  # Show first 5
+            ticker = buy.get("ticker", "?")
+            shares = buy.get("shares", 0)
+            amount = _f(buy.get("allocated_usd", 0))
+            lines.append(f"    {ticker}: {shares} shares @ ${amount:,.2f}")
+        if len(residual_buys) > 5:
+            lines.append(f"    ... and {len(residual_buys) - 5} more")
+        lines.append("")
+    
     # Footer
     lines.append("-" * 72)
-    if drip_buys and len(drip_buys) > 0:
-        lines.append("Trades executed: Dividend drip reinvestment into growth sleeve.")
+    total_trades = (len(drip_buys) if drip_buys else 0) + (len(residual_buys) if residual_buys else 0)
+    if total_trades > 0:
+        trade_types = []
+        if drip_buys and len(drip_buys) > 0:
+            trade_types.append(f"{len(drip_buys)} dividend drip")
+        if residual_buys and len(residual_buys) > 0:
+            trade_types.append(f"{len(residual_buys)} residual cash deployment")
+        lines.append(f"Trades executed: {', '.join(trade_types)}.")
     else:
         lines.append("This is an automated daily snapshot. No trades executed.")
     lines.append(f"Track: {track_id} | Strategy: 80% growth momentum, 20% dividend ballast")

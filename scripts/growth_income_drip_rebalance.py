@@ -226,8 +226,10 @@ def deploy_residual_cash(
         logger.error("No prices available for residual cash deployment")
         return actions
     
-    # Deploy cash proportionally to current positions
-    trades_attempted = 0
+    # First pass: allocate proportionally and track leftover
+    allocations = []
+    total_leftover = 0.0
+    
     for ticker in tickers:
         price = prices.get(ticker, 0)
         
@@ -244,41 +246,79 @@ def deploy_residual_cash(
         if target_deploy < min_trade_usd:
             continue
         
-        # Calculate shares to buy
-        shares_to_buy = int(target_deploy / price)
+        # Calculate whole shares and leftover
+        shares = int(target_deploy / price)
+        allocated_cash = shares * price
+        leftover = target_deploy - allocated_cash
         
-        if shares_to_buy <= 0:
+        allocations.append({
+            "ticker": ticker,
+            "price": price,
+            "shares": shares,
+            "allocated_cash": allocated_cash,
+            "leftover": leftover,
+        })
+        total_leftover += leftover
+    
+    # Second pass: redistribute leftover to tickers that can buy another share
+    if total_leftover > 0:
+        # Find tickers that can benefit from redistribution (including 0-share tickers)
+        can_buy_more = [(alloc, alloc["price"] - alloc["leftover"]) 
+                        for alloc in allocations 
+                        if alloc["price"] - alloc["leftover"] <= total_leftover]
+        
+        # Sort by gap (smallest gap first = closest to buying another share)
+        can_buy_more.sort(key=lambda x: x[1])
+        
+        remaining_leftover = total_leftover
+        for alloc, gap in can_buy_more:
+            if remaining_leftover >= gap and remaining_leftover >= alloc["price"]:
+                # Give this ticker one more share
+                alloc["shares"] += 1
+                alloc["allocated_cash"] += alloc["price"]
+                remaining_leftover -= alloc["price"]
+                logger.info(
+                    "Redistributed residual leftover to buy additional share",
+                    ticker=alloc["ticker"],
+                    additional_cost=alloc["price"],
+                    remaining_leftover=remaining_leftover,
+                )
+    
+    # Third pass: execute orders
+    trades_attempted = 0
+    for alloc in allocations:
+        if alloc["shares"] < 1:
             continue
         
         trades_attempted += 1
         try:
             decision = PortfolioDecision(
                 action="buy",
-                quantity=shares_to_buy,
+                quantity=alloc["shares"],
                 confidence=80,
-                reasoning=f"Residual cash deployment (${target_deploy:.2f})",
+                reasoning=f"Residual cash deployment (${alloc['allocated_cash']:.2f})",
             )
-            order = broker.execute_order(ticker, decision, current_price=price)
+            order = broker.execute_order(alloc["ticker"], decision, current_price=alloc["price"])
             
             if order and order.get("success"):
                 actions["buys"].append({
-                    "ticker": ticker,
-                    "shares": shares_to_buy,
-                    "allocated_usd": target_deploy,
+                    "ticker": alloc["ticker"],
+                    "shares": alloc["shares"],
+                    "allocated_usd": alloc["allocated_cash"],
                     "order_id": order.get("order_id"),
                 })
                 logger.info("Submitted residual cash buy", 
-                           ticker=ticker, 
-                           shares=shares_to_buy)
+                           ticker=alloc["ticker"], 
+                           shares=alloc["shares"])
             else:
                 logger.error("Residual cash buy order failed", 
-                            ticker=ticker, 
-                            shares=shares_to_buy, 
+                            ticker=alloc["ticker"], 
+                            shares=alloc["shares"], 
                             result=order)
         except Exception as e:
             logger.error("Residual cash buy exception", 
-                        ticker=ticker, 
-                        shares=shares_to_buy, 
+                        ticker=alloc["ticker"], 
+                        shares=alloc["shares"], 
                         error=str(e))
     
     logger.info("Residual cash deployment complete", 
@@ -707,6 +747,7 @@ def main():
     
     growth_tickers = []
     drip_actions = {"drip_buys": []}
+    residual_actions = {"buys": []}
     
     if rebalance_due and args.execute:
         logger.info("Quarterly rebalance due", last_rebalance=last_rebalance)
@@ -770,7 +811,7 @@ def main():
             cash_pct=cash/nav*100,
         )
         
-        actions = deploy_residual_cash(
+        residual_actions = deploy_residual_cash(
             broker,
             current_positions,
             cash,
@@ -778,8 +819,8 @@ def main():
         
         logger.info(
             "Residual cash deployment complete",
-            buys=len(actions["buys"]),
-            total_deployed=sum(b.get("allocated_usd", 0) for b in actions["buys"]),
+            buys=len(residual_actions["buys"]),
+            total_deployed=sum(b.get("allocated_usd", 0) for b in residual_actions["buys"]),
         )
         
     else:
@@ -921,6 +962,7 @@ def main():
                     start_nav=START_NAV_USD,
                     dividend_cash=drip_manager.get_drip_amount(),
                     drip_buys=drip_actions.get("drip_buys", []),
+                    residual_buys=residual_actions.get("buys", []),
                 )
                 
                 notifier.send_email(recipient, subject, body)

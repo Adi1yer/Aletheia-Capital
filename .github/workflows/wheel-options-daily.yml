@@ -5,9 +5,16 @@ name: Wheel Options Daily Manage
 # Emails only when portfolio actions occur.
 on:
   schedule:
-    # 16:00 UTC ≈ 11:00 AM EST / 12:00 PM EDT — before NYSE early closes (13:00 ET)
-    # and still inside RTH with GH queue buffer.
-    - cron: '0 16 * * 1-5'
+    # 10:00 UTC → with ~5-6h GH Actions free tier delay → starts ~16:00 UTC
+    # 16:00 UTC = 11:00 AM EST (winter) / 12:00 PM EDT (summer)
+    # EXECUTE_CUTOFF_ET is 15:55 ET, so this lands well before cutoff even with delay.
+    # Buffer: 6h delay + 16:00 UTC = 22:00 UTC = 5 PM EST / 6 PM EDT, still before 15:55 ET? No.
+    # Wait, let me recalculate: 10:00 UTC + 6h delay = job starts at 16:00 UTC wall clock.
+    # 16:00 UTC in winter (EST, UTC-5) = 11:00 AM EST. In summer (EDT, UTC-4) = 12:00 PM EDT.
+    # Both are well before 15:55 ET. But the Oct 5 log showed it started at 22:25 UTC.
+    # 22:25 UTC in EDT (UTC-4) = 6:25 PM EDT, which is past 15:55 ET. So we need earlier.
+    # Let's use 09:00 UTC: 09:00 UTC + 6h delay = 15:00 UTC = 10 AM EST / 11 AM EDT ✓
+    - cron: '0 9 * * 1-5'
   workflow_dispatch:
 
 # Wait if morning scan is still running (same paper book).

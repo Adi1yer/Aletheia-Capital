@@ -325,42 +325,56 @@ class AlpacaBroker:
                 - id: Activity ID
         """
         try:
-            from alpaca.trading.requests import GetAccountActivitiesRequest
-            from alpaca.trading.enums import ActivityType
+            from alpaca.trading import ActivityType, TradeActivity, NonTradeActivity
             
             # Default to dividend types if not specified
             if activity_types is None:
                 activity_types = ['DIV', 'DIVCGL']
             
-            # Convert string types to enum
-            try:
-                enum_types = [ActivityType[t] for t in activity_types]
-            except KeyError as e:
-                logger.warning("Invalid activity type", error=str(e), types=activity_types)
-                enum_types = [ActivityType.DIV]
+            # Build query parameters
+            params = {
+                "page_size": min(page_size, 100),
+            }
+            if date_start:
+                params["date"] = date_start.isoformat()
+            if date_end:
+                params["until"] = date_end.isoformat()
             
-            req = GetAccountActivitiesRequest(
-                activity_types=enum_types,
-                date=date_start,
-                until=date_end,
-                page_size=min(page_size, 100),
-            )
+            # Fetch activities for each type and combine
+            all_activities = []
+            for activity_type_str in activity_types:
+                try:
+                    # Validate activity type
+                    try:
+                        ActivityType[activity_type_str]
+                    except KeyError:
+                        logger.warning("Invalid activity type, skipping", type=activity_type_str)
+                        continue
+                    
+                    # Use raw REST API since alpaca-py 0.19.1 lacks GetAccountActivitiesRequest
+                    path = f"account/activities/{activity_type_str}"
+                    activities_raw = alpaca_call_with_retry(
+                        lambda: self.client.get(path, data=params),
+                        op=f"get_account_activities_{activity_type_str}",
+                    )
+                    
+                    if activities_raw:
+                        all_activities.extend(activities_raw if isinstance(activities_raw, list) else [activities_raw])
+                except Exception as e:
+                    logger.warning("Failed to fetch activities for type", type=activity_type_str, error=str(e))
+                    continue
             
-            activities = alpaca_call_with_retry(
-                lambda: self.client.get_activities(req),
-                op="get_account_activities",
-            )
-            
+            # Parse and normalize activities
             return [
                 {
-                    "activity_type": getattr(a.activity_type, "value", str(a.activity_type)),
-                    "date": str(a.date) if hasattr(a, "date") and a.date else str(a.transaction_time) if hasattr(a, "transaction_time") else None,
-                    "net_amount": float(a.net_amount) if hasattr(a, "net_amount") else 0.0,
-                    "symbol": str(a.symbol) if hasattr(a, "symbol") and a.symbol else None,
-                    "description": str(a.description) if hasattr(a, "description") and a.description else "",
-                    "id": str(a.id) if hasattr(a, "id") else None,
+                    "activity_type": a.get("activity_type", ""),
+                    "date": a.get("date") or a.get("transaction_time"),
+                    "net_amount": float(a.get("net_amount", 0)),
+                    "symbol": a.get("symbol"),
+                    "description": a.get("description", ""),
+                    "id": a.get("id"),
                 }
-                for a in (activities or [])
+                for a in all_activities
             ]
         except Exception as e:
             logger.error("Error fetching account activities", error=str(e))

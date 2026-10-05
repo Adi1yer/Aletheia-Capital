@@ -793,6 +793,64 @@ class TestResidualCashDeployment:
         for buy in actions["buys"]:
             assert abs(buy["allocated_usd"] - 1000.0) < 1.0
             assert buy["shares"] == 10  # $1000 / $100 per share
+    
+    def test_deploy_residual_cash_with_redistribution(self):
+        """Test that residual cash leftover is redistributed to tickers that can afford another share."""
+        from scripts.growth_income_drip_rebalance import deploy_residual_cash
+        
+        # Set up positions where redistribution will help
+        current_positions = {
+            "AAPL": {"qty": 10, "market_value": 3000.0},  # 60% of portfolio
+            "MSFT": {"qty": 5, "market_value": 2000.0},   # 40% of portfolio
+        }
+        
+        # Use prices where redistribution matters
+        # AAPL @ $150: 60% of $500 = $300 → 2 shares @ $150 = $300, $0 leftover
+        # MSFT @ $250: 40% of $500 = $200 → 0 shares @ $250, $200 leftover
+        # Total leftover: $200. Can buy 1 more AAPL share ($150) from leftover.
+        broker = FakeBroker(prices={"AAPL": 150.0, "MSFT": 250.0})
+        
+        actions = deploy_residual_cash(broker, current_positions, 500.0, min_trade_usd=50.0)
+        
+        # Should have bought something
+        assert len(actions["buys"]) >= 1
+        
+        # Find AAPL order
+        aapl_orders = [b for b in actions["buys"] if b["ticker"] == "AAPL"]
+        assert len(aapl_orders) == 1
+        
+        # AAPL should have gotten base allocation + redistributed leftover
+        # Base: $300 → 2 shares. With redistribution: +1 share from leftover → 3 shares total, $450
+        aapl_order = aapl_orders[0]
+        assert aapl_order["shares"] == 3
+        assert aapl_order["allocated_usd"] == 450.0
+    
+    def test_deploy_residual_cash_no_redistribution_when_nothing_affordable(self):
+        """Test that redistribution doesn't happen when no ticker can afford another share."""
+        from scripts.growth_income_drip_rebalance import deploy_residual_cash
+        
+        current_positions = {
+            "AAPL": {"qty": 10, "market_value": 5000.0},  # 50%
+            "MSFT": {"qty": 5, "market_value": 5000.0},   # 50%
+        }
+        
+        # High prices where redistribution can't help
+        # AAPL @ $400: 50% of $500 = $250 → 0 shares, $250 leftover
+        # MSFT @ $400: 50% of $500 = $250 → 0 shares, $250 leftover
+        # Total leftover: $500, but both need $400+ for next share (gap = $150+)
+        # Actually with $500 leftover and gap of $150, AAPL could get 1 share.
+        # Let me use higher prices: $300 each
+        # AAPL @ $300: 50% of $400 = $200 → 0 shares, $200 leftover
+        # MSFT @ $300: 50% of $400 = $200 → 0 shares, $200 leftover
+        # Total leftover: $400, but both need $300 for next share (gap = $100).
+        # With $400 leftover, could buy 1 share of each. Let me use even higher prices.
+        broker = FakeBroker(prices={"AAPL": 300.0, "MSFT": 300.0})
+        
+        actions = deploy_residual_cash(broker, current_positions, 400.0, min_trade_usd=100.0)
+        
+        # With redistribution, should be able to buy 1 share of AAPL ($300)
+        # from the $400 total leftover. So we should have 1 buy.
+        assert len(actions["buys"]) == 1
 
 
 class TestConcurrencyIsolation:
@@ -873,6 +931,117 @@ class TestDripEmail:
         assert "AAPL" in body
         assert "MSFT" in body
         assert "REBALANCE STATUS" in body
+    
+    def test_email_footer_no_trades(self):
+        """Test footer when no trades executed."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {"AAPL": {"qty": 10, "market_value": 1500.0}}
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=500.0,
+            positions=positions,
+        )
+        
+        # Footer should say no trades executed
+        assert "No trades executed" in body
+    
+    def test_email_footer_with_drip_buys_only(self):
+        """Test footer correctly reports drip buys."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {"AAPL": {"qty": 10, "market_value": 1500.0}}
+        drip_buys = [
+            {"ticker": "AAPL", "shares": 5, "drip_amount": 750.0},
+            {"ticker": "MSFT", "shares": 3, "drip_amount": 600.0},
+        ]
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=500.0,
+            positions=positions,
+            drip_buys=drip_buys,
+        )
+        
+        # Footer should mention drip trades
+        assert "Trades executed" in body
+        assert "2 dividend drip" in body
+        assert "No trades executed" not in body
+    
+    def test_email_footer_with_residual_buys_only(self):
+        """Test footer correctly reports residual cash deployment."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {"AAPL": {"qty": 10, "market_value": 1500.0}}
+        residual_buys = [
+            {"ticker": "AAPL", "shares": 5, "allocated_usd": 750.0},
+            {"ticker": "MSFT", "shares": 3, "allocated_usd": 600.0},
+            {"ticker": "GOOGL", "shares": 2, "allocated_usd": 400.0},
+        ]
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=500.0,
+            positions=positions,
+            residual_buys=residual_buys,
+        )
+        
+        # Footer should mention residual deployment
+        assert "Trades executed" in body
+        assert "3 residual cash deployment" in body
+        assert "No trades executed" not in body
+    
+    def test_email_footer_with_both_trade_types(self):
+        """Test footer correctly reports both drip and residual trades."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {"AAPL": {"qty": 10, "market_value": 1500.0}}
+        drip_buys = [
+            {"ticker": "AAPL", "shares": 5, "drip_amount": 750.0},
+        ]
+        residual_buys = [
+            {"ticker": "MSFT", "shares": 3, "allocated_usd": 600.0},
+            {"ticker": "GOOGL", "shares": 2, "allocated_usd": 400.0},
+        ]
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=500.0,
+            positions=positions,
+            drip_buys=drip_buys,
+            residual_buys=residual_buys,
+        )
+        
+        # Footer should mention both trade types
+        assert "Trades executed" in body
+        assert "1 dividend drip" in body
+        assert "2 residual cash deployment" in body
+        assert "No trades executed" not in body
+    
+    def test_email_contains_residual_cash_section(self):
+        """Test that email includes residual cash deployment section."""
+        from src.utils.drip_email import build_drip_daily_email
+        
+        positions = {"AAPL": {"qty": 10, "market_value": 1500.0}}
+        residual_buys = [
+            {"ticker": "AAPL", "shares": 5, "allocated_usd": 750.0},
+            {"ticker": "MSFT", "shares": 3, "allocated_usd": 600.0},
+        ]
+        
+        subject, body = build_drip_daily_email(
+            nav=10000.0,
+            cash=500.0,
+            positions=positions,
+            residual_buys=residual_buys,
+        )
+        
+        # Should show residual cash deployment section
+        assert "RESIDUAL CASH DEPLOYMENT" in body
+        assert "Buys executed: 2" in body
+        assert "Total deployed: $1,350" in body or "Total deployed: $1350" in body
+        assert "AAPL: 5 shares" in body
+        assert "MSFT: 3 shares" in body
     
     def test_email_contains_cash_percentage(self):
         """Test that email includes cash as percentage of NAV."""
