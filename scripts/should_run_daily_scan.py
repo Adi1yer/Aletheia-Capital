@@ -22,6 +22,7 @@ if str(_ROOT) not in sys.path:
 
 from src.trading.us_equity_calendar import should_run_daily_trading_session  # noqa: E402
 from src.trading.wheel_daily_once import (  # noqa: E402
+    DEFAULT_MARKER_DIR,
     DRIP_MARKER_NAME,
     MARKER_NAME,
     OPTIONS_MARKER_NAME,
@@ -30,6 +31,9 @@ from src.trading.wheel_daily_once import (  # noqa: E402
 )
 
 ET = ZoneInfo("America/New_York")
+
+# Drip track uses its own cache directory (must match workflow cache path)
+DRIP_MARKER_DIR = Path("data/performance/growth_income_drip_v1")
 
 
 def main() -> int:
@@ -66,14 +70,18 @@ def main() -> int:
     else:
         day = datetime.now(tz=ET).date()
 
+    # Select marker name and directory based on track
     marker_name = MARKER_NAME
+    marker_dir = DEFAULT_MARKER_DIR
     if args.track == "options":
         marker_name = OPTIONS_MARKER_NAME
+        marker_dir = DEFAULT_MARKER_DIR
     elif args.track == "drip":
         marker_name = DRIP_MARKER_NAME
+        marker_dir = DRIP_MARKER_DIR  # drip uses its own cached subdir
 
     if args.mark_ran_today:
-        path = mark_ran_et_day(day, marker_name=marker_name)
+        path = mark_ran_et_day(day, marker_dir=marker_dir, marker_name=marker_name)
         print(f"marked_ran={day.isoformat()} track={args.track} path={path}")
         if args.github_output:
             out = os.environ.get("GITHUB_OUTPUT")
@@ -83,7 +91,7 @@ def main() -> int:
         return 0
 
     if args.check_already_ran:
-        already, reason = check_already_ran(day, marker_name=marker_name)
+        already, reason = check_already_ran(day, marker_dir=marker_dir, marker_name=marker_name)
         print(f"already_ran={str(already).lower()} track={args.track} reason={reason}")
         if args.github_output:
             out = os.environ.get("GITHUB_OUTPUT")
