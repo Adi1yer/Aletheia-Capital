@@ -1,11 +1,29 @@
 name: Daily Wheel Scan & Rebalance
 
+# Multi-slot staggered crons resilient to GitHub Actions free-tier schedule delays.
+# GH Actions free tier routinely delays 5–14 hours; multi-slot + idempotency ensures
+# at least one in-window run on market days without double-trading.
+#
+# Strategy:
+# - Multiple cron slots staggered ~90–120 minutes apart (Mon–Fri)
+# - Idempotent already-ran gate: later slots skip if earlier slot succeeded same ET day
+# - Hard abort when schedule fires outside usable window (past equity cutoff 15:30 ET)
+# - workflow_dispatch bypasses all gates (manual override)
+#
+# Trading window: 09:30–15:30 ET (equity DAY orders). Slots target coverage from
+# early morning through mid-session so even multi-hour delay lands in-window.
 on:
   schedule:
-    # 13:30 UTC = 9:30 AM EDT / 8:30 AM EST. Summer starts at open; winter waits
-    # until 9:30 ET via before_open logic. Earlier schedule reduces GH Actions delay
-    # impact: job still submits equity orders when starting late but in-session.
-    - cron: '30 13 * * 1-5'
+    # Slot 1: 11:00 UTC (early morning: 06:00/07:00 ET) — covers if delay < 4h
+    - cron: '0 11 * * 1-5'
+    # Slot 2: 13:00 UTC (mid-morning: 08:00/09:00 ET) — covers if delay < 6h
+    - cron: '0 13 * * 1-5'
+    # Slot 3: 15:00 UTC (near open: 10:00/11:00 ET) — covers if delay < 8h
+    - cron: '0 15 * * 1-5'
+    # Slot 4: 17:00 UTC (late morning: 12:00/13:00 ET) — covers if delay < 10h
+    - cron: '0 17 * * 1-5'
+    # Slot 5: 19:00 UTC (early afternoon: 14:00/15:00 ET) — last chance before cutoff
+    - cron: '0 19 * * 1-5'
   workflow_dispatch:
     inputs:
       force_full_rebalance:
@@ -24,11 +42,13 @@ jobs:
     outputs:
       should_run: ${{ steps.gate.outputs.should_run }}
       reason: ${{ steps.gate.outputs.reason }}
+      in_window: ${{ steps.window.outputs.in_window }}
+      window_reason: ${{ steps.window.outputs.reason }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Decide whether to run today
+      - name: Decide whether to run today (holiday gate)
         id: gate
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
@@ -39,9 +59,18 @@ jobs:
           fi
           python3 scripts/should_run_daily_scan.py --github-output
 
+      - name: Check market window (schedule only)
+        id: window
+        if: github.event_name == 'schedule'
+        run: |
+          python3 scripts/check_market_window.py --workflow wheel --github-output || true
+          # Exit 0 so later slots can still try; actual gate is in daily-scan job condition
+
   daily-scan:
     needs: market-gate
-    if: needs.market-gate.outputs.should_run == 'true'
+    if: |
+      needs.market-gate.outputs.should_run == 'true' &&
+      (github.event_name != 'schedule' || needs.market-gate.outputs.in_window == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 600
 
@@ -111,7 +140,7 @@ jobs:
       - name: Same-day skip check (schedule only)
         id: once
         if: github.event_name == 'schedule'
-        run: poetry run python scripts/should_run_daily_scan.py --check-already-ran --github-output
+        run: poetry run python scripts/should_run_daily_scan.py --check-already-ran --track wheel --github-output
 
       - name: Preflight checks
         if: github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true'
@@ -177,6 +206,14 @@ jobs:
         run: |
           echo "Skipping full wheel rebalance: ${{ steps.once.outputs.reason }}"
           echo "Manual workflow_dispatch still forces a re-run."
+
+      - name: Mark successful completion (schedule only, after trading)
+        if: |
+          always() &&
+          github.event_name == 'schedule' &&
+          steps.once.outputs.already_ran != 'true' &&
+          steps.scan.outcome == 'success'
+        run: poetry run python scripts/should_run_daily_scan.py --mark-ran-today --track wheel
 
       - name: MISSED RUN email if scan failed
         if: failure() && steps.scan.outcome == 'failure'

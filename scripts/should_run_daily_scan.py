@@ -2,7 +2,8 @@
 """GitHub Actions gate: run daily wheel jobs on every NYSE open weekday.
 
 Also supports same-ET-day skip/mark so a late ``schedule`` cron does not
-full-rebalance twice after an earlier successful morning run.
+double-execute after an earlier successful run. Tracks wheel, options, and
+drip workflows independently via --track.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ if str(_ROOT) not in sys.path:
 
 from src.trading.us_equity_calendar import should_run_daily_trading_session  # noqa: E402
 from src.trading.wheel_daily_once import (  # noqa: E402
+    DRIP_MARKER_NAME,
+    MARKER_NAME,
+    OPTIONS_MARKER_NAME,
     check_already_ran,
     mark_ran_et_day,
 )
@@ -49,6 +53,12 @@ def main() -> int:
         action="store_true",
         help="Write today's ET date to the same-day completion marker",
     )
+    parser.add_argument(
+        "--track",
+        choices=["wheel", "options", "drip"],
+        default="wheel",
+        help="Workflow track: wheel (morning), options (afternoon), or drip (daily)",
+    )
     args = parser.parse_args()
 
     if args.date:
@@ -56,9 +66,15 @@ def main() -> int:
     else:
         day = datetime.now(tz=ET).date()
 
+    marker_name = MARKER_NAME
+    if args.track == "options":
+        marker_name = OPTIONS_MARKER_NAME
+    elif args.track == "drip":
+        marker_name = DRIP_MARKER_NAME
+
     if args.mark_ran_today:
-        path = mark_ran_et_day(day)
-        print(f"marked_ran={day.isoformat()} path={path}")
+        path = mark_ran_et_day(day, marker_name=marker_name)
+        print(f"marked_ran={day.isoformat()} track={args.track} path={path}")
         if args.github_output:
             out = os.environ.get("GITHUB_OUTPUT")
             if out:
@@ -67,8 +83,8 @@ def main() -> int:
         return 0
 
     if args.check_already_ran:
-        already, reason = check_already_ran(day)
-        print(f"already_ran={str(already).lower()} reason={reason}")
+        already, reason = check_already_ran(day, marker_name=marker_name)
+        print(f"already_ran={str(already).lower()} track={args.track} reason={reason}")
         if args.github_output:
             out = os.environ.get("GITHUB_OUTPUT")
             if not out:
