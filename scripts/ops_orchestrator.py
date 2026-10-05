@@ -54,20 +54,34 @@ def _load_latest_run_results(cache: ScanCache) -> Dict[str, Any] | None:
     run_path = cache.base_dir / run_id
     meta = run.get("meta") or {}
     cfg = meta.get("config") or {}
+    # Try to load real data_quality from run results, fall back to default if not present
+    data_quality = run.get("data_quality") or {"score": 100}
     return {
         "run_id": run_id,
         "decisions": run.get("decisions") or {},
         "agent_errors": (cfg.get("agent_errors") or {}) if isinstance(cfg, dict) else {},
-        "data_quality": {"score": 100},
+        "data_quality": data_quality,
         "execution_status": _load_diag_json(run_path, "execution_status.json"),
         "pretrade_simulation": _load_diag_json(run_path, "pretrade_simulation.json"),
         "learning_context": {},
+        "portfolio": run.get("portfolio") or {},
+        "meta": meta,
     }
 
 
 def run_stage(stage: str, *, run_id: str | None = None, strict: bool = False) -> Dict[str, Any]:
     if stage == "preflight":
-        return _run([sys.executable, "preflight.py"])
+        # Run preflight with soft-fail-deepseek flag to capture DeepSeek issues
+        result = _run([sys.executable, "preflight.py", "--soft-fail-deepseek"])
+        # Surface DeepSeek soft-fail clearly in output
+        if "[WARN]" in result.get("stdout", "") and "deepseek" in result.get("stdout", "").lower():
+            result["deepseek_soft_fail"] = True
+            # Extract the warning message
+            for line in result.get("stdout", "").split("\n"):
+                if "[WARN]" in line and "deepseek" in line.lower():
+                    result["deepseek_soft_fail_reason"] = line.replace("[WARN]", "").strip()
+                    break
+        return result
     if stage == "cockpit":
         return _run([sys.executable, "scripts/operator_cockpit.py"])
     if stage == "smoke":
@@ -89,8 +103,14 @@ def run_stage(stage: str, *, run_id: str | None = None, strict: bool = False) ->
                 return {"ok": False, "slo": slo}
             return {"ok": True, "slo": slo}
         gate = build_go_no_go_report({**payload, "slo": slo})
-        if strict and gate.get("blockers"):
-            return {"ok": False, "go_no_go": gate}
+        if strict:
+            # Fail on hard blockers
+            if gate.get("blockers"):
+                return {"ok": False, "go_no_go": gate}
+            # Soft-fail when go is false due to warnings (degraded state)
+            # but don't fail the orchestrator (allow downstream diagnostics)
+            if not gate.get("go"):
+                return {"ok": True, "degraded": True, "go_no_go": gate}
         return {"ok": True, "go_no_go": gate}
     return {"ok": False, "reason": f"unknown_stage:{stage}"}
 
