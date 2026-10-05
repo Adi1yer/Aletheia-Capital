@@ -1,20 +1,27 @@
 name: Wheel Options Daily Manage
 
-# Mid-session options lifecycle for wheel-hybrid: BTC / roll near-ITM / short-DTE,
-# then write covered calls on existing 100-share lots. No equity rebalance.
-# Emails only when portfolio actions occur.
+# Multi-slot staggered crons resilient to GitHub Actions free-tier schedule delays.
+# GH Actions free tier routinely delays 5–14 hours; multi-slot + idempotency ensures
+# at least one in-window run on market days without double-trading.
+#
+# Strategy:
+# - Multiple cron slots staggered ~90–120 minutes apart (Mon–Fri)
+# - Idempotent already-ran gate: later slots skip if earlier slot succeeded same ET day
+# - Hard abort when schedule fires outside usable window (past options cutoff 15:55 ET)
+# - workflow_dispatch bypasses all gates (manual override)
+#
+# Trading window: 09:30–15:55 ET (options). Slots target coverage from
+# late morning through mid-session so even multi-hour delay lands in-window.
 on:
   schedule:
-    # 10:00 UTC → with ~5-6h GH Actions free tier delay → starts ~16:00 UTC
-    # 16:00 UTC = 11:00 AM EST (winter) / 12:00 PM EDT (summer)
-    # EXECUTE_CUTOFF_ET is 15:55 ET, so this lands well before cutoff even with delay.
-    # Buffer: 6h delay + 16:00 UTC = 22:00 UTC = 5 PM EST / 6 PM EDT, still before 15:55 ET? No.
-    # Wait, let me recalculate: 10:00 UTC + 6h delay = job starts at 16:00 UTC wall clock.
-    # 16:00 UTC in winter (EST, UTC-5) = 11:00 AM EST. In summer (EDT, UTC-4) = 12:00 PM EDT.
-    # Both are well before 15:55 ET. But the Oct 5 log showed it started at 22:25 UTC.
-    # 22:25 UTC in EDT (UTC-4) = 6:25 PM EDT, which is past 15:55 ET. So we need earlier.
-    # Let's use 09:00 UTC: 09:00 UTC + 6h delay = 15:00 UTC = 10 AM EST / 11 AM EDT ✓
-    - cron: '0 9 * * 1-5'
+    # Slot 1: 14:00 UTC (mid-morning: 09:00/10:00 ET) — covers if delay < 6h
+    - cron: '0 14 * * 1-5'
+    # Slot 2: 16:00 UTC (late morning: 11:00/12:00 ET) — covers if delay < 8h
+    - cron: '0 16 * * 1-5'
+    # Slot 3: 18:00 UTC (early afternoon: 13:00/14:00 ET) — covers if delay < 10h
+    - cron: '0 18 * * 1-5'
+    # Slot 4: 20:00 UTC (mid-afternoon: 15:00/16:00 ET) — last chance before cutoff
+    - cron: '0 20 * * 1-5'
   workflow_dispatch:
 
 # Wait if morning scan is still running (same paper book).
@@ -28,6 +35,8 @@ jobs:
     outputs:
       should_run: ${{ steps.gate.outputs.should_run }}
       reason: ${{ steps.gate.outputs.reason }}
+      in_window: ${{ steps.window.outputs.in_window }}
+      window_reason: ${{ steps.window.outputs.reason }}
     steps:
       - uses: actions/checkout@v5
       - id: gate
@@ -39,9 +48,18 @@ jobs:
           fi
           python3 scripts/should_run_daily_scan.py --github-output
 
+      - name: Check market window (schedule only)
+        id: window
+        if: github.event_name == 'schedule'
+        run: |
+          python3 scripts/check_market_window.py --workflow options --github-output || true
+          # Exit 0 so later slots can still try; actual gate is in manage job condition
+
   manage:
     needs: market-gate
-    if: needs.market-gate.outputs.should_run == 'true'
+    if: |
+      needs.market-gate.outputs.should_run == 'true' &&
+      (github.event_name != 'schedule' || needs.market-gate.outputs.in_window == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -70,7 +88,14 @@ jobs:
             perf-${{ github.repository }}-wheel-v1-
             perf-${{ github.repository }}-wheel-v1
 
+      - name: Same-day skip check (schedule only)
+        id: once
+        if: github.event_name == 'schedule'
+        run: poetry run python scripts/should_run_daily_scan.py --check-already-ran --track options --github-output
+
       - name: Manage wheel options
+        id: manage
+        if: github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true'
         env:
           LOG_LEVEL: INFO
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
@@ -92,6 +117,20 @@ jobs:
           # Options can still trade after equity DAY cutoff (15:30); early-close still wins.
           EXECUTE_CUTOFF_ET: '15:55'
         run: poetry run python scripts/manage_wheel_options.py
+
+      - name: Skipped — already ran today (ET)
+        if: github.event_name == 'schedule' && steps.once.outputs.already_ran == 'true'
+        run: |
+          echo "Skipping options manage: ${{ steps.once.outputs.reason }}"
+          echo "Manual workflow_dispatch still forces a re-run."
+
+      - name: Mark successful completion (schedule only, after trading)
+        if: |
+          always() &&
+          github.event_name == 'schedule' &&
+          steps.once.outputs.already_ran != 'true' &&
+          steps.manage.outcome == 'success'
+        run: poetry run python scripts/should_run_daily_scan.py --mark-ran-today --track options
 
       - name: Save performance / wheel state
         if: always()

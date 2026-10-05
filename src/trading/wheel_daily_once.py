@@ -1,8 +1,8 @@
-"""Same-calendar-day guard for the morning wheel full rebalance.
+"""Same-calendar-day guard for daily workflows (wheel, options manage, drip).
 
-Prevents a late GitHub ``schedule`` cron from re-running ``wheel-10k`` after a
-successful earlier run (manual dispatch or on-time cron) the same ET day.
-Afternoon options manage is unaffected.
+Prevents late GitHub ``schedule`` crons from double-executing after a successful
+earlier run (manual dispatch or on-time cron) the same ET day. Each workflow
+track has its own marker to support independent staggered schedules.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ ET = ZoneInfo("America/New_York")
 
 # Persisted under data/performance so Actions cache restore sees it next run.
 MARKER_NAME = "wheel_daily_completed_et.txt"
+OPTIONS_MARKER_NAME = "wheel_options_completed_et.txt"
+DRIP_MARKER_NAME = "drip_daily_completed_et.txt"
 DEFAULT_MARKER_DIR = Path("data/performance")
 
 
@@ -28,12 +30,14 @@ def _as_et_date(value: Optional[Union[date, datetime]] = None) -> date:
     return value
 
 
-def marker_path(marker_dir: Optional[Path] = None) -> Path:
-    return (marker_dir or DEFAULT_MARKER_DIR) / MARKER_NAME
+def marker_path(marker_dir: Optional[Path] = None, marker_name: str = MARKER_NAME) -> Path:
+    return (marker_dir or DEFAULT_MARKER_DIR) / marker_name
 
 
-def read_completed_et_day(marker_dir: Optional[Path] = None) -> Optional[date]:
-    path = marker_path(marker_dir)
+def read_completed_et_day(
+    marker_dir: Optional[Path] = None, marker_name: str = MARKER_NAME
+) -> Optional[date]:
+    path = marker_path(marker_dir, marker_name)
     if not path.is_file():
         return None
     try:
@@ -47,8 +51,9 @@ def already_ran_et_day(
     day: Optional[Union[date, datetime]] = None,
     *,
     marker_dir: Optional[Path] = None,
+    marker_name: str = MARKER_NAME,
 ) -> bool:
-    completed = read_completed_et_day(marker_dir)
+    completed = read_completed_et_day(marker_dir, marker_name)
     if completed is None:
         return False
     return completed == _as_et_date(day)
@@ -58,8 +63,9 @@ def mark_ran_et_day(
     day: Optional[Union[date, datetime]] = None,
     *,
     marker_dir: Optional[Path] = None,
+    marker_name: str = MARKER_NAME,
 ) -> Path:
-    path = marker_path(marker_dir)
+    path = marker_path(marker_dir, marker_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     et_day = _as_et_date(day)
     path.write_text(f"{et_day.isoformat()}\n", encoding="utf-8")
@@ -70,10 +76,11 @@ def check_already_ran(
     day: Optional[Union[date, datetime]] = None,
     *,
     marker_dir: Optional[Path] = None,
+    marker_name: str = MARKER_NAME,
 ) -> Tuple[bool, str]:
-    """Return (already_ran, reason)."""
+    """Return (already_ran, reason) for the specified workflow track."""
     et_day = _as_et_date(day)
-    completed = read_completed_et_day(marker_dir)
+    completed = read_completed_et_day(marker_dir, marker_name)
     if completed is None:
         return False, f"no_marker:{et_day.isoformat()}"
     if completed == et_day:

@@ -2,7 +2,8 @@
 """GitHub Actions gate: run daily wheel jobs on every NYSE open weekday.
 
 Also supports same-ET-day skip/mark so a late ``schedule`` cron does not
-full-rebalance twice after an earlier successful morning run.
+double-execute after an earlier successful run. Tracks wheel, options, and
+drip workflows independently via --track.
 """
 
 from __future__ import annotations
@@ -21,11 +22,18 @@ if str(_ROOT) not in sys.path:
 
 from src.trading.us_equity_calendar import should_run_daily_trading_session  # noqa: E402
 from src.trading.wheel_daily_once import (  # noqa: E402
+    DEFAULT_MARKER_DIR,
+    DRIP_MARKER_NAME,
+    MARKER_NAME,
+    OPTIONS_MARKER_NAME,
     check_already_ran,
     mark_ran_et_day,
 )
 
 ET = ZoneInfo("America/New_York")
+
+# Drip track uses its own cache directory (must match workflow cache path)
+DRIP_MARKER_DIR = Path("data/performance/growth_income_drip_v1")
 
 
 def main() -> int:
@@ -49,6 +57,12 @@ def main() -> int:
         action="store_true",
         help="Write today's ET date to the same-day completion marker",
     )
+    parser.add_argument(
+        "--track",
+        choices=["wheel", "options", "drip"],
+        default="wheel",
+        help="Workflow track: wheel (morning), options (afternoon), or drip (daily)",
+    )
     args = parser.parse_args()
 
     if args.date:
@@ -56,9 +70,19 @@ def main() -> int:
     else:
         day = datetime.now(tz=ET).date()
 
+    # Select marker name and directory based on track
+    marker_name = MARKER_NAME
+    marker_dir = DEFAULT_MARKER_DIR
+    if args.track == "options":
+        marker_name = OPTIONS_MARKER_NAME
+        marker_dir = DEFAULT_MARKER_DIR
+    elif args.track == "drip":
+        marker_name = DRIP_MARKER_NAME
+        marker_dir = DRIP_MARKER_DIR  # drip uses its own cached subdir
+
     if args.mark_ran_today:
-        path = mark_ran_et_day(day)
-        print(f"marked_ran={day.isoformat()} path={path}")
+        path = mark_ran_et_day(day, marker_dir=marker_dir, marker_name=marker_name)
+        print(f"marked_ran={day.isoformat()} track={args.track} path={path}")
         if args.github_output:
             out = os.environ.get("GITHUB_OUTPUT")
             if out:
@@ -67,8 +91,8 @@ def main() -> int:
         return 0
 
     if args.check_already_ran:
-        already, reason = check_already_ran(day)
-        print(f"already_ran={str(already).lower()} reason={reason}")
+        already, reason = check_already_ran(day, marker_dir=marker_dir, marker_name=marker_name)
+        print(f"already_ran={str(already).lower()} track={args.track} reason={reason}")
         if args.github_output:
             out = os.environ.get("GITHUB_OUTPUT")
             if not out:
