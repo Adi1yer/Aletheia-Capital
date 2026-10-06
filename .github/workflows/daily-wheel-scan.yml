@@ -207,10 +207,10 @@ jobs:
           echo "Skipping full wheel rebalance: ${{ steps.once.outputs.reason }}"
           echo "Manual workflow_dispatch still forces a re-run."
 
-      - name: Mark successful completion (schedule only, after trading)
+      - name: Mark successful completion (schedule or dispatch, after trading)
         if: |
           always() &&
-          github.event_name == 'schedule' &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
           steps.once.outputs.already_ran != 'true' &&
           steps.scan.outcome == 'success'
         run: poetry run python scripts/should_run_daily_scan.py --mark-ran-today --track wheel
