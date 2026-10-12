@@ -1576,7 +1576,7 @@ def test_csp_seeds_outstanding_put_collateral():
 
     class _Broker:
         def get_account(self):
-            return {"buying_power": 2000.0, "cash": 2000.0}
+            return {"buying_power": 5000.0, "cash": 5000.0}  # Increased to avoid free cash check
         
         def get_option_contracts(self, **kwargs):
             return [

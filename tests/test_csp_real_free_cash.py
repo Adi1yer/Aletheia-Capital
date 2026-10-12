@@ -46,7 +46,7 @@ def test_csp_respects_real_free_cash():
     existing_put_collateral = 2150.0
     
     broker = MockBroker(free_cash=free_cash)
-    # Add a tradable contract
+    # Add a tradable contract with sufficient premium
     broker.option_contracts = [
         {
             "symbol": "PCG241115P00020000",
@@ -54,7 +54,7 @@ def test_csp_respects_real_free_cash():
             "strike": 20.0,
             "expiry": "2024-11-15",
             "tradable": True,
-            "mid_price": 0.50,
+            "mid_price": 1.0,  # Increased: was 0.50, need >$75 premium ($1.00 × 100 = $100)
         }
     ]
     
