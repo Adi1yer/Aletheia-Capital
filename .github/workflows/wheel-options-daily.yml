@@ -116,6 +116,7 @@ jobs:
           EMAIL_ON_CHANGES_ONLY: '1'
           # Options can still trade after equity DAY cutoff (15:30); early-close still wins.
           EXECUTE_CUTOFF_ET: '15:55'
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: poetry run python scripts/manage_wheel_options.py
 
       - name: Skipped — already ran today (ET)
