@@ -143,9 +143,10 @@ class CashSecuredPutManager:
         # Fetch real free cash from broker
         try:
             account = broker.get_account()
-            free_cash = float(account.get("buying_power") or 0.0)
+            # Use account cash only, not buying_power (which includes margin)
+            free_cash = float(account.get("cash") or 0.0)
             if free_cash <= 0:
-                free_cash = float(account.get("cash") or 0.0)
+                raise ValueError("No cash available")
         except Exception as e:
             logger.error("Failed to fetch free cash from broker", error=str(e))
             results.append({
@@ -156,6 +157,8 @@ class CashSecuredPutManager:
             return results
         
         # Calculate collateral already reserved by existing open puts
+        # NOTE: Alpaca account cash does NOT net out short-put collateral automatically.
+        # We must subtract it manually to get truly available cash.
         try:
             seeded = float(collateral_already_used_usd or 0.0)
         except (TypeError, ValueError):
@@ -177,11 +180,11 @@ class CashSecuredPutManager:
             max_collateral_cap=round(max_collateral_usd, 2) if max_collateral_usd else None,
         )
         
-        # Alert when available cash is insufficient
+        # When available cash is insufficient, skip ALL new puts
         if available_cash < 0:
             shortage = abs(available_cash)
             logger.warning(
-                "CSP sizing SHORT on free cash",
+                "CSP sizing SHORT on free cash - skipping all new puts",
                 free_cash=round(free_cash, 2),
                 existing_put_collateral=round(seeded, 2),
                 shortage=round(shortage, 2),
@@ -193,6 +196,15 @@ class CashSecuredPutManager:
                 "existing_put_collateral": round(seeded, 2),
                 "shortage": round(shortage, 2),
             })
+            # Skip all new puts when available cash is negative
+            for underlying in csp_tickers:
+                und = str(underlying or "").upper()
+                results.append({
+                    "underlying": und,
+                    "status": "skipped",
+                    "reason": "insufficient_free_cash_all_skipped",
+                })
+            return results
         
         already_short_puts: set = set()
         if option_positions is not None:
@@ -232,15 +244,16 @@ class CashSecuredPutManager:
             needed = float(contract["strike"]) * 100.0
             
             # Check against real available cash (free cash - existing put collateral)
-            if collateral_used + needed > free_cash:
+            # collateral_used starts at seeded (existing puts), so we compare against available_cash
+            if collateral_used - seeded + needed > available_cash:
                 results.append(
                     {
                         "underlying": und,
                         "status": "skipped",
-                        "reason": f"insufficient_free_cash_{collateral_used + needed:.0f}>{free_cash:.0f}",
+                        "reason": f"insufficient_available_cash_{collateral_used - seeded + needed:.0f}>{available_cash:.0f}",
                         "needed": round(needed, 2),
                         "collateral_used": round(collateral_used, 2),
-                        "free_cash": round(free_cash, 2),
+                        "available_cash": round(available_cash, 2),
                     }
                 )
                 continue

@@ -97,16 +97,15 @@ def test_csp_respects_real_free_cash():
     assert "insufficient_free_cash" in alerts[0]["reason"]
     assert abs(alerts[0]["shortage"] - 97.72) < 0.1  # ~$98 short
     
-    # Should skip new put due to insufficient cash
+    # Should skip ALL new puts due to insufficient cash (available_cash < 0)
     skipped = [r for r in results if r.get("status") == "skipped"]
-    assert len(skipped) >= 1
+    assert len(skipped) == 1
+    assert skipped[0]["underlying"] == "NEWPUT"
+    assert "insufficient_free_cash" in skipped[0]["reason"]
     
-    # At least one skip should be due to insufficient free cash
-    insufficient_cash_skips = [
-        r for r in skipped 
-        if "insufficient_free_cash" in r.get("reason", "")
-    ]
-    assert len(insufficient_cash_skips) >= 1
+    # Should have NO executed puts (critical: 10/6 case must not place new puts)
+    executed = [r for r in results if r.get("status") == "executed"]
+    assert len(executed) == 0
 
 
 def test_csp_allows_new_puts_with_sufficient_cash():
@@ -208,13 +207,18 @@ def test_csp_midday_shortage_case():
     assert len(alerts) == 1
     assert alerts[0]["shortage"] > 1000  # ~$1,097 short
     
-    # Should skip new put
+    # Should skip ALL new puts when available_cash < 0
     skipped = [
         r for r in results 
         if r.get("status") == "skipped" 
         and "insufficient_free_cash" in r.get("reason", "")
     ]
-    assert len(skipped) >= 1
+    assert len(skipped) == 1
+    assert skipped[0]["underlying"] == "NEW"
+    
+    # Should have NO executed puts
+    executed = [r for r in results if r.get("status") == "executed"]
+    assert len(executed) == 0
 
 
 def test_csp_logs_sizing_info():
