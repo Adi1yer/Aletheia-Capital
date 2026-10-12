@@ -328,11 +328,15 @@ def main() -> int:
         pass
 
     # Email on changes only (default for this script when recipient set).
+    # Set EMAIL_ON_CHANGES_ONLY=0 to always send (e.g., daily wheel options workflow).
     changes_only = os.getenv("EMAIL_ON_CHANGES_ONLY", "1").strip() not in ("0", "false", "False")
     recipient = (os.getenv("RECIPIENT_EMAIL") or "").strip()
-    if recipient and manage_results_have_actions(
+    has_actions = manage_results_have_actions(
         manage_results, cc_results, coverage_unavailable=coverage_unavailable
-    ):
+    )
+    should_send = recipient and (has_actions or not changes_only)
+    
+    if should_send:
         from src.utils.email import get_email_notifier
 
         equity = float(getattr(portfolio, "cash", 0) or 0)
@@ -379,14 +383,13 @@ def main() -> int:
         subject, text, html = build_wheel_daily_email(results)
         subject = subject.replace("daily wheel", "afternoon options")
         get_email_notifier().send_email(recipient, subject, text, html)
-        logger.info("Afternoon manage email sent", recipient=recipient)
-    elif recipient and not changes_only:
-        pass  # reserved
+        logger.info("Afternoon manage email sent", recipient=recipient, has_changes=has_actions)
     else:
         logger.info(
             "No afternoon email",
-            changes=manage_results_have_actions(manage_results, cc_results),
+            changes=has_actions,
             recipient=bool(recipient),
+            changes_only=changes_only,
         )
 
     return 0
