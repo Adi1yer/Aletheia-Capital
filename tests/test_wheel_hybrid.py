@@ -1109,11 +1109,13 @@ def test_profit_take_roll_requires_credit():
         def get_option_positions(self):
             return [
                 {
-                    "symbol": "F261016C00015000",
+                    "symbol": "F261115C00015000",  # Fixed expiry: was 261016, now 261115
+                    "underlying": "F",  # Added for clarity
                     "side": "short",
                     "qty": 1,
                     "avg_entry_price": 1.00,
                     "current_price": 0.30,  # 70% profit
+                    "mark_price": 0.30,  # Added for consistency
                 }
             ]
 
