@@ -167,10 +167,10 @@ def test_roll_executes_when_debit_cap_passes():
     
     # Both BTC and STO should have executed
     assert len(broker.btc_executed) == 1
-    assert "TEST241115C00020000" in broker.btc_executed[0]
+    assert "TEST261115C00020000" in broker.btc_executed[0]
     
     assert len(broker.sto_executed) == 1
-    assert "TEST241215C00025000" in broker.sto_executed[0]
+    assert "TEST261215C00025000" in broker.sto_executed[0]
 
 
 def test_simple_btc_executes_without_roll():
