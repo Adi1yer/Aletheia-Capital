@@ -139,23 +139,6 @@ class CashSecuredPutManager:
         option_positions: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         results: List[Dict] = []
-        
-        # Fetch real free cash from broker
-        try:
-            account = broker.get_account()
-            free_cash = float(account.get("buying_power") or 0.0)
-            if free_cash <= 0:
-                free_cash = float(account.get("cash") or 0.0)
-        except Exception as e:
-            logger.error("Failed to fetch free cash from broker", error=str(e))
-            results.append({
-                "status": "error",
-                "reason": "broker_cash_unavailable",
-                "error": str(e)[:200]
-            })
-            return results
-        
-        # Calculate collateral already reserved by existing open puts
         try:
             seeded = float(collateral_already_used_usd or 0.0)
         except (TypeError, ValueError):
@@ -164,36 +147,6 @@ class CashSecuredPutManager:
             seeded = 0.0
         if option_positions is not None and seeded <= 0:
             seeded = outstanding_short_put_collateral_usd(option_positions)
-        
-        # Real available cash = free cash - existing put collateral
-        available_cash = free_cash - seeded
-        
-        # Log critical sizing info for 10/6 case debugging
-        logger.info(
-            "CSP sizing check",
-            free_cash=round(free_cash, 2),
-            existing_put_collateral=round(seeded, 2),
-            available_cash=round(available_cash, 2),
-            max_collateral_cap=round(max_collateral_usd, 2) if max_collateral_usd else None,
-        )
-        
-        # Alert when available cash is insufficient
-        if available_cash < 0:
-            shortage = abs(available_cash)
-            logger.warning(
-                "CSP sizing SHORT on free cash",
-                free_cash=round(free_cash, 2),
-                existing_put_collateral=round(seeded, 2),
-                shortage=round(shortage, 2),
-            )
-            results.append({
-                "status": "alert",
-                "reason": f"insufficient_free_cash_shortage_{shortage:.2f}",
-                "free_cash": round(free_cash, 2),
-                "existing_put_collateral": round(seeded, 2),
-                "shortage": round(shortage, 2),
-            })
-        
         already_short_puts: set = set()
         if option_positions is not None:
             from src.options.wheel_lifecycle import short_put_underlyings
@@ -230,22 +183,6 @@ class CashSecuredPutManager:
                 results.append({"underlying": und, "status": "skipped", "reason": "no contract"})
                 continue
             needed = float(contract["strike"]) * 100.0
-            
-            # Check against real available cash (free cash - existing put collateral)
-            if collateral_used + needed > free_cash:
-                results.append(
-                    {
-                        "underlying": und,
-                        "status": "skipped",
-                        "reason": f"insufficient_free_cash_{collateral_used + needed:.0f}>{free_cash:.0f}",
-                        "needed": round(needed, 2),
-                        "collateral_used": round(collateral_used, 2),
-                        "free_cash": round(free_cash, 2),
-                    }
-                )
-                continue
-            
-            # Also respect max_collateral_usd cap if provided
             if max_collateral_usd is not None and collateral_used + needed > float(max_collateral_usd):
                 results.append(
                     {
