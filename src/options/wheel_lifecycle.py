@@ -232,6 +232,7 @@ def manage_short_options(
                     "option_type": parsed["option_type"],
                     "btc_cost_usd": round(btc_cost_usd, 2),
                     "strike": float(parsed["strike"]),
+                    "profit_pct": profit_pct,  # Include for dry-run profit-take debit checks
                 }
             )
             continue
@@ -743,6 +744,10 @@ def manage_or_roll_short_calls(
             continue
         is_call_threat = reason in ("call_near_itm",) or reason.startswith("dte<=")
         is_profit_take = "profit_take" in reason
+        # Also check profit_pct directly - even if reason is "dte<=7", if profit is high, apply profit-take rule
+        profit_pct = row.get("profit_pct")
+        if profit_pct is not None and profit_pct >= float(profit_take_pct):
+            is_profit_take = True
         if not is_call_threat and not is_profit_take:
             continue
 
