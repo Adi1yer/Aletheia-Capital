@@ -139,6 +139,26 @@ class CashSecuredPutManager:
         option_positions: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         results: List[Dict] = []
+        
+        # Fetch real free cash from broker
+        try:
+            account = broker.get_account()
+            # Use account cash only, not buying_power (which includes margin)
+            free_cash = float(account.get("cash") or 0.0)
+            if free_cash <= 0:
+                raise ValueError("No cash available")
+        except Exception as e:
+            logger.error("Failed to fetch free cash from broker", error=str(e))
+            results.append({
+                "status": "error",
+                "reason": "broker_cash_unavailable",
+                "error": str(e)[:200]
+            })
+            return results
+        
+        # Calculate collateral already reserved by existing open puts
+        # NOTE: Alpaca account cash does NOT net out short-put collateral automatically.
+        # We must subtract it manually to get truly available cash.
         try:
             seeded = float(collateral_already_used_usd or 0.0)
         except (TypeError, ValueError):
@@ -147,6 +167,45 @@ class CashSecuredPutManager:
             seeded = 0.0
         if option_positions is not None and seeded <= 0:
             seeded = outstanding_short_put_collateral_usd(option_positions)
+        
+        # Real available cash = free cash - existing put collateral
+        available_cash = free_cash - seeded
+        
+        # Log critical sizing info for 10/6 case debugging
+        logger.info(
+            "CSP sizing check",
+            free_cash=round(free_cash, 2),
+            existing_put_collateral=round(seeded, 2),
+            available_cash=round(available_cash, 2),
+            max_collateral_cap=round(max_collateral_usd, 2) if max_collateral_usd else None,
+        )
+        
+        # When available cash is insufficient, skip ALL new puts
+        if available_cash < 0:
+            shortage = abs(available_cash)
+            logger.warning(
+                "CSP sizing SHORT on free cash - skipping all new puts",
+                free_cash=round(free_cash, 2),
+                existing_put_collateral=round(seeded, 2),
+                shortage=round(shortage, 2),
+            )
+            results.append({
+                "status": "alert",
+                "reason": f"insufficient_free_cash_shortage_{shortage:.2f}",
+                "free_cash": round(free_cash, 2),
+                "existing_put_collateral": round(seeded, 2),
+                "shortage": round(shortage, 2),
+            })
+            # Skip all new puts when available cash is negative
+            for underlying in csp_tickers:
+                und = str(underlying or "").upper()
+                results.append({
+                    "underlying": und,
+                    "status": "skipped",
+                    "reason": "insufficient_free_cash_all_skipped",
+                })
+            return results
+        
         already_short_puts: set = set()
         if option_positions is not None:
             from src.options.wheel_lifecycle import short_put_underlyings
@@ -183,6 +242,23 @@ class CashSecuredPutManager:
                 results.append({"underlying": und, "status": "skipped", "reason": "no contract"})
                 continue
             needed = float(contract["strike"]) * 100.0
+            
+            # Check against real available cash (free cash - existing put collateral)
+            # collateral_used starts at seeded (existing puts), so we compare against available_cash
+            if collateral_used - seeded + needed > available_cash:
+                results.append(
+                    {
+                        "underlying": und,
+                        "status": "skipped",
+                        "reason": f"insufficient_available_cash_{collateral_used - seeded + needed:.0f}>{available_cash:.0f}",
+                        "needed": round(needed, 2),
+                        "collateral_used": round(collateral_used, 2),
+                        "available_cash": round(available_cash, 2),
+                    }
+                )
+                continue
+            
+            # Also respect max_collateral_usd cap if provided
             if max_collateral_usd is not None and collateral_used + needed > float(max_collateral_usd):
                 results.append(
                     {
