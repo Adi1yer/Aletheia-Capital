@@ -59,6 +59,9 @@ def test_csp_respects_real_free_cash():
     ]
     
     # Simulate existing open put positions
+    # PCG: $20 strike = $2,000 collateral
+    # PSKY: $1.50 strike = $150 collateral
+    # Total: $2,150 collateral
     option_positions = [
         {
             "side": "short",
@@ -70,10 +73,10 @@ def test_csp_respects_real_free_cash():
         },
         {
             "side": "short",
-            "symbol": "PSKY241115P00015000",
+            "symbol": "PSKY241115P00001500",
             "option_type": "put",
             "underlying": "PSKY",
-            "strike": 15.0,
+            "strike": 1.5,  # Fixed: was 15.0, should be 1.5 for $150
             "qty": 1,
         },
     ]

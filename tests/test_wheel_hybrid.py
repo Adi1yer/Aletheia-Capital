@@ -1575,6 +1575,9 @@ def test_csp_seeds_outstanding_put_collateral():
     assert abs(outstanding_short_put_collateral_usd(opts) - 1200.0) < 1e-6
 
     class _Broker:
+        def get_account(self):
+            return {"buying_power": 2000.0, "cash": 2000.0}
+        
         def get_option_contracts(self, **kwargs):
             return [
                 {
@@ -1606,6 +1609,9 @@ def test_csp_skips_underlying_that_already_has_short_put():
     from src.options.cash_secured_puts import CashSecuredPutManager
 
     class _Broker:
+        def get_account(self):
+            return {"buying_power": 10000.0, "cash": 10000.0}
+        
         def get_option_contracts(self, **kwargs):
             raise AssertionError("should not scan chain when put already open")
 
@@ -1629,6 +1635,9 @@ def test_csp_fail_reason_includes_submit_error():
     from src.options.cash_secured_puts import CashSecuredPutManager
 
     class _Broker:
+        def get_account(self):
+            return {"buying_power": 10000.0, "cash": 10000.0}
+        
         def get_option_contracts(self, **kwargs):
             return [
                 {
@@ -1800,6 +1809,9 @@ def test_csp_nan_seed_does_not_lift_collateral_cap():
     from src.options.cash_secured_puts import CashSecuredPutManager
 
     class _Broker:
+        def get_account(self):
+            return {"buying_power": 5000.0, "cash": 5000.0}
+        
         def get_option_contracts(self, **kwargs):
             return [
                 {
