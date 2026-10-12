@@ -629,12 +629,10 @@ def manage_or_roll_short_calls(
                 continue
             
             # BTC succeeded - attempt STO
+            # Use sto_qty directly (already calculated assuming BTC clears the short)
             filled_total = 0
             last_order = None
             for _ in range(max(1, sto_qty)):
-                slot = live_coverage_sto_qty(broker, und, 1)
-                if slot <= 0:
-                    break
                 order = broker.submit_option_order(
                     contract_symbol=str(new_contract["symbol"]),
                     qty=1,
