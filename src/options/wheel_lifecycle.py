@@ -840,6 +840,16 @@ def build_coverage_map(
         # Always surface ≥100-share lots (including graduated prices) for coverage alerts.
         seen_und.add(t)
         cc = short_calls.get(t)
+        
+        # Defensive check: ensure short call has nonzero qty
+        if cc:
+            try:
+                short_qty_check = int(cc.get("qty") or 0)
+            except (TypeError, ValueError):
+                short_qty_check = 0
+            if short_qty_check <= 0:
+                cc = None  # Treat as no short call if qty is zero or invalid
+        
         if not cc:
             rows.append(
                 {
@@ -859,6 +869,20 @@ def build_coverage_map(
         except (TypeError, ValueError):
             short_qty = 0
         covered_shares = short_qty * 100
+        
+        # Defensive check: if short_qty is 0, treat as UNCOVERED
+        if short_qty <= 0:
+            rows.append(
+                {
+                    "ticker": t,
+                    "shares": qty,
+                    "price": px,
+                    "market_value": round(qty * px, 2),
+                    "coverage": "UNCOVERED",
+                }
+            )
+            continue
+        
         if covered_shares < qty:
             coverage = "UNDERHEDGED"
         elif covered_shares > qty:
