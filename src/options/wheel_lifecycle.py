@@ -232,6 +232,7 @@ def manage_short_options(
                     "option_type": parsed["option_type"],
                     "btc_cost_usd": round(btc_cost_usd, 2),
                     "strike": float(parsed["strike"]),
+                    "profit_pct": profit_pct,  # Include for dry-run profit-take debit checks
                 }
             )
             continue
@@ -301,9 +302,424 @@ def manage_or_roll_short_calls(
     - near-ITM / short DTE: allow debit ≤ max($25, 25% of new premium)
     - profit-take: credit-only
     Puts are BTC-only.
+    
+    For execute=True + prefer_roll: Check roll debit cap BEFORE executing BTC (CPNG fix).
+    For all other cases: Use original behavior unchanged.
     """
-    from src.options.covered_calls import _contract_premium_usd, _finite_px
+    from src.options.covered_calls import _contract_premium_usd, _finite_px, coverage_sto_qty, live_coverage_sto_qty
 
+    # SPECIAL PATH: execute=True + prefer_roll — check debit cap BEFORE BTC
+    if execute and prefer_roll:
+        # Get candidates without executing BTC yet
+        candidates = manage_short_options(
+            broker,
+            current_prices,
+            manage_dte_threshold=manage_dte_threshold,
+            manage_itm_pct=manage_itm_pct,
+            profit_take_pct=profit_take_pct,
+            execute=False,
+        )
+        
+        results: List[Dict[str, Any]] = []
+        rejected_before_btc_count = 0
+        
+        for row in candidates:
+            # Not a call BTC candidate - just record or execute non-roll BTC
+            if row.get("status") != "would_btc" or str(row.get("option_type") or "") != "call":
+                # For non-call options (puts), just execute BTC if it's a would_btc
+                if row.get("status") == "would_btc":
+                    symbol = str(row.get("contract_symbol") or "")
+                    try:
+                        qty = int(row.get("qty") or 0)
+                    except (TypeError, ValueError):
+                        qty = 0
+                    
+                    if symbol and qty > 0:
+                        order = broker.submit_option_order(
+                            contract_symbol=symbol,
+                            qty=qty,
+                            side="buy",
+                            order_type="market",
+                            wait_fill=True,
+                            fill_timeout_s=45.0,
+                        )
+                        filled_ok = _order_fill_confirmed(order, broker)
+                        btc_cost_usd = row.get("btc_cost_usd", 0.0)
+                        if filled_ok and order:
+                            try:
+                                fill = order.get("fill") or {}
+                                avg = float(fill.get("filled_avg_price") or order.get("filled_avg_price") or 0.0)
+                                if avg > 0:
+                                    btc_cost_usd = abs(avg) * 100.0 * max(qty, 1)
+                            except (TypeError, ValueError):
+                                pass
+                        results.append({
+                            **row,
+                            "status": "btc_executed" if filled_ok else "btc_failed",
+                            "order": order,
+                            "btc_cost_usd": round(btc_cost_usd, 2),
+                        })
+                    else:
+                        results.append(row)
+                else:
+                    results.append(row)
+                continue
+            
+            # This is a call with would_btc status
+            reason = str(row.get("reason") or "")
+            und = str(row.get("underlying") or "").upper()
+            if not und:
+                results.append(row)
+                continue
+            
+            is_call_threat = reason in ("call_near_itm",) or reason.startswith("dte<=")
+            is_profit_take = "profit_take" in reason
+            
+            # Not a roll candidate - just execute BTC
+            if not is_call_threat and not is_profit_take:
+                symbol = str(row.get("contract_symbol") or "")
+                try:
+                    qty = int(row.get("qty") or 0)
+                except (TypeError, ValueError):
+                    qty = 0
+                
+                if symbol and qty > 0:
+                    order = broker.submit_option_order(
+                        contract_symbol=symbol,
+                        qty=qty,
+                        side="buy",
+                        order_type="market",
+                        wait_fill=True,
+                        fill_timeout_s=45.0,
+                    )
+                    filled_ok = _order_fill_confirmed(order, broker)
+                    btc_cost_usd = row.get("btc_cost_usd", 0.0)
+                    if filled_ok and order:
+                        try:
+                            fill = order.get("fill") or {}
+                            avg = float(fill.get("filled_avg_price") or order.get("filled_avg_price") or 0.0)
+                            if avg > 0:
+                                btc_cost_usd = abs(avg) * 100.0 * max(qty, 1)
+                        except (TypeError, ValueError):
+                            pass
+                    results.append({
+                        **row,
+                        "status": "btc_executed" if filled_ok else "btc_failed",
+                        "order": order,
+                        "btc_cost_usd": round(btc_cost_usd, 2),
+                    })
+                else:
+                    results.append(row)
+                continue
+            
+            # This is a roll candidate - evaluate debit cap before BTC
+            px = _finite_px(current_prices.get(und) or current_prices.get(str(und).upper()))
+            try:
+                qty = int(row.get("qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            
+            if qty <= 0 or px <= 0:
+                results.append(row)
+                continue
+            
+            # Find new contract for roll
+            new_contract, skip = cc_manager.select_contract(
+                und, px, cc_score, broker,
+                expiry_gte_days=21, expiry_lte_days=45,
+                strike_floor_otm=cc_manager.otm_pct_low,
+            )
+            
+            if new_contract is None:
+                # No roll candidate - just do BTC
+                symbol = str(row.get("contract_symbol") or "")
+                if symbol and qty > 0:
+                    order = broker.submit_option_order(
+                        contract_symbol=symbol, qty=qty, side="buy",
+                        order_type="market", wait_fill=True, fill_timeout_s=45.0,
+                    )
+                    filled_ok = _order_fill_confirmed(order, broker)
+                    btc_cost_usd = row.get("btc_cost_usd", 0.0)
+                    if filled_ok and order:
+                        try:
+                            fill = order.get("fill") or {}
+                            avg = float(fill.get("filled_avg_price") or order.get("filled_avg_price") or 0.0)
+                            if avg > 0:
+                                btc_cost_usd = abs(avg) * 100.0 * max(qty, 1)
+                        except (TypeError, ValueError):
+                            pass
+                    results.append({
+                        **row,
+                        "status": "btc_executed" if filled_ok else "btc_failed",
+                        "order": order,
+                        "btc_cost_usd": round(btc_cost_usd, 2),
+                    })
+                else:
+                    results.append(row)
+                    
+                results.append({
+                    "underlying": und,
+                    "status": "ambiguous",
+                    "action": "roll",
+                    "reason": skip or "no_roll_candidate",
+                    "old_contract": row.get("contract_symbol"),
+                    "option_type": "call",
+                    "qty": qty,
+                })
+                continue
+            
+            # Calculate roll economics
+            new_prem_one = float(new_contract.get("estimated_premium_usd") or _contract_premium_usd(new_contract))
+            btc_cost_full = float(row.get("btc_cost_usd") or 0.0)
+            
+            if btc_cost_full <= 1e-6:
+                # Can't evaluate roll without BTC cost - just do BTC
+                symbol = str(row.get("contract_symbol") or "")
+                if symbol and qty > 0:
+                    order = broker.submit_option_order(
+                        contract_symbol=symbol, qty=qty, side="buy",
+                        order_type="market", wait_fill=True, fill_timeout_s=45.0,
+                    )
+                    filled_ok = _order_fill_confirmed(order, broker)
+                    results.append({
+                        **row,
+                        "status": "btc_executed" if filled_ok else "btc_failed",
+                        "order": order,
+                    })
+                else:
+                    results.append(row)
+                    
+                results.append({
+                    "underlying": und,
+                    "status": "ambiguous",
+                    "action": "roll",
+                    "reason": "btc_cost_unknown",
+                    "old_contract": row.get("contract_symbol"),
+                    "new_contract": new_contract.get("symbol"),
+                    "option_type": "call",
+                    "qty": qty,
+                })
+                continue
+            
+            # Determine STO quantity after BTC
+            try:
+                port = broker.sync_portfolio()
+                shares = int(port.long_qty(und) or 0) if hasattr(port, "long_qty") else int(getattr((getattr(port, "positions", None) or {}).get(und), "long", 0) or 0)
+                sto_qty = coverage_sto_qty(shares, 0, qty)
+            except Exception:
+                sto_qty = 0
+            
+            if sto_qty <= 0:
+                # No coverage for STO - just do BTC
+                symbol = str(row.get("contract_symbol") or "")
+                if symbol and qty > 0:
+                    order = broker.submit_option_order(
+                        contract_symbol=symbol, qty=qty, side="buy",
+                        order_type="market", wait_fill=True, fill_timeout_s=45.0,
+                    )
+                    filled_ok = _order_fill_confirmed(order, broker)
+                    results.append({
+                        **row,
+                        "status": "btc_executed" if filled_ok else "btc_failed",
+                        "order": order,
+                    })
+                else:
+                    results.append(row)
+                    
+                results.append({
+                    "underlying": und,
+                    "status": "ambiguous",
+                    "action": "roll",
+                    "reason": "no_share_coverage_for_roll_sto",
+                    "old_contract": row.get("contract_symbol"),
+                    "new_contract": new_contract.get("symbol"),
+                    "option_type": "call",
+                    "qty": 0,
+                    "requested_qty": qty,
+                })
+                continue
+            
+            # CHECK DEBIT CAP BEFORE BTC — CRITICAL FIX
+            new_prem = new_prem_one * sto_qty
+            btc_cost = btc_cost_full * (sto_qty / float(max(qty, 1)))
+            net_credit = new_prem - btc_cost
+            debit_cap = max(
+                float(max_roll_debit_usd) * sto_qty,
+                float(max_roll_debit_pct_of_premium) * max(new_prem, 0.0),
+            )
+            
+            # Check if roll would violate debit cap
+            roll_blocked = False
+            if is_profit_take and net_credit < -1e-6:
+                roll_blocked = True
+                reject_reason = f"profit_take_requires_credit_{net_credit:.2f}"
+            elif is_call_threat and net_credit < 0 and abs(net_credit) > debit_cap + 1e-6:
+                roll_blocked = True
+                reject_reason = f"roll_debit_exceeds_cap_{net_credit:.2f}"
+            
+            if roll_blocked:
+                # Debit cap failed - DON'T execute BTC!
+                rejected_before_btc_count += 1
+                results.append({
+                    "underlying": und,
+                    "status": "roll_rejected_before_btc",
+                    "action": "roll",
+                    "reason": reject_reason,
+                    "old_contract": row.get("contract_symbol"),
+                    "new_contract": new_contract.get("symbol"),
+                    "est_new_premium": new_prem,
+                    "est_net_credit": net_credit,
+                    "debit_cap": round(debit_cap, 2) if is_call_threat else None,
+                    "option_type": "call",
+                    "qty": sto_qty,
+                })
+                logger.info(
+                    "Roll rejected before BTC (debit cap)",
+                    underlying=und,
+                    net_credit=round(net_credit, 2),
+                    debit_cap=round(debit_cap, 2) if not is_profit_take else None,
+                    reason="profit_take" if is_profit_take else "debit_cap",
+                )
+                continue
+            
+            # Debit cap passed - NOW execute BTC
+            symbol = str(row.get("contract_symbol") or "")
+            if not symbol:
+                results.append(row)
+                continue
+            
+            btc_order = broker.submit_option_order(
+                contract_symbol=symbol,
+                qty=qty,
+                side="buy",
+                order_type="market",
+                wait_fill=True,
+                fill_timeout_s=45.0,
+            )
+            btc_filled_ok = _order_fill_confirmed(btc_order, broker)
+            
+            # Update actual BTC cost from fill
+            if btc_filled_ok and btc_order:
+                try:
+                    fill = btc_order.get("fill") or {}
+                    avg = float(fill.get("filled_avg_price") or btc_order.get("filled_avg_price") or 0.0)
+                    if avg > 0:
+                        btc_cost_full = abs(avg) * 100.0 * max(qty, 1)
+                        btc_cost = btc_cost_full * (sto_qty / float(max(qty, 1)))
+                        net_credit = new_prem - btc_cost
+                except (TypeError, ValueError):
+                    pass
+            
+            results.append({
+                **row,
+                "status": "btc_executed" if btc_filled_ok else "btc_failed",
+                "order": btc_order,
+                "btc_cost_usd": round(btc_cost_full, 2),
+            })
+            
+            if not btc_filled_ok:
+                results.append({
+                    "underlying": und,
+                    "status": "ambiguous",
+                    "action": "roll",
+                    "reason": "btc_not_filled",
+                    "old_contract": row.get("contract_symbol"),
+                    "new_contract": new_contract.get("symbol"),
+                    "option_type": "call",
+                })
+                continue
+            
+            # BTC succeeded - attempt STO
+            # Use sto_qty directly (already calculated assuming BTC clears the short)
+            filled_total = 0
+            last_order = None
+            for _ in range(max(1, sto_qty)):
+                order = broker.submit_option_order(
+                    contract_symbol=str(new_contract["symbol"]),
+                    qty=1,
+                    side="sell",
+                    order_type="market",
+                    wait_fill=True,
+                    fill_timeout_s=45.0,
+                )
+                last_order = order
+                if _order_fill_confirmed(order, broker):
+                    filled_total += 1
+                else:
+                    break
+            
+            if filled_total >= sto_qty:
+                results.append({
+                    "underlying": und,
+                    "status": "roll_executed",
+                    "action": "roll",
+                    "old_contract": row.get("contract_symbol"),
+                    "new_contract": new_contract.get("symbol"),
+                    "new_strike": new_contract.get("strike"),
+                    "new_expiry": new_contract.get("expiry"),
+                    "est_new_premium": new_prem_one * filled_total,
+                    "est_net_credit": (new_prem_one * filled_total) - (btc_cost_full * (filled_total / float(max(qty, 1)))),
+                    "reason": reason,
+                    "order": last_order,
+                    "option_type": "call",
+                    "qty": filled_total,
+                })
+            elif filled_total > 0:
+                results.append({
+                    "underlying": und,
+                    "status": "roll_partial",
+                    "action": "roll",
+                    "reason": "roll_sto_partial_fill",
+                    "old_contract": row.get("contract_symbol"),
+                    "new_contract": new_contract.get("symbol"),
+                    "new_strike": new_contract.get("strike"),
+                    "new_expiry": new_contract.get("expiry"),
+                    "option_type": "call",
+                    "qty": filled_total,
+                    "requested_qty": sto_qty,
+                    "order": last_order,
+                })
+                remaining = max(0, sto_qty - filled_total)
+                if remaining > 0:
+                    results.append({
+                        "underlying": und,
+                        "status": "ambiguous",
+                        "action": "roll",
+                        "reason": "roll_sto_not_filled",
+                        "old_contract": row.get("contract_symbol"),
+                        "new_contract": new_contract.get("symbol"),
+                        "option_type": "call",
+                        "qty": remaining,
+                        "requested_qty": sto_qty,
+                        "partial_filled_qty": filled_total,
+                        "order": last_order,
+                    })
+            else:
+                results.append({
+                    "underlying": und,
+                    "status": "ambiguous",
+                    "action": "roll",
+                    "reason": "roll_sto_not_filled",
+                    "old_contract": row.get("contract_symbol"),
+                    "new_contract": new_contract.get("symbol"),
+                    "option_type": "call",
+                    "qty": sto_qty,
+                    "requested_qty": sto_qty,
+                    "partial_filled_qty": 0,
+                    "order": last_order,
+                })
+        
+        logger.info(
+            "Wheel manage_or_roll complete",
+            n=len(results),
+            rolls=sum(1 for r in results if r.get("status") == "roll_executed"),
+            ambiguous=sum(1 for r in results if r.get("status") == "ambiguous"),
+            rejected_before_btc=rejected_before_btc_count,
+        )
+        return results
+    
+    # ORIGINAL PATH: execute=False OR prefer_roll=False
+    # This preserves the original behavior completely unchanged
     base = manage_short_options(
         broker,
         current_prices,
@@ -328,6 +744,10 @@ def manage_or_roll_short_calls(
             continue
         is_call_threat = reason in ("call_near_itm",) or reason.startswith("dte<=")
         is_profit_take = "profit_take" in reason
+        # Also check profit_pct directly - even if reason is "dte<=7", if profit is high, apply profit-take rule
+        profit_pct = row.get("profit_pct")
+        if profit_pct is not None and profit_pct >= float(profit_take_pct):
+            is_profit_take = True
         if not is_call_threat and not is_profit_take:
             continue
 
@@ -393,8 +813,6 @@ def manage_or_roll_short_calls(
                 }
             )
             continue
-
-        from src.options.covered_calls import coverage_sto_qty, live_coverage_sto_qty
 
         # After BTC, only rewrite covered slots. Excess BTC was flatten cost, not roll debit.
         if row.get("status") == "would_btc":
@@ -588,8 +1006,6 @@ def manage_or_roll_short_calls(
         ambiguous=sum(1 for r in results if r.get("status") == "ambiguous"),
     )
     return results
-
-
 def sync_wheel_assignment_state(
     portfolio: "Portfolio",
     option_positions: List[Dict[str, Any]],
