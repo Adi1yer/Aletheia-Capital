@@ -66,11 +66,11 @@ def test_roll_debit_cap_checked_before_btc():
     broker.option_positions = [
         {
             "side": "short",
-            "symbol": "CPNG241115C00025000",
+            "symbol": "CPNG261115C00025000",
             "underlying": "CPNG",
             "option_type": "call",
             "strike": 25.0,
-            "expiry": "2024-11-15",
+            "expiry": "2026-11-15",  # Fixed: was 2024, should be 2026
             "qty": 1,
             "avg_entry_price": 0.50,
             "current_price": 3.00,  # Very high mark - expensive BTC
@@ -83,9 +83,9 @@ def test_roll_debit_cap_checked_before_btc():
     # Mock select_contract to return a low-premium new call
     def mock_select(underlying, price, score, broker, **kwargs):
         return ({
-            "symbol": "CPNG241215C00030000",
+            "symbol": "CPNG261215C00030000",
             "strike": 30.0,
-            "expiry": "2024-12-15",
+            "expiry": "2026-12-15",  # Fixed: was 2024
             "estimated_premium_usd": 50.0,  # Low premium
         }, "")
     
@@ -127,11 +127,11 @@ def test_roll_executes_when_debit_cap_passes():
     broker.option_positions = [
         {
             "side": "short",
-            "symbol": "TEST241115C00020000",
+            "symbol": "TEST261115C00020000",
             "underlying": "TEST",
             "option_type": "call",
             "strike": 20.0,
-            "expiry": "2024-11-15",
+            "expiry": "2026-11-15",  # Fixed: was 2024, should be 2026
             "qty": 1,
             "avg_entry_price": 1.00,
             "current_price": 0.50,  # Reasonable BTC cost
@@ -143,9 +143,9 @@ def test_roll_executes_when_debit_cap_passes():
     
     def mock_select(underlying, price, score, broker, **kwargs):
         return ({
-            "symbol": "TEST241215C00025000",
+            "symbol": "TEST261215C00025000",
             "strike": 25.0,
-            "expiry": "2024-12-15",
+            "expiry": "2026-12-15",  # Fixed: was 2024
             "estimated_premium_usd": 80.0,  # Good premium
         }, "")
     
@@ -184,11 +184,11 @@ def test_simple_btc_executes_without_roll():
     broker.option_positions = [
         {
             "side": "short",
-            "symbol": "NOROLL241115C00020000",
+            "symbol": "NOROLL261115C00020000",
             "underlying": "NOROLL",
             "option_type": "call",
             "strike": 20.0,
-            "expiry": "2024-11-15",
+            "expiry": "2026-11-15",  # Fixed: was 2024
             "qty": 1,
             "avg_entry_price": 1.00,
             "current_price": 0.20,
@@ -258,11 +258,11 @@ def test_profit_take_requires_credit():
     broker.option_positions = [
         {
             "side": "short",
-            "symbol": "PT241115C00020000",
+            "symbol": "PT261115C00020000",
             "underlying": "PT",
             "option_type": "call",
             "strike": 20.0,
-            "expiry": "2024-11-15",
+            "expiry": "2026-11-15",  # Fixed: was 2024
             "qty": 1,
             "avg_entry_price": 1.00,
             "current_price": 0.25,  # 75% profit
@@ -275,9 +275,9 @@ def test_profit_take_requires_credit():
     def mock_select(underlying, price, score, broker, **kwargs):
         # New call with low premium → small debit after BTC
         return ({
-            "symbol": "PT241215C00025000",
+            "symbol": "PT261215C00025000",
             "strike": 25.0,
-            "expiry": "2024-12-15",
+            "expiry": "2026-12-15",  # Fixed: was 2024
             "estimated_premium_usd": 20.0,  # Low premium
         }, "")
     
