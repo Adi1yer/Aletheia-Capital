@@ -328,14 +328,13 @@ def main() -> int:
         pass
 
     # Email on changes only (default for this script when recipient set).
-    # Manual dispatch (workflow_dispatch) always sends email regardless of changes.
+    # Set EMAIL_ON_CHANGES_ONLY=0 to always send (e.g., daily wheel options workflow).
     changes_only = os.getenv("EMAIL_ON_CHANGES_ONLY", "1").strip() not in ("0", "false", "False")
-    is_manual_dispatch = os.getenv("GITHUB_EVENT_NAME", "").strip() == "workflow_dispatch"
     recipient = (os.getenv("RECIPIENT_EMAIL") or "").strip()
     has_actions = manage_results_have_actions(
         manage_results, cc_results, coverage_unavailable=coverage_unavailable
     )
-    should_send = recipient and (has_actions or (not changes_only) or is_manual_dispatch)
+    should_send = recipient and (has_actions or not changes_only)
     
     if should_send:
         from src.utils.email import get_email_notifier
@@ -384,13 +383,13 @@ def main() -> int:
         subject, text, html = build_wheel_daily_email(results)
         subject = subject.replace("daily wheel", "afternoon options")
         get_email_notifier().send_email(recipient, subject, text, html)
-        logger.info("Afternoon manage email sent", recipient=recipient, manual_dispatch=is_manual_dispatch)
+        logger.info("Afternoon manage email sent", recipient=recipient, has_changes=has_actions)
     else:
         logger.info(
             "No afternoon email",
             changes=has_actions,
             recipient=bool(recipient),
-            manual_dispatch=is_manual_dispatch,
+            changes_only=changes_only,
         )
 
     return 0
