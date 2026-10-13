@@ -1578,6 +1578,9 @@ def test_csp_seeds_outstanding_put_collateral():
         def get_account(self):
             return {"buying_power": 5000.0, "cash": 5000.0}  # Increased to avoid free cash check
         
+        def get_open_orders(self, limit=100):
+            return []
+        
         def get_option_contracts(self, **kwargs):
             return [
                 {
@@ -1612,6 +1615,9 @@ def test_csp_skips_underlying_that_already_has_short_put():
         def get_account(self):
             return {"buying_power": 10000.0, "cash": 10000.0}
         
+        def get_open_orders(self, limit=100):
+            return []
+        
         def get_option_contracts(self, **kwargs):
             raise AssertionError("should not scan chain when put already open")
 
@@ -1638,6 +1644,9 @@ def test_csp_fail_reason_includes_submit_error():
         def get_account(self):
             return {"buying_power": 10000.0, "cash": 10000.0}
         
+        def get_open_orders(self, limit=100):
+            return []
+        
         def get_option_contracts(self, **kwargs):
             return [
                 {
@@ -1648,7 +1657,7 @@ def test_csp_fail_reason_includes_submit_error():
                     "close_price": 0.90,
                 }
             ]
-
+        
         def submit_option_order(self, **kwargs):
             return {
                 "error": "insufficient buying power",
@@ -1812,6 +1821,9 @@ def test_csp_nan_seed_does_not_lift_collateral_cap():
         def get_account(self):
             return {"buying_power": 5000.0, "cash": 5000.0}
         
+        def get_open_orders(self, limit=100):
+            return []
+        
         def get_option_contracts(self, **kwargs):
             return [
                 {
@@ -1822,7 +1834,7 @@ def test_csp_nan_seed_does_not_lift_collateral_cap():
                     "close_price": 0.80,
                 }
             ]
-
+        
         def submit_option_order(self, **kwargs):
             raise AssertionError("nan seed must not allow uncapped CSP")
 
