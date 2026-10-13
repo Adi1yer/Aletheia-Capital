@@ -156,7 +156,24 @@ class CashSecuredPutManager:
             })
             return results
         
-        # Calculate collateral already reserved by existing open puts
+        # Fetch open orders to count pending sell-to-open put collateral
+        # Skip if the call fails (fail-closed: better to skip a put than over-allocate)
+        open_orders: Optional[List[Dict]] = None
+        try:
+            open_orders = broker.get_open_orders(limit=100)
+        except Exception as e:
+            logger.warning("Failed to fetch open orders; skipping all new puts (fail-closed)", error=str(e))
+            # Fail-closed: if we can't see open orders, skip all new puts
+            for underlying in csp_tickers:
+                und = str(underlying or "").upper()
+                results.append({
+                    "underlying": und,
+                    "status": "skipped",
+                    "reason": "open_orders_unavailable_fail_closed",
+                })
+            return results
+        
+        # Calculate collateral already reserved by existing open puts and pending orders
         # NOTE: Alpaca account cash does NOT net out short-put collateral automatically.
         # We must subtract it manually to get truly available cash.
         try:
@@ -168,6 +185,29 @@ class CashSecuredPutManager:
         if option_positions is not None and seeded <= 0:
             seeded = outstanding_short_put_collateral_usd(option_positions)
         
+        # Add collateral from pending sell-to-open put orders
+        pending_put_collateral = 0.0
+        if open_orders is not None:
+            from src.options.wheel_lifecycle import parse_occ_symbol
+            for order in open_orders:
+                if str(order.get("side") or "").lower() != "sell":
+                    continue
+                symbol = str(order.get("symbol") or "")
+                parsed = parse_occ_symbol(symbol)
+                if not parsed or parsed.get("option_type") != "put":
+                    continue
+                strike = float(parsed.get("strike") or 0.0)
+                try:
+                    qty = int(order.get("qty") or 0)
+                    filled = int(order.get("filled_qty") or 0)
+                    remaining = max(0, qty - filled)
+                except (TypeError, ValueError):
+                    remaining = 0
+                if strike > 0 and remaining > 0:
+                    pending_put_collateral += strike * 100.0 * remaining
+        
+        seeded += pending_put_collateral
+        
         # Real available cash = free cash - existing put collateral
         available_cash = free_cash - seeded
         
@@ -175,7 +215,9 @@ class CashSecuredPutManager:
         logger.info(
             "CSP sizing check",
             free_cash=round(free_cash, 2),
-            existing_put_collateral=round(seeded, 2),
+            existing_put_collateral=round(seeded - pending_put_collateral, 2),
+            pending_put_orders_collateral=round(pending_put_collateral, 2),
+            total_reserved_collateral=round(seeded, 2),
             available_cash=round(available_cash, 2),
             max_collateral_cap=round(max_collateral_usd, 2) if max_collateral_usd else None,
         )
@@ -195,6 +237,7 @@ class CashSecuredPutManager:
                 "free_cash": round(free_cash, 2),
                 "existing_put_collateral": round(seeded, 2),
                 "shortage": round(shortage, 2),
+                "pending_put_orders_collateral": round(pending_put_collateral, 2),
             })
             # Skip all new puts when available cash is negative
             for underlying in csp_tickers:
@@ -276,7 +319,12 @@ class CashSecuredPutManager:
                 wait_fill=wait_fill,
                 fill_timeout_s=45.0,
             )
+            
+            # Count order in collateral_used even if timed out (it may still fill)
+            # Prevents double-counting: timed-out orders still consume collateral
             ok = bool(order) and order.get("fill_ok") is True
+            timed_out = bool(order) and order.get("timed_out") is True
+            
             if ok:
                 collateral_used += needed
                 from src.options.covered_calls import _contract_premium_usd
@@ -292,6 +340,22 @@ class CashSecuredPutManager:
                 results.append({
                     "underlying": und,
                     "status": "executed",
+                    "contract_symbol": contract["symbol"],
+                    "strike": contract["strike"],
+                    "expiry": contract["expiry"],
+                    "csp_score": score,
+                    "collateral_usd": needed,
+                    "estimated_premium": round(est_prem, 2),
+                    "order": order,
+                })
+            elif timed_out:
+                # Order timed out but was submitted - count collateral to prevent over-allocation
+                collateral_used += needed
+                from src.options.covered_calls import _contract_premium_usd
+                est_prem = _contract_premium_usd(contract)
+                results.append({
+                    "underlying": und,
+                    "status": "timed_out",
                     "contract_symbol": contract["symbol"],
                     "strike": contract["strike"],
                     "expiry": contract["expiry"],
