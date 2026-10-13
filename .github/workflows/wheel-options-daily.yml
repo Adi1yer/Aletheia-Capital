@@ -23,6 +23,8 @@ on:
     # Slot 4: 20:00 UTC (mid-afternoon: 15:00/16:00 ET) — last chance before cutoff
     - cron: '0 20 * * 1-5'
   workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-wheel-options-daily]
 
 # Wait if morning scan is still running (same paper book).
 concurrency:
@@ -43,7 +45,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
+            echo "reason=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+            echo "Non-schedule trigger (${{ github.event_name }}) — bypassing holiday gate."
             exit 0
           fi
           python3 scripts/should_run_daily_scan.py --github-output

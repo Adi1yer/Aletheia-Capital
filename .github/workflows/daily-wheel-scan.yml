@@ -38,6 +38,8 @@ on:
         description: 'Enable covered call opens (manual override only; schedule never enables by default)'
         type: boolean
         default: false
+  repository_dispatch:
+    types: [trigger-daily-wheel-scan]
 
 # Serialize with afternoon manage so both never trade the same paper book at once.
 concurrency:
@@ -61,8 +63,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
-            echo "Manual dispatch — bypassing holiday gate."
+            echo "reason=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+            echo "Non-schedule trigger (${{ github.event_name }}) — bypassing holiday gate."
             exit 0
           fi
           python3 scripts/should_run_daily_scan.py --github-output
