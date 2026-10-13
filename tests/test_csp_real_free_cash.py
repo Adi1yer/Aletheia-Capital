@@ -20,6 +20,7 @@ class MockBroker:
             "equity": free_cash,
         }
         self.option_contracts = []
+        self.open_orders = []  # Add open orders support
     
     def get_account(self):
         return self.account
@@ -29,6 +30,9 @@ class MockBroker:
     
     def enrich_option_quotes(self, contracts):
         pass
+    
+    def get_open_orders(self, limit=100):
+        return self.open_orders
     
     def submit_option_order(self, **kwargs):
         return {
@@ -261,6 +265,9 @@ def test_csp_broker_cash_unavailable_error():
     class BrokenBroker:
         def get_account(self):
             raise Exception("Broker API down")
+        
+        def get_open_orders(self, limit=100):
+            return []
     
     broker = BrokenBroker()
     manager = CashSecuredPutManager()
@@ -277,3 +284,30 @@ def test_csp_broker_cash_unavailable_error():
     assert len(results) == 1
     assert results[0]["status"] == "error"
     assert results[0]["reason"] == "broker_cash_unavailable"
+
+
+def test_csp_open_orders_unavailable_fail_closed():
+    """Skip all new puts when open orders fetch fails (fail-closed)."""
+    
+    class PartialBroker:
+        def get_account(self):
+            return {"cash": 10000.0, "buying_power": 10000.0}
+        
+        def get_open_orders(self, limit=100):
+            raise Exception("Orders API down")
+    
+    broker = PartialBroker()
+    manager = CashSecuredPutManager()
+    
+    results = manager.execute_cash_secured_puts(
+        broker=broker,
+        csp_tickers=["TEST1", "TEST2"],
+        csp_scores={"TEST1": 60, "TEST2": 55},
+        current_prices={"TEST1": 25.0, "TEST2": 30.0},
+        wait_fill=False,
+    )
+    
+    # Should skip all puts (fail-closed)
+    assert len(results) == 2
+    assert all(r["status"] == "skipped" for r in results)
+    assert all("open_orders_unavailable_fail_closed" in r["reason"] for r in results)

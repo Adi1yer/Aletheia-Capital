@@ -1625,9 +1625,9 @@ class TradingPipeline:
                     opt_now = None
                 if opt_now is not None:
                     outstanding = outstanding_short_put_collateral_usd(opt_now)
-                    # Spendable BP is already net of open CSP collateral. Cap must be
-                    # outstanding + remaining spendable so the execute seed doesn't
-                    # double-count and block every new put.
+                    # Raw account cash does NOT automatically net out short-put collateral.
+                    # We must manually subtract: free cash = raw cash - put collateral - pending STO orders.
+                    # The cap should allow for existing puts plus remaining spendable cash.
                     if self.broker and csp_cap_f > 0:
                         try:
                             acct = self.broker.get_account() or {}
