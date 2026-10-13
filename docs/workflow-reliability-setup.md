@@ -1,12 +1,13 @@
-# Workflow Reliability Enhancement: Watchdog & External Trigger System
+# Workflow Reliability Enhancement: External Scheduler + Fallback Watchdog
 
 ## Overview
 
-This enhancement makes daily trading workflows resilient to GitHub Actions schedule delays through a three-tier reliability system:
+This enhancement makes daily trading workflows resilient to GitHub Actions schedule delays through a two-tier system:
 
-1. **Primary**: Multiple staggered cron slots (already present, preserved)
-2. **Secondary**: Auto-dispatching watchdog that monitors and recovers missed runs
-3. **Tertiary**: `repository_dispatch` triggers for external schedulers (optional)
+1. **Primary (Recommended)**: External scheduler triggering `repository_dispatch`
+2. **Fallback**: Internal GitHub Actions watchdog (also subject to delays)
+
+The internal watchdog provides some resilience, but because it also uses GitHub Actions cron, it suffers from the same 5–14 hour delays. **For production reliability, configure the external scheduler.**
 
 All existing gates (market window checks, same-day idempotency) remain active to prevent double-runs.
 
@@ -20,36 +21,31 @@ All existing gates (market window checks, same-day idempotency) remain active to
 
 ### New Components
 
-1. **Watchdog Workflow**: `.github/workflows/daily-workflows-watchdog.yml`
-   - Runs at 19:00 and 21:00 UTC (2-3 PM and 4-5 PM ET)
-   - Checks if each workflow completed successfully today
-   - Auto-dispatches any missed workflows still within market windows
-   - Sends email notifications
-
-2. **Dispatch Script**: `scripts/dispatch_missed_workflows.py`
-   - Core watchdog logic: check → dispatch → notify
-   - Respects all existing gates (market window, holidays, same-day markers)
-   - Uses `gh` CLI for repository_dispatch triggers
-
-3. **Repository Dispatch Triggers**: Added to all three workflows
+1. **Repository Dispatch Triggers**: Added to all three workflows
    - `trigger-daily-wheel-scan`
    - `trigger-wheel-options-daily`
    - `trigger-drip-daily-snapshot`
+   - Can be triggered by external cron services (not subject to GitHub delays)
+   - Can be triggered by the internal watchdog (as fallback)
+
+2. **Fallback Watchdog Workflow**: `.github/workflows/daily-workflows-watchdog.yml`
+   - Runs at 14:40, 16:10, 17:40, 19:10 UTC (staggered during market hours)
+   - Checks if each workflow completed successfully today
+   - Auto-dispatches missed workflows still within market windows
+   - **Limitation**: Also uses GitHub Actions cron, subject to same delays
+   - Sends email notifications only on failures or irrecoverable misses
+
+3. **Dispatch Script**: `scripts/dispatch_missed_workflows.py`
+   - Core watchdog logic: check → dispatch → notify
+   - Respects all existing gates (market window, holidays, same-day markers)
+   - Uses `gh` CLI for repository_dispatch triggers
+   - Uses `GITHUB_TOKEN` which **can** trigger repository_dispatch (workflows triggered by repository_dispatch do not create recursive workflow runs, per [GitHub documentation](https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#repository_dispatch))
 
 ## Setup Required by Aditya
 
-### 1. No Setup Required for Watchdog (Auto-Healing)
+### Primary (Recommended): External Scheduler
 
-The watchdog runs automatically and requires no setup:
-- It uses the existing `GITHUB_TOKEN` (automatic)
-- Email notifications use existing secrets (`RECIPIENT_EMAIL`, `SMTP_*`)
-- It's already configured in the workflows
-
-**The system is now self-healing by default.**
-
-### 2. Optional: External Scheduler for Ultimate Reliability
-
-For maximum reliability, you can add an external cron service as a backup trigger.
+**This is the recommended approach** because external cron services are not subject to GitHub Actions delays.
 
 #### Option A: Using cron-job.org (Recommended)
 
@@ -67,9 +63,9 @@ For maximum reliability, you can add an external cron service as a backup trigge
    - Create three jobs:
 
    **Job 1: Daily Wheel Scan**
-   - Title: `Daily Wheel Scan Backup Trigger`
+   - Title: `Daily Wheel Scan Primary Trigger`
    - URL: `https://api.github.com/repos/OWNER/REPO/dispatches`
-   - Schedule: `30 13 * * 1-5` (8:30/9:30 AM ET, Mon-Fri)
+   - Schedule: `30 13 * * 1-5` (8:30 AM EDT / 9:30 AM EST, Mon-Fri)
    - Request Method: `POST`
    - Request Headers:
      ```
@@ -83,9 +79,9 @@ For maximum reliability, you can add an external cron service as a backup trigge
      ```
 
    **Job 2: Wheel Options Daily Manage**
-   - Title: `Wheel Options Backup Trigger`
+   - Title: `Wheel Options Primary Trigger`
    - URL: `https://api.github.com/repos/OWNER/REPO/dispatches`
-   - Schedule: `0 16 * * 1-5` (11:00 AM/12:00 PM ET, Mon-Fri)
+   - Schedule: `0 16 * * 1-5` (11:00 AM EDT / 12:00 PM EST, Mon-Fri)
    - Same headers as above
    - Request Body:
      ```json
@@ -93,9 +89,9 @@ For maximum reliability, you can add an external cron service as a backup trigge
      ```
 
    **Job 3: Growth-Income-Drip Daily Snapshot**
-   - Title: `Drip Daily Snapshot Backup Trigger`
+   - Title: `Drip Daily Snapshot Primary Trigger`
    - URL: `https://api.github.com/repos/OWNER/REPO/dispatches`
-   - Schedule: `0 14 * * 1-5` (9:00/10:00 AM ET, Mon-Fri)
+   - Schedule: `0 14 * * 1-5` (9:00 AM EDT / 10:00 AM EST, Mon-Fri)
    - Same headers as above
    - Request Body:
      ```json
@@ -136,32 +132,46 @@ Or use the GitHub UI:
 
 ## How It Works
 
-### Multi-Layer Defense
+### Two-Tier Defense
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Layer 1: Multiple GitHub Cron Slots (Primary)         │
-│  • 5 slots for wheel (11:00-19:00 UTC)                 │
-│  • 5 slots for drip (12:00-20:00 UTC)                  │
-│  • 4 slots for options (14:00-20:00 UTC)               │
+│  Layer 1: External Cron → repository_dispatch (Primary)│
+│  • Independent trigger from external service           │
+│  • NOT affected by GitHub Actions delays               │
+│  • cron-job.org or similar external scheduler          │
+│  • Reliable, deterministic timing                      │
 └─────────────────────────────────────────────────────────┘
-                         ↓ (if all fail)
+                         ↓ (if fails or not configured)
 ┌─────────────────────────────────────────────────────────┐
-│  Layer 2: Watchdog Auto-Dispatch (Secondary)           │
-│  • Runs at 19:00 and 21:00 UTC                         │
+│  Layer 2: GitHub Cron Watchdog (Fallback)              │
+│  • Runs at 14:40, 16:10, 17:40, 19:10 UTC             │
 │  • Checks "already ran" markers                        │
 │  • Checks market window                                │
 │  • Auto-dispatches if missed & viable                  │
-│  • Sends email notification                            │
-└─────────────────────────────────────────────────────────┘
-                         ↓ (if still fails)
-┌─────────────────────────────────────────────────────────┐
-│  Layer 3: External Cron (Optional Tertiary)            │
-│  • Independent trigger from external service           │
-│  • Not affected by GitHub Actions delays               │
-│  • Falls back to same gates (no double-runs)           │
+│  • ⚠️ ALSO subject to GitHub Actions delays            │
+│  • Email only on failures or irrecoverable misses      │
 └─────────────────────────────────────────────────────────┘
 ```
+
+**Note**: The GitHub Cron slots in the individual workflows (5 for wheel, 5 for drip, 4 for options) remain as additional fallback layers, but are also subject to delays.
+
+### Why External Scheduler is Primary
+
+The internal watchdog and existing GitHub cron slots **all use GitHub Actions schedule triggers**, which means they all suffer from the same 5–14 hour delays that caused the original problem.
+
+**External cron services** (like cron-job.org) run independently and are not subject to GitHub's delays, making them the most reliable trigger mechanism.
+
+### repository_dispatch and GITHUB_TOKEN
+
+The `repository_dispatch` event is explicitly exempt from GitHub's workflow recursion rules. Per [GitHub documentation](https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#repository_dispatch):
+
+> Workflows triggered by `repository_dispatch` do not create recursive workflow runs.
+
+This means:
+- External scheduler can trigger via PAT → works ✓
+- Internal watchdog can trigger via `GITHUB_TOKEN` → works ✓
+- No risk of infinite loops or recursion
 
 ### Gate Protection (Prevents Double-Runs)
 
@@ -244,9 +254,13 @@ poetry run python scripts/should_run_daily_scan.py --check-already-ran --track d
 
 ### Email Notifications
 
-The watchdog sends email notifications for:
-- Workflows that were missed and auto-dispatched
-- Workflows that were missed but outside recovery window
+The watchdog sends email notifications **only on failures**:
+- Workflows that were missed and **outside** recovery window (cannot be recovered)
+- Workflows that were missed and dispatch **failed**
+
+**No email is sent** when:
+- Workflows already completed successfully
+- Workflows were missed but successfully auto-dispatched
 
 Recipients: Uses existing `RECIPIENT_EMAIL` secret
 
@@ -308,33 +322,39 @@ poetry run pytest tests/test_workflow_gates.py::test_same_day_idempotency -v
 
 ### Why This Approach?
 
-**Evaluated Options**:
-1. ✓ **Watchdog + repository_dispatch** (CHOSEN)
-   - Self-contained, auto-healing
-   - No external dependencies required
-   - External trigger available as optional backup
-   - Maximum reliability without complexity
+**Problem**: GitHub Actions cron triggers delay 5–14 hours on free tier.
 
-2. ✗ Repository dispatch only with required external cron
-   - Adds external dependency
-   - Requires token management
-   - Not self-healing
+**Solution**: Use external cron service (not subject to GitHub delays) as primary trigger.
+
+**Evaluated Options**:
+1. ✓ **External repository_dispatch + internal watchdog fallback** (CHOSEN)
+   - External trigger: reliable, not subject to GitHub delays
+   - Internal watchdog: provides fallback (but also subject to delays)
+   - repository_dispatch: exempt from recursion rules, safe for watchdog to use
+   - Maximum reliability
+
+2. ✗ Watchdog only (internal GitHub cron)
+   - Subject to same delays as the problem it's trying to solve
+   - Not a real solution
+
+3. ✗ More GitHub cron slots only
+   - Already tried (5+ slots), still delays
 
 ### Benefits
 
-- **Zero Configuration**: Works out of the box with watchdog
-- **Self-Healing**: Automatically recovers from GitHub delays
+- **External Primary**: Not affected by GitHub Actions delays
+- **Self-Healing Fallback**: Internal watchdog attempts recovery
 - **Safe**: All existing gates prevent double-runs
-- **Observable**: Email notifications + GitHub Actions logs
-- **Flexible**: Optional external trigger for ultimate control
+- **Observable**: Email notifications (failures only) + GitHub Actions logs
+- **Flexible**: Can use any external cron service
 - **Non-Invasive**: No changes to trading logic
 
 ### Workflow Windows
 
-| Workflow | Primary Slots | Watchdog Checks | Market Cutoff |
-|----------|---------------|-----------------|---------------|
-| Wheel Scan | 11:00-19:00 UTC | 19:00, 21:00 UTC | 15:30 ET |
-| Options Manage | 14:00-20:00 UTC | 19:00, 21:00 UTC | 15:55 ET |
-| Drip Snapshot | 12:00-20:00 UTC | 19:00, 21:00 UTC | 16:00 ET |
+| Workflow | GitHub Cron Slots | Watchdog Checks (UTC) | Watchdog Checks (EDT/EST) | Market Cutoff |
+|----------|-------------------|----------------------|---------------------------|---------------|
+| Wheel Scan | 11:00-19:00 UTC (5 slots) | 14:40, 16:10, 17:40, 19:10 | 10:40a, 12:10p, 1:40p, 3:10p / 9:40a, 11:10a, 12:40p, 2:10p | 15:30 ET |
+| Options Manage | 14:00-20:00 UTC (4 slots) | 14:40, 16:10, 17:40, 19:10 | 10:40a, 12:10p, 1:40p, 3:10p / 9:40a, 11:10a, 12:40p, 2:10p | 15:55 ET |
+| Drip Snapshot | 12:00-20:00 UTC (5 slots) | 14:40, 16:10, 17:40, 19:10 | 10:40a, 12:10p, 1:40p, 3:10p / 9:40a, 11:10a, 12:40p, 2:10p | 16:00 ET |
 
-The watchdog runs between primary slots and cutoff times, providing recovery window without risking late execution.
+**Note**: Watchdog times work for both EDT (Mar-Nov, UTC-4) and EST (Nov-Mar, UTC-5), ensuring all checks occur before the earliest cutoff (3:10p EDT / 2:10p EST < 3:30p ET wheel cutoff).

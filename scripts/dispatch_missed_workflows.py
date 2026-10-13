@@ -266,16 +266,19 @@ def main() -> int:
         ok = dispatch_workflow(args.repo, workflow, args.dry_run)
         if ok:
             dispatched_any = True
-            if recipient:
+            print(f"  ✓ Successfully dispatched {workflow.name}")
+            # No email on successful dispatch
+        else:
+            errors.append(workflow.name)
+            # Send notification for failed dispatch
+            if recipient and not args.dry_run:
                 send_notification(
                     workflow.name,
-                    "Auto-dispatched",
-                    f"Workflow was overdue, dispatched automatically at {now.strftime('%H:%M %Z')}",
+                    "Dispatch failed",
+                    f"Workflow was missed and dispatch attempt failed at {now.strftime('%H:%M %Z')}",
                     recipient,
                     args.dry_run,
                 )
-        else:
-            errors.append(workflow.name)
 
     print(f"\n{'='*60}")
     if dispatched_any:

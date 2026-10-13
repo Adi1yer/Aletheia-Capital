@@ -1,17 +1,12 @@
 # Workflow Reliability Setup - Quick Start for Aditya
 
-## ✅ What's Already Working (Zero Setup Required)
+## ⚠️ Important: Watchdog Limitation
 
-The **self-healing watchdog** is now active and requires no setup:
+The internal **watchdog also uses GitHub Actions cron**, so it suffers from the same 5–14 hour delays as the workflows it monitors. It provides a fallback layer, but **for production reliability, configure the external scheduler**.
 
-- Monitors all three daily workflows automatically
-- Auto-dispatches missed runs within market windows
-- Sends email notifications using existing secrets
-- **You don't need to do anything for this to work**
+## 📋 Primary (Recommended): External Scheduler
 
-## 📋 Optional: External Scheduler for Maximum Reliability
-
-For ultimate reliability, you can add an external cron service as a backup:
+External cron services (like cron-job.org) are **not affected by GitHub Actions delays**, making them the most reliable solution.
 
 ### Step 1: Create GitHub Fine-Grained PAT
 
@@ -29,9 +24,9 @@ For ultimate reliability, you can add an external cron service as a backup:
 1. Sign up at https://cron-job.org (free tier works)
 
 2. Create **Job 1: Daily Wheel Scan**
-   - **Title**: `Daily Wheel Scan Backup Trigger`
+   - **Title**: `Daily Wheel Scan Primary Trigger`
    - **URL**: `https://api.github.com/repos/Adi1yer/Aletheia-Capital/dispatches`
-   - **Schedule**: `30 13 * * 1-5` (8:30/9:30 AM ET, Mon-Fri)
+   - **Schedule**: `30 13 * * 1-5` (8:30 AM EDT / 9:30 AM EST, Mon-Fri)
    - **Request Method**: `POST`
    - **Request Headers**:
      ```
@@ -45,9 +40,9 @@ For ultimate reliability, you can add an external cron service as a backup:
      ```
 
 3. Create **Job 2: Wheel Options Daily Manage**
-   - **Title**: `Wheel Options Backup Trigger`
+   - **Title**: `Wheel Options Primary Trigger`
    - **URL**: `https://api.github.com/repos/Adi1yer/Aletheia-Capital/dispatches`
-   - **Schedule**: `0 16 * * 1-5` (11:00 AM/12:00 PM ET, Mon-Fri)
+   - **Schedule**: `0 16 * * 1-5` (11:00 AM EDT / 12:00 PM EST, Mon-Fri)
    - **Request Method**: `POST`
    - **Same headers as Job 1**
    - **Request Body**:
@@ -56,9 +51,9 @@ For ultimate reliability, you can add an external cron service as a backup:
      ```
 
 4. Create **Job 3: Growth-Income-Drip Daily Snapshot**
-   - **Title**: `Drip Daily Snapshot Backup Trigger`
+   - **Title**: `Drip Daily Snapshot Primary Trigger`
    - **URL**: `https://api.github.com/repos/Adi1yer/Aletheia-Capital/dispatches`
-   - **Schedule**: `0 14 * * 1-5` (9:00/10:00 AM ET, Mon-Fri)
+   - **Schedule**: `0 14 * * 1-5` (9:00 AM EDT / 10:00 AM EST, Mon-Fri)
    - **Request Method**: `POST`
    - **Same headers as Job 1**
    - **Request Body**:
@@ -80,6 +75,33 @@ curl -X POST \
 # Check if workflow started
 gh run list --workflow=daily-wheel-scan.yml --limit 5
 ```
+
+## 🔄 Fallback: Internal Watchdog
+
+An internal watchdog runs at 14:40, 16:10, 17:40, and 19:10 UTC as a fallback layer:
+- Monitors all three workflows
+- Auto-dispatches missed runs still within market windows
+- Sends email notifications **only on failures**
+- **Limitation**: Also uses GitHub Actions cron, subject to same delays
+
+This provides some resilience, but **external scheduler is still recommended for production reliability**.
+
+## 📋 Technical Notes
+
+### repository_dispatch and GITHUB_TOKEN
+
+Per [GitHub documentation](https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#repository_dispatch), workflows triggered by `repository_dispatch` **do not create recursive workflow runs**. This means:
+- External scheduler can trigger via PAT → ✓ works
+- Internal watchdog can trigger via `GITHUB_TOKEN` → ✓ works  
+- No risk of infinite loops
+
+### Email Notifications
+
+Emails are sent **only on failures**:
+- Workflow missed and outside recovery window
+- Workflow missed and dispatch failed
+
+**No email** when workflows succeed or are successfully auto-dispatched.
 
 ## 🛡️ Safety Guarantees
 
@@ -106,9 +128,9 @@ gh run list --workflow=daily-workflows-watchdog.yml --limit 10
 
 ## 🎯 Summary
 
-- **Minimum**: Do nothing — watchdog works automatically
-- **Recommended**: Add external cron for maximum reliability (15 minutes setup)
+- **Recommended**: Set up external cron (15 minutes) — not subject to GitHub delays
+- **Fallback**: Internal watchdog provides backup (but also subject to delays)
 - **Safety**: All gates prevent double-runs regardless of trigger source
-- **Monitoring**: Email notifications + GitHub Actions logs
+- **Monitoring**: Email notifications (failures only) + GitHub Actions logs
 
 Full documentation: `docs/workflow-reliability-setup.md`

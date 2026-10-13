@@ -2,17 +2,28 @@ name: Daily Workflows Watchdog
 
 # Proactive watchdog: checks if daily workflows ran successfully today, and
 # auto-dispatches any that are overdue and still within their market windows.
-# This makes the system self-healing against GitHub Actions schedule delays.
 #
-# Runs after normal workflow windows have passed but before market close,
-# giving cron slots time to fire while preserving time to dispatch.
+# IMPORTANT: This watchdog itself uses GitHub Actions cron, so it is subject to
+# the same schedule delays as the workflows it monitors. For maximum reliability,
+# configure external triggers (repository_dispatch) as documented in
+# docs/workflow-reliability-setup.md.
+#
+# Times are optimized for both EDT (UTC-4, Mar-Nov) and EST (UTC-5, Nov-Mar):
+#   14:40 UTC = 10:40 AM EDT / 9:40 AM EST
+#   16:10 UTC = 12:10 PM EDT / 11:10 AM EST
+#   17:40 UTC = 1:40 PM EDT / 12:40 PM EST
+#   19:10 UTC = 3:10 PM EDT / 2:10 PM EST (before 3:30 PM ET wheel cutoff)
 
 on:
   schedule:
-    # 19:00 UTC ≈ 2:00/3:00 PM ET — after morning slots, before late afternoon cutoffs
-    - cron: '0 19 * * 1-5'
-    # 21:00 UTC ≈ 4:00/5:00 PM ET — final check near market close
-    - cron: '0 21 * * 1-5'
+    # Slot 1: 14:40 UTC — mid-morning check
+    - cron: '40 14 * * 1-5'
+    # Slot 2: 16:10 UTC — midday check
+    - cron: '10 16 * * 1-5'
+    # Slot 3: 17:40 UTC — early afternoon check
+    - cron: '40 17 * * 1-5'
+    # Slot 4: 19:10 UTC — final check before cutoffs
+    - cron: '10 19 * * 1-5'
   workflow_dispatch:
     inputs:
       force_check_wheel:
