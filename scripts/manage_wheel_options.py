@@ -53,8 +53,9 @@ def main() -> int:
     
     # Auto put buyback: close short puts if free cash is negative
     auto_buyback_enabled = os.getenv("AUTO_PUT_BUYBACK", "0").strip() not in ("0", "false", "False")
+    auto_buyback_dry_run = os.getenv("AUTO_PUT_BUYBACK_DRY_RUN", "0").strip() not in ("0", "false", "False")
     auto_buyback_results = []
-    if auto_buyback_enabled or bool(os.getenv("AUTO_PUT_BUYBACK_DRY_RUN")):
+    if auto_buyback_enabled or auto_buyback_dry_run:
         from src.options.auto_put_buyback import execute_auto_put_buyback
         
         # Run in dry-run mode unless AUTO_PUT_BUYBACK=1 and we're in execute window
@@ -63,7 +64,7 @@ def main() -> int:
         max_total_cost = float(os.getenv("AUTO_PUT_BUYBACK_MAX_TOTAL", "2000"))
         
         try:
-            # Get current prices for ranking (will fetch more below)
+            # CRO blocker (3): Fail closed on price fetch failures
             early_prices = {}
             try:
                 opt_early = broker.get_option_positions() or []
@@ -71,16 +72,35 @@ def main() -> int:
                 need_px = [u for u in short_option_underlyings(opt_early)]
                 if need_px and hasattr(broker, "get_last_equity_prices"):
                     early_prices = broker.get_last_equity_prices(need_px) or {}
-            except Exception:
-                pass
+                    # Verify we got prices for all underlyings - fail closed if any missing
+                    missing = [u for u in need_px if u not in early_prices or early_prices.get(u, 0.0) <= 0]
+                    if missing:
+                        raise RuntimeError(f"Failed to fetch prices for underlyings: {', '.join(missing)}")
+            except Exception as price_err:
+                # CRO blocker (3): Price fetch failure must fail closed and alert
+                from src.utils.alerts import send_alert
+                logger.error("Price fetch failed for put buyback - FAIL CLOSED", error=str(price_err))
+                send_alert(
+                    "Auto Put Buyback Alert",
+                    f"Price fetch failed (fail closed): {str(price_err)[:100]}",
+                    {"error": str(price_err)}
+                )
+                auto_buyback_results.append({
+                    "status": "alert",
+                    "reason": "price_fetch_failed_fail_closed",
+                    "error": str(price_err)[:200],
+                })
+                # Skip buyback if prices unavailable
+                early_prices = None
             
-            auto_buyback_results = execute_auto_put_buyback(
-                broker,
-                early_prices,
-                max_cost_per_contract=max_cost_per_contract,
-                max_total_cost=max_total_cost,
-                execute=run_buyback,
-            )
+            if early_prices is not None:
+                auto_buyback_results = execute_auto_put_buyback(
+                    broker,
+                    early_prices,
+                    max_cost_per_contract=max_cost_per_contract,
+                    max_total_cost=max_total_cost,
+                    execute=run_buyback,
+                )
             
             executed_count = sum(1 for r in auto_buyback_results if r.get("status") == "executed")
             dry_run_count = sum(1 for r in auto_buyback_results if r.get("status") == "dry_run")
@@ -94,7 +114,9 @@ def main() -> int:
                 alerts=alert_count,
             )
         except Exception as e:
+            from src.utils.alerts import send_alert
             logger.error("Auto put buyback failed", error=str(e))
+            send_alert("Auto Put Buyback Error", f"Exception: {str(e)[:100]}", {"error": str(e)})
             auto_buyback_results.append({
                 "status": "error",
                 "reason": "exception",

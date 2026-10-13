@@ -320,10 +320,19 @@ class CashSecuredPutManager:
                 fill_timeout_s=45.0,
             )
             
-            # Count order in collateral_used even if timed out (it may still fill)
-            # Prevents double-counting: timed-out orders still consume collateral
+            # CRO blocker (2): Handle nested timed_out in fill object
+            # Alpaca returns: order['fill']['timed_out'], not order['timed_out']
             ok = bool(order) and order.get("fill_ok") is True
-            timed_out = bool(order) and order.get("timed_out") is True
+            fill = (order or {}).get("fill") if isinstance(order, dict) else {}
+            timed_out = bool(fill) and fill.get("timed_out") is True
+            
+            # Count partial fills before timeout
+            filled_qty = 0
+            if timed_out and fill:
+                try:
+                    filled_qty = int(fill.get("filled_qty") or 0)
+                except (TypeError, ValueError):
+                    filled_qty = 0
             
             if ok:
                 collateral_used += needed
@@ -349,10 +358,21 @@ class CashSecuredPutManager:
                     "order": order,
                 })
             elif timed_out:
-                # Order timed out but was submitted - count collateral to prevent over-allocation
+                # Order timed out but may have partially filled
+                # Count full collateral to prevent over-allocation (conservative)
                 collateral_used += needed
                 from src.options.covered_calls import _contract_premium_usd
                 est_prem = _contract_premium_usd(contract)
+                
+                # Adjust estimated premium if we got partial fills
+                if filled_qty > 0:
+                    try:
+                        avg = float(fill.get("filled_avg_price") or 0.0)
+                        if avg > 0:
+                            est_prem = abs(avg) * 100.0  # Actual premium from partial fill
+                    except (TypeError, ValueError):
+                        pass
+                
                 results.append({
                     "underlying": und,
                     "status": "timed_out",
@@ -362,6 +382,7 @@ class CashSecuredPutManager:
                     "csp_score": score,
                     "collateral_usd": needed,
                     "estimated_premium": round(est_prem, 2),
+                    "filled_qty": filled_qty,
                     "order": order,
                 })
             else:
