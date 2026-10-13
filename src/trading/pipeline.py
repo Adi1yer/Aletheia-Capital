@@ -1625,16 +1625,37 @@ class TradingPipeline:
                     opt_now = None
                 if opt_now is not None:
                     outstanding = outstanding_short_put_collateral_usd(opt_now)
-                    # Raw account cash does NOT automatically net out short-put collateral.
-                    # We must manually subtract: free cash = raw cash - put collateral - pending STO orders.
-                    # The cap should allow for existing puts plus remaining spendable cash.
+                    # (c) Compute cap from free cash instead of double-counting.
+                    # free_cash = raw_cash - existing_collateral - pending_orders
+                    # Cap should allow new puts up to available free cash.
                     if self.broker and csp_cap_f > 0:
                         try:
                             acct = self.broker.get_account() or {}
                             raw_cash = float(acct.get("cash") or 0.0)
-                            bp = float(acct.get("buying_power") or 0.0)
-                            spendable = min(raw_cash, bp) if bp > 0 else raw_cash
-                            headroom = outstanding + max(spendable, 0.0)
+                            
+                            # Get pending orders collateral
+                            pending_collateral = 0.0
+                            try:
+                                open_orders = self.broker.get_open_orders(limit=100) or []
+                                from src.options.wheel_lifecycle import parse_occ_symbol
+                                for order in open_orders:
+                                    if str(order.get("side") or "").lower() != "sell":
+                                        continue
+                                    parsed = parse_occ_symbol(str(order.get("symbol") or ""))
+                                    if not parsed or parsed.get("option_type") != "put":
+                                        continue
+                                    strike = float(parsed.get("strike") or 0.0)
+                                    qty = int(order.get("qty") or 0)
+                                    filled = int(order.get("filled_qty") or 0)
+                                    remaining = max(0, qty - filled)
+                                    if strike > 0 and remaining > 0:
+                                        pending_collateral += strike * 100.0 * remaining
+                            except Exception:
+                                pass
+                            
+                            # Free cash = raw_cash - existing - pending
+                            free_cash = raw_cash - outstanding - pending_collateral
+                            headroom = outstanding + max(free_cash, 0.0)
                             if headroom > 0:
                                 csp_cap_f = min(csp_cap_f, headroom)
                         except Exception:

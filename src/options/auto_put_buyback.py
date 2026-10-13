@@ -344,7 +344,7 @@ def execute_auto_put_buyback(
     
     # CRO requirement (5): Fail closed if open orders read fails
     try:
-        open_orders = broker.get_open_orders(limit=100) or []
+        open_orders = broker.get_open_orders_strict(limit=100) or []
     except Exception as e:
         logger.error("Failed to fetch open orders - ALERT (fail closed)", error=str(e))
         alert_msg = f"Auto put buyback: open orders read failed (fail closed) - {str(e)[:100]}"
@@ -561,6 +561,26 @@ def execute_auto_put_buyback(
                     total_collateral_freed += actual_collateral_freed
                     contracts_closed += filled_qty
                     
+                    # (e) Re-read broker state after each live fill
+                    try:
+                        account_after = broker.get_account()
+                        account_cash_after = float(account_after.get("cash") or 0.0)
+                        positions_after = broker.get_option_positions() or []
+                        orders_after = broker.get_open_orders_strict(limit=100) or []
+                        free_cash_after_close = calculate_free_cash(account_cash_after, positions_after, orders_after)
+                        logger.info(
+                            "Free cash after fill (refreshed)",
+                            symbol=symbol,
+                            free_cash=round(free_cash_after_close, 2),
+                            account_cash=round(account_cash_after, 2),
+                        )
+                        # Update current free cash with refreshed value
+                        current_free_cash = free_cash_after_close
+                    except Exception as refresh_err:
+                        logger.warning("Failed to refresh state after fill", error=str(refresh_err))
+                        # Fall back to calculated value
+                        current_free_cash = free_cash_before + total_collateral_freed - total_cost
+                    
                 elif timed_out:
                     # CFO (b): Order timed out - cancel and count partial fills
                     order_id = order.get("order_id") or order.get("id")
@@ -646,7 +666,10 @@ def execute_auto_put_buyback(
                 })
         
         # CRO (1): Fix free cash calculation and CRO (8): Log after each close
-        current_free_cash = free_cash_before + total_collateral_freed - total_cost
+        if not execute or "executed" not in str(results[-1].get("status", "")):
+            # For dry run or failed orders, use calculated value
+            current_free_cash = free_cash_before + total_collateral_freed - total_cost
+        
         logger.info(
             "Free cash after close",
             symbol=symbol,
@@ -671,7 +694,7 @@ def execute_auto_put_buyback(
             final_account = broker.get_account()
             final_cash = float(final_account.get("cash") or 0.0)
             final_positions = broker.get_option_positions() or []
-            final_orders = broker.get_open_orders(limit=100) or []
+            final_orders = broker.get_open_orders_strict(limit=100) or []
             free_cash_after = calculate_free_cash(final_cash, final_positions, final_orders)
             free_cash_after_status = "refreshed"
         except Exception as e:

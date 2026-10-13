@@ -229,8 +229,40 @@ class AlpacaBroker:
                 for o in (orders or [])
             ]
         except Exception as e:
-            logger.error("Error fetching open orders", error=str(e))
+            logger.warning("get_open_orders failed; returning empty", error=str(e))
             return []
+    
+    def get_open_orders_strict(self, limit: int = 50) -> List[Dict]:
+        """Get open (pending) orders from Alpaca - strict variant that raises on error.
+        
+        (b) Use this in put gate and buyback for fail-closed behavior.
+        Returns same format as get_open_orders but raises BrokerDataError on failure.
+        """
+        try:
+            req = GetOrdersRequest(status="open", limit=limit)
+            orders = self.client.get_orders(req)
+            return [
+                {
+                    "id": str(o.id),
+                    "symbol": o.symbol,
+                    "side": getattr(o.side, "value", str(o.side)).lower(),
+                    "qty": int(float(o.qty)) if o.qty else 0,
+                    "filled_qty": int(float(o.filled_qty))
+                    if getattr(o, "filled_qty", None) is not None
+                    else 0,
+                    "status": getattr(o.status, "value", str(o.status)).lower(),
+                    "submitted_at": str(o.submitted_at)
+                    if hasattr(o, "submitted_at") and o.submitted_at
+                    else None,
+                    "type": getattr(o.type, "value", str(o.type)).lower()
+                    if hasattr(o, "type")
+                    else "market",
+                }
+                for o in (orders or [])
+            ]
+        except Exception as e:
+            logger.error("get_open_orders_strict failed (raising)", error=str(e))
+            raise BrokerDataError(f"Failed to fetch open orders: {e}") from e
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a single order by id. Returns True on success."""
@@ -1040,6 +1072,9 @@ class AlpacaBroker:
                 )
                 result["fill"] = fill
                 result["status"] = fill.get("status") or result["status"]
+                # (a) Expose timed_out at top level for easier access
+                if fill.get("timed_out"):
+                    result["timed_out"] = True
                 if not fill.get("ok"):
                     result["fill_ok"] = False
                     return result
@@ -1086,7 +1121,12 @@ class AlpacaBroker:
                                 or sym[:4].rstrip("0123456789")
                             )
                         qty_signed = int(float(pos.qty))
+                        # (g) Fix: Use abs for display, but identify side correctly
+                        # Short positions come back as negative qty from Alpaca
+                        is_short = qty_signed < 0
                         qty_abs = abs(qty_signed)
+                        side = "short" if is_short else "long"
+                        
                         mv = float(pos.market_value) if pos.market_value is not None else 0.0
                         mark = (
                             abs(mv) / (qty_abs * 100.0)
@@ -1106,7 +1146,7 @@ class AlpacaBroker:
                             {
                                 "symbol": sym,
                                 "qty": qty_abs,
-                                "side": "short" if qty_signed < 0 else "long",
+                                "side": side,  # Use computed side variable
                                 "avg_entry_price": float(pos.avg_entry_price),
                                 "market_value": mv,
                                 "current_price": mark,
