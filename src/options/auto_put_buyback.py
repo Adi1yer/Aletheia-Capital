@@ -88,9 +88,19 @@ def calculate_free_cash(
                 # Pending STO: reserves collateral
                 pending_sto_collateral += strike * 100.0 * remaining
             elif side == "buy":
-                # Pending BTC: estimate cost at strike (conservative)
-                # Real cost from limit price would be better but not always available
-                pending_btc_cost += strike * 100.0 * remaining
+                # Pending BTC: count actual order cost (limit price + fees), not collateral
+                # Blocker (3): BTC orders reduce cash by their cost, collateral not freed until fill
+                try:
+                    limit_price = float(order.get("limit_price") or 0.0)
+                    if limit_price > 0:
+                        order_cost = (limit_price * 100.0 * remaining) + (OPTIONS_FEE_PER_CONTRACT * remaining)
+                        pending_btc_cost += order_cost
+                    else:
+                        # No limit price available, estimate conservatively at strike
+                        pending_btc_cost += strike * 100.0 * remaining
+                except (TypeError, ValueError):
+                    # Fallback to strike if limit_price parse fails
+                    pending_btc_cost += strike * 100.0 * remaining
     
     free = account_cash - short_put_collateral - pending_sto_collateral - pending_btc_cost
     return free
@@ -230,6 +240,7 @@ def get_live_buyback_quote(
         try:
             contracts = broker.get_option_contracts(
                 underlying=symbol[:symbol.find("2") if "2" in symbol else 0] or symbol[:4],
+                option_type='put',
                 limit=100,
             )
             contract = None
@@ -516,8 +527,13 @@ def execute_auto_put_buyback(
                 )
                 
                 # CFO (b): Handle fill, timeout, and cancellation
+                # Blocker (4): Handle fill=None without crashing
+                fill = order.get("fill") if isinstance(order, dict) and order else None
                 ok = bool(order) and order.get("fill_ok") is True
-                timed_out = bool(order) and order.get("fill", {}).get("timed_out") is True
+                timed_out = bool(order) and (
+                    order.get("timed_out") is True 
+                    or (fill and fill.get("timed_out") is True)
+                )
                 
                 if ok:
                     # Successful fill
@@ -583,6 +599,7 @@ def execute_auto_put_buyback(
                     
                 elif timed_out:
                     # CFO (b): Order timed out - cancel and count partial fills
+                    # Blocker (4): Send alert on timeout
                     order_id = order.get("order_id") or order.get("id")
                     partial_filled_qty = 0
                     partial_cost = 0.0
@@ -612,6 +629,14 @@ def execute_auto_put_buyback(
                         partial_cost=round(partial_cost, 2) if partial_cost > 0 else None,
                     )
                     
+                    # Blocker (4): Alert on timeout
+                    alert_msg = f"Auto put buyback: Order timed out for {symbol} (partial fill: {partial_filled_qty}/{qty})"
+                    send_alert("Auto Put Buyback Alert", alert_msg, {
+                        "symbol": symbol,
+                        "qty": qty,
+                        "partial_filled_qty": partial_filled_qty,
+                    })
+                    
                     results.append({
                         "status": "timed_out",
                         "symbol": symbol,
@@ -630,8 +655,10 @@ def execute_auto_put_buyback(
                         total_collateral_freed += partial_collateral
                         contracts_closed += partial_filled_qty
                 else:
-                    # Failed order
+                    # Failed order - cancel and alert (Blocker 4)
+                    # Blocker (4): Handle fill=None case without crashing
                     fill = (order or {}).get("fill") if isinstance(order, dict) else {}
+                    order_id = (order or {}).get("order_id") or (order or {}).get("id")
                     detail = ""
                     if isinstance(order, dict):
                         detail = str(
@@ -641,12 +668,26 @@ def execute_auto_put_buyback(
                             or ""
                         )[:80]
                     
+                    # Try to cancel the failed order
+                    if order_id:
+                        try:
+                            broker.cancel_order(str(order_id))
+                        except Exception as cancel_err:
+                            logger.warning("Failed to cancel failed order", order_id=order_id, error=str(cancel_err))
+                    
                     logger.warning(
                         "Put buy-to-close failed",
                         symbol=symbol,
                         underlying=underlying,
                         detail=detail,
                     )
+                    
+                    # Blocker (4): Alert on failed fill
+                    alert_msg = f"Auto put buyback: Order failed for {symbol} - {detail or 'unknown reason'}"
+                    send_alert("Auto Put Buyback Alert", alert_msg, {
+                        "symbol": symbol,
+                        "detail": detail,
+                    })
                     
                     results.append({
                         "status": "failed",

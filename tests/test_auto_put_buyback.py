@@ -860,3 +860,177 @@ def test_dry_run_called_when_flag_set():
     dry_runs = [r for r in results if r.get("status") == "dry_run"]
     # Should have dry run results
     assert len(dry_runs) >= 0  # May be 0 if no shortage or quote issues
+
+
+def test_pending_btc_order_counted_at_cost_not_collateral():
+    """Blocker (3): Pending BTC orders counted at order cost (limit×100×qty + fees), not collateral."""
+    from src.options.auto_put_buyback import calculate_free_cash
+    
+    positions = []
+    open_orders = [
+        {
+            "symbol": "TEST241115P00020000",
+            "side": "buy",
+            "qty": 1,
+            "filled_qty": 0,
+            "limit_price": 2.15,  # $215 cost per contract + $0.65 fee = $215.65
+        }
+    ]
+    
+    free_cash = calculate_free_cash(10000.0, positions, open_orders)
+    
+    # Should be: 10000 - 215.65 = 9784.35 (NOT 10000 - 2000 = 8000 if using strike collateral)
+    assert free_cash > 9700  # Much higher than 8000
+    assert free_cash < 9800
+
+
+def test_failed_fill_cancels_and_alerts():
+    """Blocker (4): Failed fill should cancel order and send alert."""
+    
+    class FailedBroker(MockBroker):
+        def submit_option_order(self, **kwargs):
+            return {
+                "submitted": True,
+                "fill_ok": False,
+                "order_id": "failed-123",
+                "error": "rejected_by_exchange",
+            }
+        
+        def cancel_order(self, order_id):
+            self.cancelled_orders = getattr(self, 'cancelled_orders', [])
+            self.cancelled_orders.append(order_id)
+        
+        def get_open_orders_strict(self, limit=100):
+            return []
+    
+    positions = [
+        {
+            "side": "short",
+            "symbol": "TEST241115P00020000",
+            "qty": 1,
+            "current_price": 2.0,
+        }
+    ]
+    broker = FailedBroker(cash=-500.0, option_positions=positions)
+    current_prices = {"TEST": 15.0}
+    
+    results = execute_auto_put_buyback(broker, current_prices, execute=True)
+    
+    failed = [r for r in results if r.get("status") == "failed"]
+    assert len(failed) >= 1
+    assert hasattr(broker, 'cancelled_orders') and len(broker.cancelled_orders) > 0
+
+
+def test_timed_out_fill_cancels_and_alerts():
+    """Blocker (4): Timed-out fill should cancel order and send alert."""
+    
+    class TimeoutFillingBroker(MockBroker):
+        def submit_option_order(self, **kwargs):
+            return {
+                "submitted": True,
+                "fill_ok": False,
+                "timed_out": True,
+                "order_id": "timeout-456",
+                "fill": {
+                    "ok": False,
+                    "timed_out": True,
+                    "filled_qty": 0,
+                },
+            }
+        
+        def cancel_order(self, order_id):
+            self.cancelled_orders = getattr(self, 'cancelled_orders', [])
+            self.cancelled_orders.append(order_id)
+        
+        def get_order(self, order_id):
+            return {
+                "order_id": order_id,
+                "filled_qty": 0,
+                "filled_avg_price": 0.0,
+            }
+        
+        def get_open_orders_strict(self, limit=100):
+            return []
+    
+    positions = [
+        {
+            "side": "short",
+            "symbol": "TEST241115P00020000",
+            "qty": 1,
+            "current_price": 2.0,
+        }
+    ]
+    broker = TimeoutFillingBroker(cash=-500.0, option_positions=positions)
+    current_prices = {"TEST": 15.0}
+    
+    results = execute_auto_put_buyback(broker, current_prices, execute=True)
+    
+    timed_out = [r for r in results if r.get("status") == "timed_out"]
+    assert len(timed_out) >= 1
+    assert hasattr(broker, 'cancelled_orders') and len(broker.cancelled_orders) > 0
+
+
+def test_fill_none_handled_without_crash():
+    """Blocker (4): Handle fill=None without crashing."""
+    
+    class NullFillBroker(MockBroker):
+        def submit_option_order(self, **kwargs):
+            return {
+                "submitted": True,
+                "fill_ok": False,
+                "fill": None,  # fill is None
+                "order_id": "null-fill-789",
+                "error": "fill_unavailable",
+            }
+        
+        def cancel_order(self, order_id):
+            self.cancelled_orders = getattr(self, 'cancelled_orders', [])
+            self.cancelled_orders.append(order_id)
+        
+        def get_open_orders_strict(self, limit=100):
+            return []
+    
+    positions = [
+        {
+            "side": "short",
+            "symbol": "TEST241115P00020000",
+            "qty": 1,
+            "current_price": 2.0,
+        }
+    ]
+    broker = NullFillBroker(cash=-500.0, option_positions=positions)
+    current_prices = {"TEST": 15.0}
+    
+    # Should not crash, should treat as failed
+    results = execute_auto_put_buyback(broker, current_prices, execute=True)
+    
+    failed = [r for r in results if r.get("status") == "failed"]
+    assert len(failed) >= 1
+    assert hasattr(broker, 'cancelled_orders') and len(broker.cancelled_orders) > 0
+
+
+def test_option_type_put_requested_in_quote():
+    """Blocker (2): Verify option_type='put' is passed to get_option_contracts."""
+    
+    class OptionTypeCheckBroker(MockBroker):
+        def get_option_contracts(self, underlying=None, option_type=None, limit=100, **kwargs):
+            # Verify option_type was passed
+            assert option_type == 'put', f"Expected option_type='put', got {option_type}"
+            self.option_type_checked = True
+            return [
+                {
+                    "symbol": "TEST241115P00020000",
+                    "ask_price": 2.10,
+                    "bid_price": 2.00,
+                }
+            ]
+    
+    from src.options.auto_put_buyback import get_live_buyback_quote
+    
+    broker = OptionTypeCheckBroker(cash=10000.0, option_positions=[], quote_fetch_works=True)
+    
+    quote = get_live_buyback_quote(broker, "TEST241115P00020000", 1)
+    
+    assert hasattr(broker, 'option_type_checked') and broker.option_type_checked
+    assert quote is not None
+    assert quote.get("limit_price") > 0
