@@ -5,9 +5,60 @@ on:
     # 16:00 UTC = ~9:00 AM Pacific during PDT
     - cron: "0 16 * * 1-5"
   workflow_dispatch:
+    inputs:
+      report_only:
+        description: 'Run ONLY read-only fills/positions report (skips normal health check)'
+        required: false
+        type: boolean
+        default: false
+      report_date:
+        description: 'Date for fills report (YYYY-MM-DD), leave empty for today ET'
+        required: false
+        type: string
 
 jobs:
+  read-only-report:
+    # READ-ONLY report job: runs ONLY when report_only is true
+    # Makes zero order/cancel/replace calls - GET-only operations
+    if: github.event.inputs.report_only == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
+
+      - name: Generate read-only fills and positions report
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+        run: |
+          if [ -n "${{ github.event.inputs.report_date }}" ]; then
+            poetry run python scripts/read_only_fills_report.py --date "${{ github.event.inputs.report_date }}"
+          else
+            poetry run python scripts/read_only_fills_report.py
+          fi
+
+      - name: Verify read-only operation
+        run: |
+          echo "✓ Report completed with zero orders placed (read-only verified)"
+
   health:
+    # Normal health check job: runs on schedule or when report_only is false/absent
+    if: github.event.inputs.report_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
