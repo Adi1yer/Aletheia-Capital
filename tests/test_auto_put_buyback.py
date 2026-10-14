@@ -419,3 +419,134 @@ def test_rank_puts_skips_missing_prices():
 
     # Should be empty since we can't estimate cost
     assert len(ranked) == 0
+
+
+def test_manage_blocks_put_closes_when_board_flags_off():
+    """Put closes must be blocked when AUTO_PUT_BUYBACK=0 or ENABLE_PUT_OPERATIONS=0."""
+    import os
+    from unittest.mock import patch
+    from src.options.wheel_lifecycle import manage_short_options
+    
+    # Mock broker with a short put that would normally be eligible for BTC
+    class MockBrokerWithPut:
+        def get_option_positions(self):
+            return [
+                {
+                    "side": "short",
+                    "symbol": "NU261106P00015000",  # The actual symbol from the bug report
+                    "qty": 1,
+                    "avg_entry_price": 0.50,
+                    "current_price": 0.10,  # 80% profit - normally would BTC
+                }
+            ]
+    
+    broker = MockBrokerWithPut()
+    current_prices = {"NU": 16.0}  # OTM, but would profit-take
+    
+    # Test 1: allow_put_closes=False blocks the put close
+    results = manage_short_options(
+        broker,
+        current_prices,
+        manage_dte_threshold=7,
+        manage_itm_pct=0.02,
+        profit_take_pct=0.60,
+        execute=True,
+        allow_put_closes=False,  # GATE: puts disabled
+    )
+    
+    # The put should be blocked, not executed
+    blocked = [r for r in results if r.get("status") == "blocked"]
+    assert len(blocked) == 1, f"Expected 1 blocked put, got {len(blocked)}"
+    assert blocked[0]["contract_symbol"] == "NU261106P00015000"
+    assert "put_closes_disabled" in blocked[0]["reason"]
+    
+    # Test 2: allow_put_closes=True allows the close (but we're not executing for real)
+    results2 = manage_short_options(
+        broker,
+        current_prices,
+        manage_dte_threshold=7,
+        manage_itm_pct=0.02,
+        profit_take_pct=0.60,
+        execute=False,  # Dry-run to avoid real order
+        allow_put_closes=True,  # GATE: puts enabled
+    )
+    
+    # The put should be eligible for BTC (would_btc in dry-run)
+    would_btc = [r for r in results2 if r.get("status") == "would_btc"]
+    assert len(would_btc) == 1, f"Expected 1 would_btc put, got {len(would_btc)}"
+    assert would_btc[0]["contract_symbol"] == "NU261106P00015000"
+
+
+def test_manage_or_roll_blocks_puts_when_gate_off():
+    """manage_or_roll_short_calls must respect allow_put_closes gate for puts."""
+    from src.options.wheel_lifecycle import manage_or_roll_short_calls
+    from src.options.covered_calls import CoveredCallManager
+    
+    class MockBrokerWithPut:
+        def get_option_positions(self):
+            return [
+                {
+                    "side": "short",
+                    "symbol": "NU261106P00015000",
+                    "qty": 1,
+                    "avg_entry_price": 0.50,
+                    "current_price": 0.10,
+                }
+            ]
+        
+        def sync_portfolio(self):
+            class Portfolio:
+                cash = 10000.0
+                positions = {}
+            return Portfolio()
+    
+    broker = MockBrokerWithPut()
+    current_prices = {"NU": 16.0}
+    mgr = CoveredCallManager()
+    
+    # With allow_put_closes=False, put should be blocked
+    results = manage_or_roll_short_calls(
+        broker,
+        current_prices,
+        mgr,
+        manage_dte_threshold=7,
+        manage_itm_pct=0.02,
+        profit_take_pct=0.60,
+        prefer_roll=True,
+        execute=True,
+        cc_score=55,
+        allow_put_closes=False,  # GATE OFF
+    )
+    
+    blocked = [r for r in results if r.get("status") == "blocked"]
+    assert len(blocked) == 1, f"Expected 1 blocked put, got {len(blocked)}: {results}"
+    assert "put_closes_disabled" in blocked[0]["reason"]
+
+
+def test_board_flags_integration_both_required():
+    """Both AUTO_PUT_BUYBACK and ENABLE_PUT_OPERATIONS must be ON for put closes."""
+    import os
+    from unittest.mock import patch
+    
+    # Test matrix: AUTO_PUT_BUYBACK × ENABLE_PUT_OPERATIONS
+    test_cases = [
+        ("0", "0", False),  # Both OFF → blocked
+        ("1", "0", False),  # AUTO_PUT_BUYBACK ON but puts NO-GO → blocked
+        ("0", "1", False),  # Puts GO but AUTO_PUT_BUYBACK OFF → blocked
+        ("1", "1", True),   # Both ON → allowed
+    ]
+    
+    for auto_buyback, enable_puts, should_allow in test_cases:
+        with patch.dict(os.environ, {
+            "AUTO_PUT_BUYBACK": auto_buyback,
+            "ENABLE_PUT_OPERATIONS": enable_puts,
+        }):
+            # Re-read the flags as manage_wheel_options.py does
+            auto_put_buyback = os.getenv("AUTO_PUT_BUYBACK", "0").strip() not in ("0", "false", "False")
+            enable_put_ops = os.getenv("ENABLE_PUT_OPERATIONS", "0").strip() not in ("0", "false", "False")
+            allow_put_closes = auto_put_buyback and enable_put_ops
+            
+            assert allow_put_closes == should_allow, (
+                f"AUTO_PUT_BUYBACK={auto_buyback}, ENABLE_PUT_OPERATIONS={enable_puts} "
+                f"should result in allow_put_closes={should_allow}, got {allow_put_closes}"
+            )

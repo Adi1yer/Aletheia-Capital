@@ -51,14 +51,29 @@ def main() -> int:
 
     broker = AlpacaBroker()
     
+    # Board flags: Check if put operations are allowed
+    # AUTO_PUT_BUYBACK controls whether puts can be bought back to free collateral
+    # ENABLE_PUT_OPERATIONS (or legacy ENABLE_CASH_SECURED_PUTS) controls if put operations are GO
+    auto_put_buyback = os.getenv("AUTO_PUT_BUYBACK", "0").strip() not in ("0", "false", "False")
+    enable_put_ops = os.getenv("ENABLE_PUT_OPERATIONS", os.getenv("ENABLE_CASH_SECURED_PUTS", "0")).strip() not in ("0", "false", "False")
+    
+    # Put closes/buybacks are only allowed when BOTH flags are enabled
+    allow_put_closes = auto_put_buyback and enable_put_ops
+    
+    if not allow_put_closes:
+        logger.info(
+            "Put closes BLOCKED by board flags",
+            auto_put_buyback=auto_put_buyback,
+            enable_put_ops=enable_put_ops,
+        )
+    
     # Auto put buyback: close short puts if free cash is negative
-    auto_buyback_enabled = os.getenv("AUTO_PUT_BUYBACK", "0").strip() not in ("0", "false", "False")
     auto_buyback_results = []
-    if auto_buyback_enabled or bool(os.getenv("AUTO_PUT_BUYBACK_DRY_RUN")):
+    if (auto_put_buyback and enable_put_ops) or bool(os.getenv("AUTO_PUT_BUYBACK_DRY_RUN")):
         from src.options.auto_put_buyback import execute_auto_put_buyback
         
-        # Run in dry-run mode unless AUTO_PUT_BUYBACK=1 and we're in execute window
-        run_buyback = auto_buyback_enabled and execute
+        # Run in dry-run mode unless both flags enabled and we're in execute window
+        run_buyback = allow_put_closes and execute
         max_cost_per_contract = float(os.getenv("AUTO_PUT_BUYBACK_MAX_PER_CONTRACT", "500"))
         max_total_cost = float(os.getenv("AUTO_PUT_BUYBACK_MAX_TOTAL", "2000"))
         
@@ -161,6 +176,7 @@ def main() -> int:
             prefer_roll=True,
             execute=execute,
             cc_score=int(os.getenv("WHEEL_RULES_SCORE", "55")),
+            allow_put_closes=allow_put_closes,
         )
     except Exception as e:
         logger.error("Afternoon manage/roll failed; continuing to CC", error=str(e))
