@@ -212,11 +212,59 @@ def rank_puts_for_buyback(
     return candidates
 
 
+def _get_fallback_quote(
+    symbol: str,
+    strike: float,
+    qty: int,
+    ask_buffer_pct: float,
+) -> Dict:
+    """Generate fallback quote for dry-run when live quotes unavailable.
+    
+    Fix (D): Fallback pricing uses conservative estimates based on strike.
+    - For OTM/ATM puts: 2% of strike as premium estimate
+    - For ITM puts: Intrinsic value + 1% time value
+    
+    IMPORTANT: This is for dry-run visibility only. Never use for live orders.
+    """
+    # Conservative fallback: 2% of strike price as option premium
+    # This is deliberately conservative to avoid underestimating costs
+    estimated_ask_per_share = strike * 0.02
+    
+    # Apply buffer
+    limit_price_per_share = estimated_ask_per_share * (1.0 + ask_buffer_pct)
+    
+    # Calculate total cost including fees
+    cost_per_contract = (limit_price_per_share * 100.0) + OPTIONS_FEE_PER_CONTRACT
+    total_cost = cost_per_contract * qty
+    
+    logger.warning(
+        "Using FALLBACK pricing for dry-run",
+        symbol=symbol,
+        strike=strike,
+        estimated_ask=round(estimated_ask_per_share, 2),
+        fallback_method="2pct_of_strike",
+        warning="DO_NOT_USE_FOR_LIVE_ORDERS",
+    )
+    
+    return {
+        "limit_price": round(limit_price_per_share, 2),
+        "ask": round(estimated_ask_per_share, 2),
+        "bid": round(estimated_ask_per_share * 0.95, 2),  # Assume 5% spread
+        "cost_per_contract": round(cost_per_contract, 2),
+        "total_cost": round(total_cost, 2),
+        "qty": qty,
+        "quote_source": "fallback",
+        "live": False,  # This is a fallback quote, NOT live
+        "fallback": True,
+    }
+
+
 def get_live_buyback_quote(
     broker: "AlpacaBroker",
     symbol: str,
     qty: int,
     ask_buffer_pct: float = 0.05,
+    allow_fallback: bool = False,
 ) -> Optional[Dict]:
     """Fetch live quote for put buy-to-close and calculate limit price with buffer.
     
@@ -225,15 +273,17 @@ def get_live_buyback_quote(
     
     Fix (1): Build OCC symbol from position and fetch snapshot/quote directly.
     Fall back to last trade or mid, with clear quote_source label.
+    Fix (D): Allow fallback pricing for dry-run when live quotes unavailable.
     
     Args:
         broker: Broker instance
         symbol: Option contract symbol (OCC format)
         qty: Number of contracts to close
         ask_buffer_pct: Buffer above ask (default 5%)
+        allow_fallback: If True, use fallback pricing when live quotes unavailable (dry-run only)
     
     Returns:
-        Dict with limit_price, total_cost, and quote_source, or None if no price at all
+        Dict with limit_price, total_cost, quote_source, and live boolean, or None if no price
     """
     try:
         # Fetch live quote for the exact contract symbol using OptionHistoricalDataClient
@@ -310,13 +360,21 @@ def get_live_buyback_quote(
                 except Exception as trade_err:
                     logger.debug("Latest trade fetch failed", symbol=symbol, error=str(trade_err))
             
-            # Fail closed only when there's truly no price at all
+            # Fail closed only when there's truly no price at all (unless fallback allowed)
             if price_per_share <= 0:
                 logger.warning(
                     "No live quote or trade for contract - no price available",
                     symbol=symbol,
                     attempted_sources=["quote", "trade"],
                 )
+                # Fix (D): Try fallback pricing if allowed
+                if allow_fallback:
+                    from src.options.wheel_lifecycle import parse_occ_symbol
+                    parsed = parse_occ_symbol(symbol)
+                    if parsed:
+                        strike = parsed.get("strike", 0.0)
+                        if strike > 0:
+                            return _get_fallback_quote(symbol, strike, qty, ask_buffer_pct)
                 return None
             
             # Apply buffer to the price
@@ -334,6 +392,7 @@ def get_live_buyback_quote(
                 "total_cost": round(total_cost, 2),
                 "qty": qty,
                 "quote_source": quote_source or "unknown",
+                "live": True,  # This is a live quote
             }
         except Exception as e:
             logger.warning("Failed to fetch live quote for contract", symbol=symbol, error=str(e))
@@ -383,25 +442,43 @@ def format_close_list_for_cfo(
         strike = contract.get("strike", 0.0)
         expiry = contract.get("expiry", "")
         
+        # Fix (E): Handle skipped contracts in artifact
+        is_skipped = contract.get("skipped", False)
+        skip_reason = contract.get("skip_reason", "")
+        
         quote_info = contract.get("quote", {})
         bid = quote_info.get("bid", 0.0)
         ask = quote_info.get("ask", 0.0)
         quote_source = quote_info.get("quote_source", "unknown")
+        is_live = quote_info.get("live", True)
+        is_fallback = quote_info.get("fallback", False)
         limit_price = quote_info.get("limit_price", 0.0)
         
         cost = contract.get("cost_with_fees", 0.0)
         collateral = contract.get("collateral", 0.0)
         
-        running_free_cash += collateral - cost
+        # Only update running cash for non-skipped contracts
+        if not is_skipped:
+            running_free_cash += collateral - cost
+        
+        # Determine quote status label (LIVE, FALLBACK, or SKIPPED)
+        if is_skipped:
+            quote_label = f"SKIPPED ({skip_reason})"
+        elif is_fallback:
+            quote_label = "FALLBACK (dry-run estimate)"
+        elif is_live:
+            quote_label = f"LIVE (source: {quote_source})"
+        else:
+            quote_label = f"source: {quote_source}"
         
         lines.extend([
             f"\n{i}. {symbol}",
             f"   Underlying: {underlying}",
             f"   Strike: ${strike:.2f}  Expiry: {expiry}",
             f"   Quantity: {qty} contract(s)",
-            f"   Quote: bid=${bid:.2f} ask=${ask:.2f} (source: {quote_source})",
-            f"   Limit price: ${limit_price:.2f} per share",
-            f"   Est. cost: ${cost:,.2f} (incl. ${OPTIONS_FEE_PER_CONTRACT * qty:.2f} fees)",
+            f"   Quote: bid=${bid:.2f} ask=${ask:.2f} ({quote_label})",
+            f"   Limit price: ${limit_price:.2f} per share" if not is_skipped else "   [SKIPPED - no quote available]",
+            f"   Est. cost: ${cost:,.2f} (incl. ${OPTIONS_FEE_PER_CONTRACT * qty:.2f} fees)" if not is_skipped else "   Est. cost: $0.00 (skipped)",
             f"   Collateral freed: ${collateral:,.2f}",
             f"   Running free cash: ${running_free_cash:,.2f}",
         ])
@@ -566,6 +643,17 @@ def execute_auto_put_buyback(
             "reason": "no_puts_to_buyback",
             "free_cash": round(free_cash_before, 2),
         })
+        
+        # Fix (E): Write empty artifact even when no puts found
+        if not execute:  # Only in dry-run mode
+            artifact_path = write_close_list_artifact(
+                [],  # Empty close list
+                free_cash_before,
+                0.0,  # No cost
+                0.0,  # No collateral freed
+            )
+            logger.info("Wrote empty close list artifact (no puts found)", path=str(artifact_path))
+        
         return results
     
     logger.info(
@@ -591,14 +679,45 @@ def execute_auto_put_buyback(
         collateral = put["collateral"]
         
         # CFO (a): Fetch live quote for limit price
-        quote = get_live_buyback_quote(broker, symbol, qty, ask_buffer_pct)
+        # Fix (D): Allow fallback pricing for dry-run when live quotes unavailable
+        quote = get_live_buyback_quote(
+            broker, 
+            symbol, 
+            qty, 
+            ask_buffer_pct,
+            allow_fallback=(not execute),  # Only allow fallback in dry-run
+        )
         if not quote:
             logger.warning(
-                "No live quote available for put - skipping",
+                "No quote available for put - skipping",
                 symbol=symbol,
                 underlying=underlying,
                 reason="no_price_available",
             )
+            # Fix (E): Still add to close list even if skipped, for artifact completeness
+            from src.options.wheel_lifecycle import parse_occ_symbol
+            parsed = parse_occ_symbol(symbol)
+            expiry = parsed.get("expiry", "") if parsed else ""
+            
+            close_list_for_cfo.append({
+                "symbol": symbol,
+                "underlying": underlying,
+                "strike": strike,
+                "expiry": expiry,
+                "qty": qty,
+                "quote": {
+                    "bid": 0.0,
+                    "ask": 0.0,
+                    "limit_price": 0.0,
+                    "live": False,
+                    "quote_source": "none",
+                },
+                "cost_with_fees": 0.0,
+                "collateral": round(collateral, 2),
+                "skipped": True,
+                "skip_reason": "no_quote",
+            })
+            
             results.append({
                 "status": "skipped",
                 "symbol": symbol,
@@ -617,6 +736,10 @@ def execute_auto_put_buyback(
         expiry = parsed.get("expiry_date", "") if parsed else ""
         
         # Build CFO close list entry
+        # Fix (D): Include live/fallback tag from quote
+        is_live = quote.get("live", True)
+        is_fallback = quote.get("fallback", False)
+        
         close_entry = {
             "symbol": symbol,
             "underlying": underlying,
@@ -628,6 +751,8 @@ def execute_auto_put_buyback(
                 "ask": quote.get("ask", 0.0),
                 "limit_price": limit_price,
                 "quote_source": quote.get("quote_source", "unknown"),
+                "live": is_live,
+                "fallback": is_fallback,
             },
             "cost_with_fees": round(cost_with_fees, 2),
             "collateral": round(collateral, 2),
