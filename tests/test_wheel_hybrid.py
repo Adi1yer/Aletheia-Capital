@@ -1026,6 +1026,7 @@ def test_manage_or_roll_never_rolls_puts_into_calls():
         prefer_roll=True,
         execute=False,
         cc_score=55,
+        auto_put_buyback=True,  # Enable put BTC for this test
     )
     assert any(r.get("status") == "would_btc" for r in results)
     assert not any(r.get("status") in ("would_roll", "roll_executed") for r in results)
