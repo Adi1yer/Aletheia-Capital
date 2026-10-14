@@ -121,9 +121,10 @@ def main() -> int:
             
             logger.info(
                 "Auto put buyback run complete",
+                dry_run=run_buyback == False,  # True when in dry-run mode
                 execute=run_buyback,
                 executed=executed_count,
-                dry_run=dry_run_count,
+                dry_run_count=dry_run_count,
                 alerts=alert_count,
             )
         except Exception as e:
@@ -468,6 +469,11 @@ def main() -> int:
             pass
         subject, text, html = build_wheel_daily_email(results)
         subject = subject.replace("daily wheel", "afternoon options")
+        
+        # Fix (5): In dry_run mode, prefix email subject with [DRY RUN]
+        if os.getenv("AUTO_PUT_BUYBACK_DRY_RUN", "0").strip() not in ("0", "false", "False") or dry_run:
+            subject = f"[DRY RUN] {subject}"
+        
         get_email_notifier().send_email(recipient, subject, text, html)
         logger.info("Afternoon manage email sent", recipient=recipient, has_changes=has_actions)
     else:

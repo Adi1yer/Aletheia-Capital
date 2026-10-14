@@ -223,52 +223,104 @@ def get_live_buyback_quote(
     CFO requirement (a): Base limit price on live ask (not position mark) with buffer.
     Include fees in total cost estimate.
     
+    Fix (1): Build OCC symbol from position and fetch snapshot/quote directly.
+    Fall back to last trade or mid, with clear quote_source label.
+    
     Args:
         broker: Broker instance
-        symbol: Option contract symbol
+        symbol: Option contract symbol (OCC format)
         qty: Number of contracts to close
         ask_buffer_pct: Buffer above ask (default 5%)
     
     Returns:
-        Dict with limit_price and total_cost, or None if quote unavailable
+        Dict with limit_price, total_cost, and quote_source, or None if no price at all
     """
     try:
-        # Fetch live quote for the option contract
-        if not hasattr(broker, "client"):
-            logger.warning("Broker missing client attribute for quote fetch", symbol=symbol)
+        # Fetch live quote for the exact contract symbol using OptionHistoricalDataClient
+        if not hasattr(broker, "_api_key") or not hasattr(broker, "_secret_key"):
+            logger.warning("Broker missing API credentials for quote fetch", symbol=symbol)
             return None
         
-        # Try to get option quote - Alpaca doesn't have a direct option quote API
-        # We'll use get_option_contracts and check the ask_price field
+        key = broker._api_key
+        sec = broker._secret_key
+        if not key or not sec:
+            logger.warning("Broker API credentials not set", symbol=symbol)
+            return None
+        
         try:
-            contracts = broker.get_option_contracts(
-                underlying=symbol[:symbol.find("2") if "2" in symbol else 0] or symbol[:4],
-                option_type='put',
-                limit=100,
-            )
-            contract = None
-            for c in contracts or []:
-                if str(c.get("symbol") or "") == symbol:
-                    contract = c
-                    break
+            from alpaca.data.historical.option import OptionHistoricalDataClient
+            from alpaca.data.requests import OptionLatestQuoteRequest, OptionLatestTradeRequest
             
-            if not contract:
-                logger.warning("Contract not found in chain for quote", symbol=symbol)
+            client = OptionHistoricalDataClient(key, sec)
+            
+            # Try to get latest quote (bid/ask)
+            quote_source = None
+            price_per_share = 0.0
+            bid = 0.0
+            ask = 0.0
+            
+            try:
+                quote_resp = client.get_option_latest_quote(
+                    OptionLatestQuoteRequest(symbol_or_symbols=[symbol])
+                )
+                qmap = quote_resp if isinstance(quote_resp, dict) else getattr(quote_resp, "data", None) or {}
+                q = qmap.get(symbol)
+                
+                if q is not None:
+                    try:
+                        bid = float(getattr(q, "bid_price", 0) or 0)
+                    except (TypeError, ValueError):
+                        bid = 0.0
+                    try:
+                        ask = float(getattr(q, "ask_price", 0) or 0)
+                    except (TypeError, ValueError):
+                        ask = 0.0
+                    
+                    if ask > 0:
+                        price_per_share = ask
+                        quote_source = "ask"
+                    elif bid > 0 and ask <= 0:
+                        # No ask, use bid with conservative markup
+                        price_per_share = bid * 1.1
+                        quote_source = "bid_adj"
+                    elif bid > 0 and ask > 0:
+                        # Both exist, use mid if ask somehow failed
+                        price_per_share = (bid + ask) / 2.0
+                        quote_source = "mid"
+            except Exception as quote_err:
+                logger.debug("Latest quote fetch failed, trying trade", symbol=symbol, error=str(quote_err))
+            
+            # Fallback to latest trade if no valid quote
+            if price_per_share <= 0:
+                try:
+                    trade_resp = client.get_option_latest_trade(
+                        OptionLatestTradeRequest(symbol_or_symbols=[symbol])
+                    )
+                    tmap = trade_resp if isinstance(trade_resp, dict) else getattr(trade_resp, "data", None) or {}
+                    t = tmap.get(symbol)
+                    
+                    if t is not None:
+                        try:
+                            trade_price = float(getattr(t, "price", 0) or 0)
+                            if trade_price > 0:
+                                price_per_share = trade_price
+                                quote_source = "last_trade"
+                        except (TypeError, ValueError):
+                            pass
+                except Exception as trade_err:
+                    logger.debug("Latest trade fetch failed", symbol=symbol, error=str(trade_err))
+            
+            # Fail closed only when there's truly no price at all
+            if price_per_share <= 0:
+                logger.warning(
+                    "No live quote or trade for contract - no price available",
+                    symbol=symbol,
+                    attempted_sources=["quote", "trade"],
+                )
                 return None
             
-            # Get ask price
-            ask = float(contract.get("ask_price") or contract.get("ask") or 0.0)
-            if ask <= 0:
-                # Fallback to mid if ask unavailable
-                bid = float(contract.get("bid_price") or contract.get("bid") or 0.0)
-                if bid > 0 and ask <= 0:
-                    ask = bid * 1.1  # Conservative estimate
-                else:
-                    logger.warning("No valid ask/bid for contract", symbol=symbol)
-                    return None
-            
-            # Apply buffer
-            limit_price_per_share = ask * (1.0 + ask_buffer_pct)
+            # Apply buffer to the price
+            limit_price_per_share = price_per_share * (1.0 + ask_buffer_pct)
             
             # Calculate total cost including fees
             cost_per_contract = (limit_price_per_share * 100.0) + OPTIONS_FEE_PER_CONTRACT
@@ -276,10 +328,12 @@ def get_live_buyback_quote(
             
             return {
                 "limit_price": round(limit_price_per_share, 2),
-                "ask": round(ask, 2),
+                "ask": round(ask, 2) if ask > 0 else round(price_per_share, 2),
+                "bid": round(bid, 2) if bid > 0 else 0.0,
                 "cost_per_contract": round(cost_per_contract, 2),
                 "total_cost": round(total_cost, 2),
                 "qty": qty,
+                "quote_source": quote_source or "unknown",
             }
         except Exception as e:
             logger.warning("Failed to fetch live quote for contract", symbol=symbol, error=str(e))
@@ -332,7 +386,7 @@ def format_close_list_for_cfo(
         quote_info = contract.get("quote", {})
         bid = quote_info.get("bid", 0.0)
         ask = quote_info.get("ask", 0.0)
-        has_live_quote = quote_info.get("live", False)
+        quote_source = quote_info.get("quote_source", "unknown")
         limit_price = quote_info.get("limit_price", 0.0)
         
         cost = contract.get("cost_with_fees", 0.0)
@@ -345,7 +399,7 @@ def format_close_list_for_cfo(
             f"   Underlying: {underlying}",
             f"   Strike: ${strike:.2f}  Expiry: {expiry}",
             f"   Quantity: {qty} contract(s)",
-            f"   Quote: bid=${bid:.2f} ask=${ask:.2f} ({'LIVE' if has_live_quote else 'FALLBACK/MISSING'})",
+            f"   Quote: bid=${bid:.2f} ask=${ask:.2f} (source: {quote_source})",
             f"   Limit price: ${limit_price:.2f} per share",
             f"   Est. cost: ${cost:,.2f} (incl. ${OPTIONS_FEE_PER_CONTRACT * qty:.2f} fees)",
             f"   Collateral freed: ${collateral:,.2f}",
@@ -539,12 +593,17 @@ def execute_auto_put_buyback(
         # CFO (a): Fetch live quote for limit price
         quote = get_live_buyback_quote(broker, symbol, qty, ask_buffer_pct)
         if not quote:
-            logger.warning("No live quote available for put", symbol=symbol)
+            logger.warning(
+                "No live quote available for put - skipping",
+                symbol=symbol,
+                underlying=underlying,
+                reason="no_price_available",
+            )
             results.append({
                 "status": "skipped",
                 "symbol": symbol,
                 "underlying": underlying,
-                "reason": "no_live_quote",
+                "reason": "no_price_available",
                 "qty": qty,
             })
             continue
@@ -565,10 +624,10 @@ def execute_auto_put_buyback(
             "expiry": expiry,
             "qty": qty,
             "quote": {
-                "bid": quote.get("ask", 0.0) / 1.05 if quote.get("ask") else 0.0,  # Approx bid from ask
+                "bid": quote.get("bid", 0.0),
                 "ask": quote.get("ask", 0.0),
                 "limit_price": limit_price,
-                "live": True,  # We only proceed if we got a quote
+                "quote_source": quote.get("quote_source", "unknown"),
             },
             "cost_with_fees": round(cost_with_fees, 2),
             "collateral": round(collateral, 2),
@@ -895,8 +954,9 @@ def execute_auto_put_buyback(
         improvement=round(free_cash_after - free_cash_before, 2),
     )
     
-    # Generate CFO-readable close list report (in dry-run or when contracts identified)
-    if close_list_for_cfo:
+    # Generate CFO-readable close list report (even when empty in dry_run)
+    # Fix (4): Always write artifacts in dry_run mode, even when empty
+    if close_list_for_cfo or not execute:  # Write in dry_run even if empty
         close_report = format_close_list_for_cfo(
             close_list_for_cfo,
             free_cash_before,
