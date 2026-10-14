@@ -44,8 +44,25 @@ def main() -> int:
     force = bool(os.getenv("FORCE_EXECUTE_AFTER_HOURS"))
     now = datetime.now(ZoneInfo("America/New_York"))
     ok, reason = can_submit_live_orders(now, cutoff_et=os.getenv("EXECUTE_CUTOFF_ET", "15:55"))
+    
+    # Check hard execute gates: DRY_RUN or MANAGE_EXECUTE override window-based execute
+    dry_run_env = os.getenv("DRY_RUN", "").strip().lower()
+    manage_execute_env = os.getenv("MANAGE_EXECUTE", "").strip().lower()
+    
+    dry_run_enabled = dry_run_env in ("1", "true", "yes")
+    manage_execute_disabled = manage_execute_env in ("0", "false", "off", "no")
+    
     execute = True
-    if not ok and not force:
+    if dry_run_enabled or manage_execute_disabled:
+        logger.info(
+            "Execute disabled by environment variable",
+            dry_run=dry_run_enabled,
+            manage_execute_off=manage_execute_disabled,
+            DRY_RUN=dry_run_env or None,
+            MANAGE_EXECUTE=manage_execute_env or None,
+        )
+        execute = False
+    elif not ok and not force:
         logger.warning("Outside submit window — dry manage only", reason=reason)
         execute = False
 
