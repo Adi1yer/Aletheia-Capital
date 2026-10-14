@@ -16,6 +16,9 @@ c. Handle negative qty from Alpaca (use abs), verify shape.
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 import structlog
@@ -286,6 +289,117 @@ def get_live_buyback_quote(
         return None
 
 
+def format_close_list_for_cfo(
+    close_list: List[Dict],
+    free_cash_before: float,
+    total_cost: float,
+    total_collateral_freed: float,
+) -> str:
+    """Format put buyback close list in CFO-readable format.
+    
+    Args:
+        close_list: List of contracts with close details
+        free_cash_before: Starting free cash
+        total_cost: Total estimated cost of all closes
+        total_collateral_freed: Total collateral to be freed
+    
+    Returns:
+        Formatted string report
+    """
+    lines = [
+        "=" * 80,
+        "AUTO PUT BUYBACK CLOSE LIST",
+        "=" * 80,
+        "",
+        f"Starting free cash: ${free_cash_before:,.2f}",
+        f"Total estimated cost (incl. fees): ${total_cost:,.2f}",
+        f"Total collateral freed: ${total_collateral_freed:,.2f}",
+        f"Ending free cash estimate: ${free_cash_before + total_collateral_freed - total_cost:,.2f}",
+        "",
+        "CONTRACTS TO CLOSE:",
+        "-" * 80,
+    ]
+    
+    running_free_cash = free_cash_before
+    
+    for i, contract in enumerate(close_list, 1):
+        symbol = contract.get("symbol", "")
+        underlying = contract.get("underlying", "")
+        qty = contract.get("qty", 0)
+        strike = contract.get("strike", 0.0)
+        expiry = contract.get("expiry", "")
+        
+        quote_info = contract.get("quote", {})
+        bid = quote_info.get("bid", 0.0)
+        ask = quote_info.get("ask", 0.0)
+        has_live_quote = quote_info.get("live", False)
+        limit_price = quote_info.get("limit_price", 0.0)
+        
+        cost = contract.get("cost_with_fees", 0.0)
+        collateral = contract.get("collateral", 0.0)
+        
+        running_free_cash += collateral - cost
+        
+        lines.extend([
+            f"\n{i}. {symbol}",
+            f"   Underlying: {underlying}",
+            f"   Strike: ${strike:.2f}  Expiry: {expiry}",
+            f"   Quantity: {qty} contract(s)",
+            f"   Quote: bid=${bid:.2f} ask=${ask:.2f} ({'LIVE' if has_live_quote else 'FALLBACK/MISSING'})",
+            f"   Limit price: ${limit_price:.2f} per share",
+            f"   Est. cost: ${cost:,.2f} (incl. ${OPTIONS_FEE_PER_CONTRACT * qty:.2f} fees)",
+            f"   Collateral freed: ${collateral:,.2f}",
+            f"   Running free cash: ${running_free_cash:,.2f}",
+        ])
+    
+    lines.extend([
+        "",
+        "=" * 80,
+        f"SUMMARY: {len(close_list)} contract(s) to close",
+        f"Free cash: ${free_cash_before:,.2f} → ${free_cash_before + total_collateral_freed - total_cost:,.2f}",
+        "=" * 80,
+    ])
+    
+    return "\n".join(lines)
+
+
+def write_close_list_artifact(
+    close_list: List[Dict],
+    free_cash_before: float,
+    total_cost: float,
+    total_collateral_freed: float,
+) -> Path:
+    """Write close list as JSON artifact for CFO review.
+    
+    Args:
+        close_list: List of contracts with close details
+        free_cash_before: Starting free cash
+        total_cost: Total estimated cost
+        total_collateral_freed: Total collateral to be freed
+    
+    Returns:
+        Path to written artifact
+    """
+    artifact_dir = Path("data/dry_run")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    
+    artifact_path = artifact_dir / "put_buyback_close_list.json"
+    
+    artifact = {
+        "free_cash_before": round(free_cash_before, 2),
+        "total_cost": round(total_cost, 2),
+        "total_collateral_freed": round(total_collateral_freed, 2),
+        "free_cash_after": round(free_cash_before + total_collateral_freed - total_cost, 2),
+        "contracts": close_list,
+    }
+    
+    with open(artifact_path, "w") as f:
+        json.dump(artifact, f, indent=2)
+    
+    logger.info("Wrote close list artifact", path=str(artifact_path))
+    return artifact_path
+
+
 def execute_auto_put_buyback(
     broker: "AlpacaBroker",
     current_prices: Dict[str, float],
@@ -412,6 +526,7 @@ def execute_auto_put_buyback(
     total_collateral_freed = 0.0
     contracts_closed = 0
     current_free_cash = free_cash_before
+    close_list_for_cfo = []
     
     for put in ranked_puts:
         # Requirement 4: Confirm exact symbol from broker positions
@@ -436,6 +551,29 @@ def execute_auto_put_buyback(
         
         limit_price = quote["limit_price"]
         cost_with_fees = quote["total_cost"]
+        
+        # Parse expiry from symbol for CFO report
+        from src.options.wheel_lifecycle import parse_occ_symbol
+        parsed = parse_occ_symbol(symbol)
+        expiry = parsed.get("expiry_date", "") if parsed else ""
+        
+        # Build CFO close list entry
+        close_entry = {
+            "symbol": symbol,
+            "underlying": underlying,
+            "strike": strike,
+            "expiry": expiry,
+            "qty": qty,
+            "quote": {
+                "bid": quote.get("ask", 0.0) / 1.05 if quote.get("ask") else 0.0,  # Approx bid from ask
+                "ask": quote.get("ask", 0.0),
+                "limit_price": limit_price,
+                "live": True,  # We only proceed if we got a quote
+            },
+            "cost_with_fees": round(cost_with_fees, 2),
+            "collateral": round(collateral, 2),
+        }
+        close_list_for_cfo.append(close_entry)
         
         # Check per-contract cap (CRO requirement 4: stop whole run if hit)
         cost_per_contract_check = quote["cost_per_contract"]
@@ -756,6 +894,40 @@ def execute_auto_put_buyback(
         free_cash_after_status=free_cash_after_status,
         improvement=round(free_cash_after - free_cash_before, 2),
     )
+    
+    # Generate CFO-readable close list report (in dry-run or when contracts identified)
+    if close_list_for_cfo:
+        close_report = format_close_list_for_cfo(
+            close_list_for_cfo,
+            free_cash_before,
+            total_cost,
+            total_collateral_freed,
+        )
+        
+        # Log the full report
+        logger.info("Auto put buyback close list", report=close_report)
+        print("\n" + close_report + "\n")
+        
+        # Write JSON artifact
+        artifact_path = write_close_list_artifact(
+            close_list_for_cfo,
+            free_cash_before,
+            total_cost,
+            total_collateral_freed,
+        )
+        
+        # Write to GitHub step summary if in Actions
+        github_step_summary = os.getenv("GITHUB_STEP_SUMMARY")
+        if github_step_summary:
+            try:
+                with open(github_step_summary, "a") as f:
+                    f.write("\n## Auto Put Buyback Close List\n\n")
+                    f.write("```\n")
+                    f.write(close_report)
+                    f.write("\n```\n")
+                    f.write(f"\nJSON artifact: `{artifact_path}`\n")
+            except Exception as e:
+                logger.warning("Failed to write to GITHUB_STEP_SUMMARY", error=str(e))
     
     # Send alert if we executed anything
     if execute and contracts_closed > 0:

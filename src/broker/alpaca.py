@@ -104,10 +104,18 @@ class AlpacaBroker:
         )
         self._api_key = key
         self._secret_key = sec
+        
+        # Global dry-run mode: check DRY_RUN env var (fail-closed)
+        import os
+        self._dry_run = os.getenv("DRY_RUN", "0").strip() not in ("0", "false", "False", "")
+        if self._dry_run:
+            logger.warning("DRY_RUN=1: NO ORDERS will be submitted, cancelled, or replaced")
+        
         logger.info(
             "Initialized Alpaca broker for paper trading",
             base_url=paper_base_url,
             isolated=bool(api_key is not None or secret_key is not None),
+            dry_run=self._dry_run,
         )
 
     def get_account(self) -> Dict:
@@ -266,6 +274,11 @@ class AlpacaBroker:
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a single order by id. Returns True on success."""
+        # DRY_RUN: refuse all order cancellations
+        if self._dry_run:
+            logger.info("DRY_RUN: Would cancel order (not cancelling)", order_id=str(order_id))
+            return False
+        
         try:
             self.client.cancel_order_by_id(str(order_id))
             logger.info("Cancelled order", order_id=str(order_id))
@@ -435,6 +448,23 @@ class AlpacaBroker:
         if decision.action == "hold" or decision.quantity == 0:
             logger.info("Skipping hold order", ticker=ticker)
             return None
+        
+        # DRY_RUN: refuse all order submissions
+        if self._dry_run:
+            logger.info(
+                "DRY_RUN: Would execute order (not submitting)",
+                ticker=ticker,
+                action=decision.action,
+                quantity=decision.quantity,
+            )
+            return {
+                "symbol": ticker,
+                "status": "dry_run",
+                "success": False,
+                "dry_run": True,
+                "action": decision.action,
+                "quantity": decision.quantity,
+            }
 
         tactic = execution_tactic or {}
         if tactic:
@@ -1025,6 +1055,26 @@ class AlpacaBroker:
         if qty <= 0:
             logger.warning("Refusing option order with non-positive qty", contract=contract_symbol, qty=qty)
             return None
+        
+        # DRY_RUN: refuse all option order submissions
+        if self._dry_run:
+            logger.info(
+                "DRY_RUN: Would submit option order (not submitting)",
+                contract=contract_symbol,
+                side=side,
+                qty=qty,
+                order_type=order_type,
+                limit_price=limit_price,
+            )
+            return {
+                "symbol": contract_symbol,
+                "status": "dry_run",
+                "submitted": False,
+                "dry_run": True,
+                "side": side,
+                "qty": qty,
+            }
+        
         try:
             order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
 

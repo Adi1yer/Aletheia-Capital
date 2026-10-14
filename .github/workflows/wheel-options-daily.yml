@@ -23,6 +23,15 @@ on:
     # Slot 4: 20:00 UTC (mid-afternoon: 15:00/16:00 ET) — last chance before cutoff
     - cron: '0 20 * * 1-5'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run mode: compute all actions but submit NO orders'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 # Wait if morning scan is still running (same paper book).
 concurrency:
@@ -116,9 +125,11 @@ jobs:
           EMAIL_ON_CHANGES_ONLY: '0'
           # Options can still trade after equity DAY cutoff (15:30); early-close still wins.
           EXECUTE_CUTOFF_ET: '15:55'
+          # Global dry-run mode: set by workflow_dispatch input
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '0' }}
           # Auto put buyback: disabled by default (dry-run testing only)
-          AUTO_PUT_BUYBACK: '0'
-          AUTO_PUT_BUYBACK_DRY_RUN: '1'
+          AUTO_PUT_BUYBACK: ${{ github.event.inputs.dry_run == 'true' && '0' || '0' }}
+          AUTO_PUT_BUYBACK_DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '1' }}
           AUTO_PUT_BUYBACK_MAX_PER_CONTRACT: '500'
           AUTO_PUT_BUYBACK_MAX_TOTAL: '2000'
         run: poetry run python scripts/manage_wheel_options.py
@@ -129,16 +140,27 @@ jobs:
           echo "Skipping options manage: ${{ steps.once.outputs.reason }}"
           echo "Manual workflow_dispatch still forces a re-run."
 
+      - name: Upload dry-run artifacts
+        if: github.event.inputs.dry_run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-run-artifacts
+          path: |
+            data/dry_run/*.json
+            data/dry_run/*.log
+          if-no-files-found: ignore
+
       - name: Mark successful completion (schedule or dispatch, after trading)
         if: |
           always() &&
+          github.event.inputs.dry_run != 'true' &&
           (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
           steps.once.outputs.already_ran != 'true' &&
           steps.manage.outcome == 'success'
         run: poetry run python scripts/should_run_daily_scan.py --mark-ran-today --track options
 
       - name: Save performance / wheel state
-        if: always()
+        if: always() && github.event.inputs.dry_run != 'true'
         uses: actions/cache/save@v4
         with:
           path: |

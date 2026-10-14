@@ -41,12 +41,25 @@ def main() -> int:
     from src.utils.wheel_email import build_wheel_daily_email, manage_results_have_actions
 
     logger = structlog.get_logger()
+    
+    # Check global DRY_RUN mode first
+    dry_run = os.getenv("DRY_RUN", "0").strip() not in ("0", "false", "False", "")
+    if dry_run:
+        logger.warning("DRY_RUN=1: NO ORDERS will be submitted")
+        print("=" * 80)
+        print("DRY_RUN MODE: NO ORDERS WILL BE SUBMITTED")
+        print("=" * 80)
+    
     force = bool(os.getenv("FORCE_EXECUTE_AFTER_HOURS"))
     now = datetime.now(ZoneInfo("America/New_York"))
     ok, reason = can_submit_live_orders(now, cutoff_et=os.getenv("EXECUTE_CUTOFF_ET", "15:55"))
     execute = True
     if not ok and not force:
         logger.warning("Outside submit window — dry manage only", reason=reason)
+        execute = False
+    
+    # DRY_RUN overrides execute window
+    if dry_run:
         execute = False
 
     broker = AlpacaBroker()
