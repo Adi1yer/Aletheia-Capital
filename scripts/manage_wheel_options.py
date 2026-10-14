@@ -161,6 +161,7 @@ def main() -> int:
             prefer_roll=True,
             execute=execute,
             cc_score=int(os.getenv("WHEEL_RULES_SCORE", "55")),
+            auto_put_buyback=auto_buyback_enabled,
         )
     except Exception as e:
         logger.error("Afternoon manage/roll failed; continuing to CC", error=str(e))

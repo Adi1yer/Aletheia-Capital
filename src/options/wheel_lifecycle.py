@@ -294,6 +294,7 @@ def manage_or_roll_short_calls(
     cc_score: int = 55,
     max_roll_debit_usd: float = 25.0,
     max_roll_debit_pct_of_premium: float = 0.25,
+    auto_put_buyback: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     BTC threatened short calls, then attempt same-session roll (STO).
@@ -301,10 +302,13 @@ def manage_or_roll_short_calls(
     Debit policy B:
     - near-ITM / short DTE: allow debit ≤ max($25, 25% of new premium)
     - profit-take: credit-only
-    Puts are BTC-only.
+    Puts are BTC-only when auto_put_buyback=True.
     
     For execute=True + prefer_roll: Check roll debit cap BEFORE executing BTC (CPNG fix).
     For all other cases: Use original behavior unchanged.
+    
+    Args:
+        auto_put_buyback: If False, skip all put BTC (log SKIPPED status). Default False.
     """
     from src.options.covered_calls import _contract_premium_usd, _finite_px, coverage_sto_qty, live_coverage_sto_qty
 
@@ -326,8 +330,24 @@ def manage_or_roll_short_calls(
         for row in candidates:
             # Not a call BTC candidate - just record or execute non-roll BTC
             if row.get("status") != "would_btc" or str(row.get("option_type") or "") != "call":
-                # For non-call options (puts), just execute BTC if it's a would_btc
-                if row.get("status") == "would_btc":
+                # For non-call options (puts), check auto_put_buyback flag
+                if row.get("status") == "would_btc" and str(row.get("option_type") or "") == "put":
+                    if not auto_put_buyback:
+                        # AUTO_PUT_BUYBACK=0: skip all put BTC
+                        results.append({
+                            **row,
+                            "status": "skipped",
+                            "reason": f"AUTO_PUT_BUYBACK=0_skipped_{row.get('reason', '')}",
+                        })
+                        logger.info(
+                            "Put BTC skipped (AUTO_PUT_BUYBACK=0)",
+                            contract=row.get("contract_symbol"),
+                            underlying=row.get("underlying"),
+                            original_reason=row.get("reason"),
+                        )
+                        continue
+                    
+                    # auto_put_buyback=True: execute put BTC
                     symbol = str(row.get("contract_symbol") or "")
                     try:
                         qty = int(row.get("qty") or 0)
@@ -361,6 +381,9 @@ def manage_or_roll_short_calls(
                         })
                     else:
                         results.append(row)
+                elif row.get("status") == "would_btc":
+                    # Non-put would_btc that's not a call - just record
+                    results.append(row)
                 else:
                     results.append(row)
                 continue
@@ -730,6 +753,23 @@ def manage_or_roll_short_calls(
     )
     results: List[Dict[str, Any]] = []
     for row in base:
+        # Check AUTO_PUT_BUYBACK for puts before processing
+        if str(row.get("option_type") or "") == "put":
+            if row.get("status") in ("btc_executed", "would_btc") and not auto_put_buyback:
+                # AUTO_PUT_BUYBACK=0: convert to skipped status
+                results.append({
+                    **row,
+                    "status": "skipped",
+                    "reason": f"AUTO_PUT_BUYBACK=0_skipped_{row.get('reason', '')}",
+                })
+                logger.info(
+                    "Put BTC skipped (AUTO_PUT_BUYBACK=0)",
+                    contract=row.get("contract_symbol"),
+                    underlying=row.get("underlying"),
+                    original_reason=row.get("reason"),
+                )
+                continue
+        
         results.append(row)
         if not prefer_roll:
             continue
