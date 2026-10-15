@@ -43,8 +43,11 @@ class MockBroker:
         }
 
 
-def test_csp_respects_real_free_cash():
+def test_csp_respects_real_free_cash(monkeypatch):
     """CSP sizing checks against real broker cash, not seeded collateral."""
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     # 10/6 EOD case: $2,052.28 free cash, open puts need $2,150 → $98 short
     free_cash = 2052.28
     existing_put_collateral = 2150.0
@@ -112,8 +115,11 @@ def test_csp_respects_real_free_cash():
     assert len(executed) == 0
 
 
-def test_csp_allows_new_puts_with_sufficient_cash():
+def test_csp_allows_new_puts_with_sufficient_cash(monkeypatch):
     """CSP allows new puts when free cash covers existing + new collateral."""
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     free_cash = 5000.0
     
     broker = MockBroker(free_cash=free_cash)
@@ -160,8 +166,11 @@ def test_csp_allows_new_puts_with_sufficient_cash():
     assert executed[0]["underlying"] == "TEST"
 
 
-def test_csp_midday_shortage_case():
+def test_csp_midday_shortage_case(monkeypatch):
     """Simulate 10/6 midday case with ~$1,097 shortage."""
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     free_cash = 1000.0  # Low midday cash
     
     broker = MockBroker(free_cash=free_cash)
@@ -225,8 +234,11 @@ def test_csp_midday_shortage_case():
     assert len(executed) == 0
 
 
-def test_csp_logs_sizing_info():
+def test_csp_logs_sizing_info(monkeypatch):
     """Verify CSP logs critical sizing info for debugging."""
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     import structlog
     
     free_cash = 2052.28
@@ -259,8 +271,10 @@ def test_csp_logs_sizing_info():
     assert isinstance(results, list)
 
 
-def test_csp_broker_cash_unavailable_error():
+def test_csp_broker_cash_unavailable_error(monkeypatch):
     """Handle broker cash fetch failure gracefully."""
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
     
     class BrokenBroker:
         def get_account(self):
@@ -286,8 +300,10 @@ def test_csp_broker_cash_unavailable_error():
     assert results[0]["reason"] == "broker_cash_unavailable"
 
 
-def test_csp_open_orders_unavailable_fail_closed():
+def test_csp_open_orders_unavailable_fail_closed(monkeypatch):
     """Skip all new puts when open orders fetch fails (fail-closed)."""
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
     
     class PartialBroker:
         def get_account(self):

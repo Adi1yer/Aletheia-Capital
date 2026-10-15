@@ -474,6 +474,27 @@ class CoveredCallManager:
         current_prices: Dict[str, float],
     ) -> List[Dict]:
         """End-to-end: identify positions, select contracts, submit sell-to-open orders."""
+        
+        # Hard gate: board covered calls HOLD / ENABLE_COVERED_CALLS enforcement
+        # Skip all new CC sell-to-open when env var is unset, "0", or "false"
+        import os
+        enable_cc_ops = os.environ.get("ENABLE_COVERED_CALLS", "").strip().lower()
+        if enable_cc_ops not in ("1", "true", "yes"):
+            logger.warning(
+                "CC opens blocked by board covered calls HOLD gate",
+                enable_covered_calls=enable_cc_ops or "(unset)",
+                tickers_requested=len(cc_lot_tickers),
+            )
+            results: List[Dict] = []
+            for ticker in cc_lot_tickers:
+                und = str(ticker or "").upper()
+                results.append({
+                    "underlying": und,
+                    "status": "skipped",
+                    "reason": "cc_hold_opens_blocked",
+                })
+            return results
+        
         try:
             live_port = broker.sync_portfolio()
             if live_port is not None:
