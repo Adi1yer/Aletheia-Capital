@@ -311,3 +311,77 @@ def test_csp_open_orders_unavailable_fail_closed():
     assert len(results) == 2
     assert all(r["status"] == "skipped" for r in results)
     assert all("open_orders_unavailable_fail_closed" in r["reason"] for r in results)
+
+
+def test_csp_puts_nogo_gate_blocks_opens(monkeypatch):
+    """Board puts NO-GO gate blocks all new CSP opens when ENABLE_PUT_OPERATIONS is unset/false."""
+    import os
+    
+    # Test various "disabled" states
+    for env_value in [None, "", "0", "false", "False", "no"]:
+        # Set or unset the env var
+        if env_value is None:
+            monkeypatch.delenv("ENABLE_PUT_OPERATIONS", raising=False)
+        else:
+            monkeypatch.setenv("ENABLE_PUT_OPERATIONS", env_value)
+        
+        broker = MockBroker(free_cash=10000.0)
+        broker.option_contracts = [
+            {
+                "symbol": "TEST241115P00020000",
+                "underlying": "TEST",
+                "strike": 20.0,
+                "expiry": "2024-11-15",
+                "tradable": True,
+                "mid_price": 0.75,
+            }
+        ]
+        
+        manager = CashSecuredPutManager()
+        results = manager.execute_cash_secured_puts(
+            broker=broker,
+            csp_tickers=["TEST1", "TEST2"],
+            csp_scores={"TEST1": 60, "TEST2": 55},
+            current_prices={"TEST1": 25.0, "TEST2": 30.0},
+            wait_fill=False,
+        )
+        
+        # Should skip all puts with puts_nogo reason
+        assert len(results) == 2, f"Failed for env_value={env_value!r}"
+        assert all(r["status"] == "skipped" for r in results), f"Failed for env_value={env_value!r}"
+        assert all(r["reason"] == "puts_nogo_csp_opens_blocked" for r in results), f"Failed for env_value={env_value!r}"
+
+
+def test_csp_puts_go_gate_allows_opens(monkeypatch):
+    """CSP opens proceed when ENABLE_PUT_OPERATIONS is set to true/1/yes."""
+    import os
+    
+    # Test various "enabled" states
+    for env_value in ["1", "true", "True", "TRUE", "yes", "YES"]:
+        monkeypatch.setenv("ENABLE_PUT_OPERATIONS", env_value)
+        
+        broker = MockBroker(free_cash=10000.0)
+        broker.option_contracts = [
+            {
+                "symbol": "TEST241115P00020000",
+                "underlying": "TEST",
+                "strike": 20.0,
+                "expiry": "2024-11-15",
+                "tradable": True,
+                "mid_price": 0.75,
+            }
+        ]
+        
+        manager = CashSecuredPutManager()
+        results = manager.execute_cash_secured_puts(
+            broker=broker,
+            csp_tickers=["TEST"],
+            csp_scores={"TEST": 60},
+            current_prices={"TEST": 25.0},
+            wait_fill=False,
+        )
+        
+        # Should execute put successfully (not blocked by gate)
+        executed = [r for r in results if r.get("status") == "executed"]
+        assert len(executed) == 1, f"Failed for env_value={env_value!r}"
+        assert executed[0]["underlying"] == "TEST", f"Failed for env_value={env_value!r}"

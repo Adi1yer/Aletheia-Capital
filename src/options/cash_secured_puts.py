@@ -140,6 +140,25 @@ class CashSecuredPutManager:
     ) -> List[Dict]:
         results: List[Dict] = []
         
+        # Hard gate: board puts NO-GO / ENABLE_PUT_OPERATIONS enforcement
+        # Skip all new CSP sell-to-open when env var is unset, "0", or "false"
+        import os
+        enable_put_ops = os.environ.get("ENABLE_PUT_OPERATIONS", "").strip().lower()
+        if enable_put_ops not in ("1", "true", "yes"):
+            logger.warning(
+                "CSP opens blocked by board puts NO-GO gate",
+                enable_put_operations=enable_put_ops or "(unset)",
+                tickers_requested=len(csp_tickers),
+            )
+            for underlying in csp_tickers:
+                und = str(underlying or "").upper()
+                results.append({
+                    "underlying": und,
+                    "status": "skipped",
+                    "reason": "puts_nogo_csp_opens_blocked",
+                })
+            return results
+        
         # Fetch real free cash from broker
         try:
             account = broker.get_account()

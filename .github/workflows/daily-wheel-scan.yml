@@ -30,6 +30,10 @@ on:
         description: 'Force a full equity rebuild (legacy Beat SPY flag; unused for wheel-10k)'
         type: boolean
         default: false
+      enable_cash_secured_puts:
+        description: 'Enable cash-secured put opens (manual override only; schedule never enables by default)'
+        type: boolean
+        default: false
 
 # Serialize with afternoon manage so both never trade the same paper book at once.
 concurrency:
@@ -192,7 +196,7 @@ jobs:
             --stop-loss-pct 0.08 \
             --execute \
             --enable-covered-calls \
-            --enable-cash-secured-puts \
+            ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_cash_secured_puts == 'true' && '--enable-cash-secured-puts' || '' }} \
             --max-position-pct 0.35 --max-sector-pct 0.40 \
             --min-buy-confidence 55 --min-sell-confidence 55 \
             --cash-buffer-pct 0.06 --max-buy-tickers 8 \
