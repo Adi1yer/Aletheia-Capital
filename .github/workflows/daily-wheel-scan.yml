@@ -34,6 +34,10 @@ on:
         description: 'Enable cash-secured put opens (manual override only; schedule never enables by default)'
         type: boolean
         default: false
+      enable_covered_calls:
+        description: 'Enable covered call opens (manual override only; schedule never enables by default)'
+        type: boolean
+        default: false
 
 # Serialize with afternoon manage so both never trade the same paper book at once.
 concurrency:
@@ -195,7 +199,7 @@ jobs:
             --max-stocks 400 \
             --stop-loss-pct 0.08 \
             --execute \
-            --enable-covered-calls \
+            ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_covered_calls == 'true' && '--enable-covered-calls' || '' }} \
             ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_cash_secured_puts == 'true' && '--enable-cash-secured-puts' || '' }} \
             --max-position-pct 0.35 --max-sector-pct 0.40 \
             --min-buy-confidence 55 --min-sell-confidence 55 \
