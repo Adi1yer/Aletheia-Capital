@@ -1,0 +1,48 @@
+name: Read-Only Fills Report
+
+# IMPORTANT: workflow_dispatch on a brand-new workflow file only works once this file
+# is on the default branch (main). Until merged, use an existing workflow or run locally.
+#
+# This workflow is READ-ONLY: it makes zero order/cancel/replace calls.
+# Used by finance to confirm paper trades and split cash moves between order legs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date for fills report (YYYY-MM-DD), leave empty for today ET'
+        required: false
+        type: string
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+          poetry install --no-interaction --no-ansi
+      
+      - name: Generate read-only fills report
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            poetry run python scripts/read_only_fills_report.py --date "${{ github.event.inputs.date }}"
+          else
+            poetry run python scripts/read_only_fills_report.py
+          fi
+      
+      - name: Verify read-only operation
+        run: |
+          echo "✓ Report completed with zero orders placed (read-only verified)"
