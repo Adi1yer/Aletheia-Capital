@@ -2,7 +2,8 @@
 
 This test suite validates that the watchdog and repository_dispatch triggers
 respect all existing gates (market window, holidays, same-day idempotency)
-and cannot cause double-runs.
+and cannot cause double-runs. Also tests money-path-inert gates to ensure
+watchdog never dispatches disabled workflows or when board holds active.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from scripts.dispatch_missed_workflows import (
     WORKFLOWS,
     WorkflowConfig,
     is_in_market_window,
+    is_workflow_money_path_inert,
 )
 from src.trading.wheel_daily_once import (
     DRIP_MARKER_NAME,
@@ -323,3 +325,170 @@ class TestWorkflowConfigurations:
         assert drip.cutoff_et is None  # Uses market close
         assert drip.marker_name == DRIP_MARKER_NAME
         assert drip.marker_dir == DRIP_MARKER_DIR
+
+
+class TestMoneyPathInertGates:
+    """Test money-path-inert gates: workflow disabled or board holds active."""
+
+    def test_wheel_blocked_when_puts_nogo(self) -> None:
+        """Wheel Scan should be inert when ENABLE_PUT_OPERATIONS is not set."""
+        wheel = next(w for w in WORKFLOWS if w.track == "wheel")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "0", "ENABLE_COVERED_CALLS": "1"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(wheel)
+                assert is_inert
+                assert "puts_nogo" in reason.lower()
+
+    def test_wheel_blocked_when_cc_hold(self) -> None:
+        """Wheel Scan should be inert when ENABLE_COVERED_CALLS is not set."""
+        wheel = next(w for w in WORKFLOWS if w.track == "wheel")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "1", "ENABLE_COVERED_CALLS": "0"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(wheel)
+                assert is_inert
+                assert "cc_hold" in reason.lower()
+
+    def test_wheel_blocked_when_both_gates_active(self) -> None:
+        """Wheel Scan should be inert when both gates are blocking."""
+        wheel = next(w for w in WORKFLOWS if w.track == "wheel")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "", "ENABLE_COVERED_CALLS": ""}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(wheel)
+                assert is_inert
+
+    def test_wheel_allowed_when_gates_open(self) -> None:
+        """Wheel Scan should NOT be inert when both gates are open."""
+        wheel = next(w for w in WORKFLOWS if w.track == "wheel")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "1", "ENABLE_COVERED_CALLS": "1"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(wheel)
+                assert not is_inert
+                assert reason == "ok"
+
+    def test_options_blocked_when_puts_nogo(self) -> None:
+        """Options Manage should be inert when ENABLE_PUT_OPERATIONS is not set."""
+        options = next(w for w in WORKFLOWS if w.track == "options")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "false", "ENABLE_COVERED_CALLS": "1"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(options)
+                assert is_inert
+                assert "puts_nogo" in reason.lower()
+
+    def test_options_blocked_when_cc_hold(self) -> None:
+        """Options Manage should be inert when ENABLE_COVERED_CALLS is not set."""
+        options = next(w for w in WORKFLOWS if w.track == "options")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "true", "ENABLE_COVERED_CALLS": "no"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(options)
+                assert is_inert
+                assert "cc_hold" in reason.lower()
+
+    def test_options_allowed_when_gates_open(self) -> None:
+        """Options Manage should NOT be inert when both gates are open."""
+        options = next(w for w in WORKFLOWS if w.track == "options")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "yes", "ENABLE_COVERED_CALLS": "true"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(options)
+                assert not is_inert
+
+    def test_drip_not_affected_by_options_gates(self) -> None:
+        """Drip workflow should NOT be blocked by options gates (not money-path)."""
+        drip = next(w for w in WORKFLOWS if w.track == "drip")
+        
+        # Drip doesn't trade options, so gates shouldn't block it
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "0", "ENABLE_COVERED_CALLS": "0"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(drip)
+                assert not is_inert
+                assert reason == "ok"
+
+    def test_workflow_blocked_when_disabled_in_registry(self) -> None:
+        """Any workflow should be inert when disabled in registry."""
+        wheel = next(w for w in WORKFLOWS if w.track == "wheel")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "1", "ENABLE_COVERED_CALLS": "1"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=False)
+                is_inert, reason = is_workflow_money_path_inert(wheel)
+                assert is_inert
+                assert "disabled_in_registry" in reason
+
+    def test_workflow_blocked_when_not_found_in_registry(self) -> None:
+        """Workflow should be inert when not found in registry."""
+        wheel = next(w for w in WORKFLOWS if w.track == "wheel")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "1", "ENABLE_COVERED_CALLS": "1"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = None
+                is_inert, reason = is_workflow_money_path_inert(wheel)
+                assert is_inert
+                assert "disabled_in_registry" in reason
+
+
+class TestOncePerDayHardening:
+    """Test atomic marker writes and concurrent access scenarios."""
+
+    def test_marker_write_is_atomic(self, tmp_path: Path) -> None:
+        """Marker write should use atomic temp-file-and-rename."""
+        day = date(2026, 10, 16)
+        
+        # Write marker
+        path = mark_ran_et_day(day, marker_dir=tmp_path, marker_name=MARKER_NAME)
+        
+        # Verify marker exists and is readable
+        assert path.exists()
+        assert path.read_text().strip() == day.isoformat()
+        
+        # Verify no temp files left behind
+        temp_files = list(tmp_path.glob(f".{MARKER_NAME}.*.tmp"))
+        assert len(temp_files) == 0
+
+    def test_concurrent_marker_reads_safe(self, tmp_path: Path) -> None:
+        """Multiple concurrent reads should all see consistent marker."""
+        day = date(2026, 10, 16)
+        mark_ran_et_day(day, marker_dir=tmp_path, marker_name=MARKER_NAME)
+        
+        # Simulate multiple concurrent checks
+        results = [
+            check_already_ran(day, marker_dir=tmp_path, marker_name=MARKER_NAME)
+            for _ in range(10)
+        ]
+        
+        # All should see same result
+        assert all(r[0] for r in results)
+        assert all("already_ran_et" in r[1] for r in results)
+
+    def test_marker_prevents_cron_watchdog_external_triple_run(self, tmp_path: Path) -> None:
+        """Same-day marker prevents runs from cron, watchdog, and external dispatch."""
+        day = date(2026, 10, 16)
+        
+        # First run (cron) - should proceed
+        already_1, _ = check_already_ran(day, marker_dir=tmp_path, marker_name=MARKER_NAME)
+        assert not already_1
+        
+        mark_ran_et_day(day, marker_dir=tmp_path, marker_name=MARKER_NAME)
+        
+        # Second run (watchdog) - should skip
+        already_2, reason_2 = check_already_ran(day, marker_dir=tmp_path, marker_name=MARKER_NAME)
+        assert already_2
+        assert "already_ran_et" in reason_2
+        
+        # Third run (external dispatch) - should also skip
+        already_3, reason_3 = check_already_ran(day, marker_dir=tmp_path, marker_name=MARKER_NAME)
+        assert already_3
+        assert "already_ran_et" in reason_3

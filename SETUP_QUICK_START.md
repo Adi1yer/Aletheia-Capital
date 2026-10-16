@@ -109,6 +109,14 @@ Emails are sent **only on failures**:
 1. Is today an NYSE trading day?
 2. Are we within the workflow's execution window?
 3. Did this workflow already run successfully today?
+4. **NEW**: For wheel/options only: Is the workflow enabled and are board gates open?
+
+**Money-path-inert protection**: The watchdog will NOT dispatch wheel Scan or options Manage when:
+- Workflow is disabled in the registry
+- `ENABLE_PUT_OPERATIONS` is not set (puts NO-GO gate)
+- `ENABLE_COVERED_CALLS` is not set (CC HOLD gate)
+
+This ensures the watchdog cannot accidentally fire money-path workflows during board holds.
 
 If any check fails → workflow skips execution.
 

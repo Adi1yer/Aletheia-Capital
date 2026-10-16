@@ -27,6 +27,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from src.broker.registry import get_workflow
 from src.trading.execution_status import can_submit_live_orders
 from src.trading.us_equity_calendar import is_us_equity_trading_day, nyse_session_close_et
 from src.trading.wheel_daily_once import (
@@ -101,6 +102,44 @@ def is_in_market_window(workflow: WorkflowConfig, now: datetime) -> tuple[bool, 
             return False, "after_close"
         else:
             return True, "ok"
+
+
+def is_workflow_money_path_inert(workflow: WorkflowConfig) -> tuple[bool, str]:
+    """Check if workflow is inert (disabled or blocked by board gates).
+    
+    Returns (is_inert, reason).
+    Money-path workflows (wheel, options) must not dispatch when:
+    - Workflow is disabled in registry
+    - Board puts NO-GO gate active (ENABLE_PUT_OPERATIONS != 1/true/yes)
+    - Board CC HOLD gate active (ENABLE_COVERED_CALLS != 1/true/yes)
+    
+    Drip is not money-path for these gates (no options trading).
+    """
+    # Check workflow registry disabled status
+    workflow_id_map = {
+        "wheel": "wheel-10k-paper",
+        "options": "wheel-10k-paper",  # Same workflow account
+        "drip": "growth-income-drip-v1-paper",
+    }
+    
+    wf_id = workflow_id_map.get(workflow.track)
+    if wf_id:
+        wf = get_workflow(wf_id)
+        if wf is None or not wf.enabled:
+            return True, f"workflow_{workflow.track}_disabled_in_registry"
+    
+    # Money-path gates (wheel Scan and options Manage touch puts/calls)
+    if workflow.track in ("wheel", "options"):
+        enable_puts = os.environ.get("ENABLE_PUT_OPERATIONS", "").strip().lower()
+        enable_ccs = os.environ.get("ENABLE_COVERED_CALLS", "").strip().lower()
+        
+        # If either gate is blocking, workflow is inert
+        if enable_puts not in ("1", "true", "yes"):
+            return True, "puts_nogo_gate_active"
+        if enable_ccs not in ("1", "true", "yes"):
+            return True, "cc_hold_gate_active"
+    
+    return False, "ok"
 
 
 def dispatch_workflow(repo: str, workflow: WorkflowConfig, dry_run: bool = False) -> bool:
@@ -243,6 +282,22 @@ def main() -> int:
 
         if force:
             print(f"  ⚠ Forced check (ignoring marker)")
+        
+        # Money-path-inert gate: skip if workflow disabled or board gates blocking
+        is_inert, inert_reason = is_workflow_money_path_inert(workflow)
+        if is_inert:
+            msg = f"  🛑 Money-path INERT: {inert_reason} — NOT dispatching"
+            print(msg)
+            # Send notification for blocked dispatch
+            if recipient and not args.dry_run:
+                send_notification(
+                    workflow.name,
+                    "Blocked (money-path inert)",
+                    f"Watchdog skipped dispatch: {inert_reason}",
+                    recipient,
+                    args.dry_run,
+                )
+            continue
 
         in_window, window_reason = is_in_market_window(workflow, now)
 

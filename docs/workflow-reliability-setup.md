@@ -180,6 +180,10 @@ Every trigger path goes through these gates:
 1. **Holiday Gate**: Is today an NYSE trading day?
 2. **Market Window Gate**: Are we within the workflow's execution window?
 3. **Same-Day Idempotency Gate**: Did this workflow already run successfully today?
+4. **Money-Path-Inert Gate** (NEW): For wheel/options workflows only:
+   - Is the workflow enabled in the registry?
+   - Is `ENABLE_PUT_OPERATIONS` set to block CSP opens?
+   - Is `ENABLE_COVERED_CALLS` set to block CC opens?
 
 These gates are checked for:
 - GitHub cron triggers
@@ -187,7 +191,24 @@ These gates are checked for:
 - workflow_dispatch (manual) triggers
 - Watchdog-initiated triggers
 
-**Result**: Multiple simultaneous triggers are safe. Only one will execute.
+**Result**: Multiple simultaneous triggers are safe. Only one will execute. Money-path workflows (wheel Scan, options Manage) will NOT dispatch when disabled or when board puts NO-GO or CC HOLD gates are active.
+
+## Money-Path-Inert Safety
+
+**Critical**: The watchdog will NOT dispatch wheel Scan or options Manage workflows when:
+
+1. **Workflow disabled in registry**: The workflow account is marked disabled
+2. **Puts NO-GO gate active**: `ENABLE_PUT_OPERATIONS` env var is unset, "0", or "false"
+3. **CC HOLD gate active**: `ENABLE_COVERED_CALLS` env var is unset, "0", or "false"
+
+This ensures the watchdog cannot accidentally trigger money-path workflows during board holds or when workflows are intentionally disabled. Drip workflow (no options trading) is not affected by puts/CC gates.
+
+When a workflow is blocked by these gates, the watchdog:
+- Skips dispatch with a clear reason logged
+- Sends email notification explaining which gate blocked it
+- Continues checking other workflows normally
+
+**Example**: If you set `ENABLE_PUT_OPERATIONS=0` in repository secrets to block CSP opens, the watchdog will not dispatch wheel Scan or options Manage, even if they missed their cron slots.
 
 ## Testing
 
