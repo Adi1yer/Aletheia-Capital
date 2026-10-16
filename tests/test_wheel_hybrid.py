@@ -1468,6 +1468,93 @@ def test_allocate_does_not_inject_empty_probe_positions():
     assert "NVDA" not in portfolio.positions
 
 
+def test_cc_hold_gate_blocks_opens(monkeypatch):
+    """Board covered calls HOLD gate blocks all new CC opens when ENABLE_COVERED_CALLS is unset/false."""
+    from src.options.covered_calls import CoveredCallManager
+    from src.portfolio.models import Portfolio, Position
+    
+    # Test various "disabled" states
+    for env_value in [None, "", "0", "false", "False", "no"]:
+        # Set or unset the env var
+        if env_value is None:
+            monkeypatch.delenv("ENABLE_COVERED_CALLS", raising=False)
+        else:
+            monkeypatch.setenv("ENABLE_COVERED_CALLS", env_value)
+        
+        class _Broker:
+            def sync_portfolio(self):
+                return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
+            
+            def get_option_positions(self):
+                return []
+            
+            def get_option_contracts(self, **kwargs):
+                raise AssertionError("should not fetch contracts when gate blocks")
+            
+            def submit_option_order(self, **kwargs):
+                raise AssertionError("should not submit when gate blocks")
+        
+        mgr = CoveredCallManager()
+        results = mgr.execute_covered_calls(
+            broker=_Broker(),
+            portfolio=Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)}),
+            cc_lot_tickers=["F", "SOFI"],
+            cc_scores={"F": 60, "SOFI": 55},
+            current_prices={"F": 12.0, "SOFI": 10.0},
+        )
+        
+        # Should skip all CCs with cc_hold reason
+        assert len(results) == 2, f"Failed for env_value={env_value!r}"
+        assert all(r["status"] == "skipped" for r in results), f"Failed for env_value={env_value!r}"
+        assert all(r["reason"] == "cc_hold_opens_blocked" for r in results), f"Failed for env_value={env_value!r}"
+
+
+def test_cc_go_gate_allows_opens(monkeypatch):
+    """CC opens proceed when ENABLE_COVERED_CALLS is set to true/1/yes."""
+    from src.options.covered_calls import CoveredCallManager
+    from src.portfolio.models import Portfolio, Position
+    
+    # Test various "enabled" states
+    for env_value in ["1", "true", "True", "TRUE", "yes", "YES"]:
+        monkeypatch.setenv("ENABLE_COVERED_CALLS", env_value)
+        
+        class _Broker:
+            def sync_portfolio(self):
+                return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
+            
+            def get_option_positions(self):
+                return []
+            
+            def get_option_contracts(self, **kwargs):
+                return [
+                    {
+                        "symbol": "F261115C00012600",
+                        "underlying": "F",
+                        "strike": 12.60,
+                        "expiry": "2026-11-15",
+                        "tradable": True,
+                        "mid_price": 0.25,
+                    }
+                ]
+            
+            def submit_option_order(self, **kwargs):
+                return {"submitted": True, "fill_ok": True, "order_id": "test-order"}
+        
+        mgr = CoveredCallManager(min_premium_usd=10.0)
+        results = mgr.execute_covered_calls(
+            broker=_Broker(),
+            portfolio=Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)}),
+            cc_lot_tickers=["F"],
+            cc_scores={"F": 60},
+            current_prices={"F": 12.0},
+        )
+        
+        # Should execute CC successfully (not blocked by gate)
+        executed = [r for r in results if r.get("status") in ("executed", "partial")]
+        assert len(executed) == 1, f"Failed for env_value={env_value!r}, got {results}"
+        assert executed[0]["underlying"] == "F", f"Failed for env_value={env_value!r}"
+
+
 def test_allocate_rejects_nan_add_lot_score():
     portfolio = Portfolio(
         cash=5000.0,
@@ -1559,7 +1646,10 @@ def test_pending_buy_notional_reduces_cash():
     assert "SOFI" not in decisions or decisions["SOFI"].action != "buy"
 
 
-def test_csp_seeds_outstanding_put_collateral():
+def test_csp_seeds_outstanding_put_collateral(monkeypatch):
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     from src.options.cash_secured_puts import (
         CashSecuredPutManager,
         outstanding_short_put_collateral_usd,
@@ -1608,7 +1698,10 @@ def test_csp_seeds_outstanding_put_collateral():
     assert "csp_collateral_cap" in str(results[0].get("reason") or "")
 
 
-def test_csp_skips_underlying_that_already_has_short_put():
+def test_csp_skips_underlying_that_already_has_short_put(monkeypatch):
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     from src.options.cash_secured_puts import CashSecuredPutManager
 
     class _Broker:
@@ -1637,7 +1730,10 @@ def test_csp_skips_underlying_that_already_has_short_put():
     assert results[0]["reason"] == "already_has_short_put"
 
 
-def test_csp_fail_reason_includes_submit_error():
+def test_csp_fail_reason_includes_submit_error(monkeypatch):
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     from src.options.cash_secured_puts import CashSecuredPutManager
 
     class _Broker:
@@ -1814,7 +1910,10 @@ def test_profile_llm_budget_not_clobbered_by_entrypoint_defaults():
     assert int(merged.get("max_csp_tickers") or 0) == 3
 
 
-def test_csp_nan_seed_does_not_lift_collateral_cap():
+def test_csp_nan_seed_does_not_lift_collateral_cap(monkeypatch):
+    # Enable puts for this test (not testing the gate)
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "1")
+    
     from src.options.cash_secured_puts import CashSecuredPutManager
 
     class _Broker:
