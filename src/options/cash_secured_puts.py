@@ -192,17 +192,22 @@ class CashSecuredPutManager:
                 })
             return results
         
-        # Calculate collateral already reserved by existing open puts and pending orders
-        # NOTE: Alpaca account cash does NOT net out short-put collateral automatically.
-        # We must subtract it manually to get truly available cash.
+        # (d) Sum collateral_already_used_usd AND position collateral (not choose one)
+        # Calculate collateral already reserved by existing open puts
         try:
             seeded = float(collateral_already_used_usd or 0.0)
         except (TypeError, ValueError):
             seeded = 0.0
         if seeded != seeded or seeded < 0 or seeded == float("inf"):
             seeded = 0.0
-        if option_positions is not None and seeded <= 0:
-            seeded = outstanding_short_put_collateral_usd(option_positions)
+        
+        # Always add position collateral (don't skip if seeded)
+        position_collateral = 0.0
+        if option_positions is not None:
+            position_collateral = outstanding_short_put_collateral_usd(option_positions)
+        
+        # Sum both sources
+        total_existing_collateral = seeded + position_collateral
         
         # Add collateral from pending sell-to-open put orders
         pending_put_collateral = 0.0
@@ -225,18 +230,20 @@ class CashSecuredPutManager:
                 if strike > 0 and remaining > 0:
                     pending_put_collateral += strike * 100.0 * remaining
         
-        seeded += pending_put_collateral
+        total_reserved = total_existing_collateral + pending_put_collateral
         
         # Real available cash = free cash - existing put collateral
-        available_cash = free_cash - seeded
+        available_cash = free_cash - total_reserved
         
         # Log critical sizing info for 10/6 case debugging
         logger.info(
             "CSP sizing check",
             free_cash=round(free_cash, 2),
-            existing_put_collateral=round(seeded - pending_put_collateral, 2),
+            seeded_collateral=round(seeded, 2),
+            position_collateral=round(position_collateral, 2),
+            total_existing_collateral=round(total_existing_collateral, 2),
             pending_put_orders_collateral=round(pending_put_collateral, 2),
-            total_reserved_collateral=round(seeded, 2),
+            total_reserved_collateral=round(total_reserved, 2),
             available_cash=round(available_cash, 2),
             max_collateral_cap=round(max_collateral_usd, 2) if max_collateral_usd else None,
         )
@@ -254,7 +261,7 @@ class CashSecuredPutManager:
                 "status": "alert",
                 "reason": f"insufficient_free_cash_shortage_{shortage:.2f}",
                 "free_cash": round(free_cash, 2),
-                "existing_put_collateral": round(seeded, 2),
+                "total_existing_collateral": round(total_existing_collateral, 2),
                 "shortage": round(shortage, 2),
                 "pending_put_orders_collateral": round(pending_put_collateral, 2),
             })
@@ -275,7 +282,7 @@ class CashSecuredPutManager:
             already_short_puts = {
                 str(x).upper() for x in short_put_underlyings(option_positions)
             }
-        collateral_used = seeded
+        collateral_used = total_reserved
         for underlying in csp_tickers:
             und = str(underlying or "").upper()
             try:
@@ -306,8 +313,8 @@ class CashSecuredPutManager:
             needed = float(contract["strike"]) * 100.0
             
             # Check against real available cash (free cash - existing put collateral)
-            # collateral_used starts at seeded (existing puts), so we compare against available_cash
-            if collateral_used - seeded + needed > available_cash:
+            # collateral_used starts at total_reserved, so we compare against available_cash
+            if collateral_used - total_reserved + needed > available_cash:
                 results.append(
                     {
                         "underlying": und,
@@ -339,10 +346,19 @@ class CashSecuredPutManager:
                 fill_timeout_s=45.0,
             )
             
-            # Count order in collateral_used even if timed out (it may still fill)
-            # Prevents double-counting: timed-out orders still consume collateral
+            # CRO blocker (2): Handle nested timed_out in fill object
+            # Alpaca returns: order['fill']['timed_out'], not order['timed_out']
             ok = bool(order) and order.get("fill_ok") is True
-            timed_out = bool(order) and order.get("timed_out") is True
+            fill = (order or {}).get("fill") if isinstance(order, dict) else {}
+            timed_out = bool(fill) and fill.get("timed_out") is True
+            
+            # Count partial fills before timeout
+            filled_qty = 0
+            if timed_out and fill:
+                try:
+                    filled_qty = int(fill.get("filled_qty") or 0)
+                except (TypeError, ValueError):
+                    filled_qty = 0
             
             if ok:
                 collateral_used += needed
@@ -367,11 +383,49 @@ class CashSecuredPutManager:
                     "estimated_premium": round(est_prem, 2),
                     "order": order,
                 })
+                
+                # (d) Re-read open orders after successful submission to get latest state
+                try:
+                    open_orders = broker.get_open_orders_strict(limit=100)
+                    # Recalculate pending collateral
+                    pending_put_collateral_new = 0.0
+                    from src.options.wheel_lifecycle import parse_occ_symbol
+                    for order in open_orders:
+                        if str(order.get("side") or "").lower() != "sell":
+                            continue
+                        symbol = str(order.get("symbol") or "")
+                        parsed = parse_occ_symbol(symbol)
+                        if not parsed or parsed.get("option_type") != "put":
+                            continue
+                        strike = float(parsed.get("strike") or 0.0)
+                        try:
+                            qty_o = int(order.get("qty") or 0)
+                            filled_o = int(order.get("filled_qty") or 0)
+                            remaining_o = max(0, qty_o - filled_o)
+                        except (TypeError, ValueError):
+                            remaining_o = 0
+                        if strike > 0 and remaining_o > 0:
+                            pending_put_collateral_new += strike * 100.0 * remaining_o
+                    pending_put_collateral = pending_put_collateral_new
+                except Exception as e:
+                    logger.warning("Failed to re-read orders after put submission", error=str(e))
+                    # Continue with stale state
             elif timed_out:
-                # Order timed out but was submitted - count collateral to prevent over-allocation
+                # Order timed out but may have partially filled
+                # Count full collateral to prevent over-allocation (conservative)
                 collateral_used += needed
                 from src.options.covered_calls import _contract_premium_usd
                 est_prem = _contract_premium_usd(contract)
+                
+                # Adjust estimated premium if we got partial fills
+                if filled_qty > 0:
+                    try:
+                        avg = float(fill.get("filled_avg_price") or 0.0)
+                        if avg > 0:
+                            est_prem = abs(avg) * 100.0  # Actual premium from partial fill
+                    except (TypeError, ValueError):
+                        pass
+                
                 results.append({
                     "underlying": und,
                     "status": "timed_out",
@@ -381,6 +435,7 @@ class CashSecuredPutManager:
                     "csp_score": score,
                     "collateral_usd": needed,
                     "estimated_premium": round(est_prem, 2),
+                    "filled_qty": filled_qty,
                     "order": order,
                 })
             else:

@@ -104,10 +104,18 @@ class AlpacaBroker:
         )
         self._api_key = key
         self._secret_key = sec
+        
+        # Global dry-run mode: check DRY_RUN env var (fail-closed)
+        import os
+        self._dry_run = os.getenv("DRY_RUN", "0").strip() not in ("0", "false", "False", "")
+        if self._dry_run:
+            logger.warning("DRY_RUN=1: NO ORDERS will be submitted, cancelled, or replaced")
+        
         logger.info(
             "Initialized Alpaca broker for paper trading",
             base_url=paper_base_url,
             isolated=bool(api_key is not None or secret_key is not None),
+            dry_run=self._dry_run,
         )
 
     def get_account(self) -> Dict:
@@ -229,11 +237,48 @@ class AlpacaBroker:
                 for o in (orders or [])
             ]
         except Exception as e:
-            logger.error("Error fetching open orders", error=str(e))
+            logger.warning("get_open_orders failed; returning empty", error=str(e))
             return []
+    
+    def get_open_orders_strict(self, limit: int = 50) -> List[Dict]:
+        """Get open (pending) orders from Alpaca - strict variant that raises on error.
+        
+        (b) Use this in put gate and buyback for fail-closed behavior.
+        Returns same format as get_open_orders but raises BrokerDataError on failure.
+        """
+        try:
+            req = GetOrdersRequest(status="open", limit=limit)
+            orders = self.client.get_orders(req)
+            return [
+                {
+                    "id": str(o.id),
+                    "symbol": o.symbol,
+                    "side": getattr(o.side, "value", str(o.side)).lower(),
+                    "qty": int(float(o.qty)) if o.qty else 0,
+                    "filled_qty": int(float(o.filled_qty))
+                    if getattr(o, "filled_qty", None) is not None
+                    else 0,
+                    "status": getattr(o.status, "value", str(o.status)).lower(),
+                    "submitted_at": str(o.submitted_at)
+                    if hasattr(o, "submitted_at") and o.submitted_at
+                    else None,
+                    "type": getattr(o.type, "value", str(o.type)).lower()
+                    if hasattr(o, "type")
+                    else "market",
+                }
+                for o in (orders or [])
+            ]
+        except Exception as e:
+            logger.error("get_open_orders_strict failed (raising)", error=str(e))
+            raise BrokerDataError(f"Failed to fetch open orders: {e}") from e
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a single order by id. Returns True on success."""
+        # DRY_RUN: refuse all order cancellations
+        if self._dry_run:
+            logger.info("DRY_RUN: Would cancel order (not cancelling)", order_id=str(order_id))
+            return False
+        
         try:
             self.client.cancel_order_by_id(str(order_id))
             logger.info("Cancelled order", order_id=str(order_id))
@@ -403,6 +448,23 @@ class AlpacaBroker:
         if decision.action == "hold" or decision.quantity == 0:
             logger.info("Skipping hold order", ticker=ticker)
             return None
+        
+        # DRY_RUN: refuse all order submissions
+        if self._dry_run:
+            logger.info(
+                "DRY_RUN: Would execute order (not submitting)",
+                ticker=ticker,
+                action=decision.action,
+                quantity=decision.quantity,
+            )
+            return {
+                "symbol": ticker,
+                "status": "dry_run",
+                "success": False,
+                "dry_run": True,
+                "action": decision.action,
+                "quantity": decision.quantity,
+            }
 
         tactic = execution_tactic or {}
         if tactic:
@@ -993,6 +1055,26 @@ class AlpacaBroker:
         if qty <= 0:
             logger.warning("Refusing option order with non-positive qty", contract=contract_symbol, qty=qty)
             return None
+        
+        # DRY_RUN: refuse all option order submissions
+        if self._dry_run:
+            logger.info(
+                "DRY_RUN: Would submit option order (not submitting)",
+                contract=contract_symbol,
+                side=side,
+                qty=qty,
+                order_type=order_type,
+                limit_price=limit_price,
+            )
+            return {
+                "symbol": contract_symbol,
+                "status": "dry_run",
+                "submitted": False,
+                "dry_run": True,
+                "side": side,
+                "qty": qty,
+            }
+        
         try:
             order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
 
@@ -1040,6 +1122,9 @@ class AlpacaBroker:
                 )
                 result["fill"] = fill
                 result["status"] = fill.get("status") or result["status"]
+                # (a) Expose timed_out at top level for easier access
+                if fill.get("timed_out"):
+                    result["timed_out"] = True
                 if not fill.get("ok"):
                     result["fill_ok"] = False
                     return result
@@ -1086,7 +1171,12 @@ class AlpacaBroker:
                                 or sym[:4].rstrip("0123456789")
                             )
                         qty_signed = int(float(pos.qty))
+                        # (g) Fix: Use abs for display, but identify side correctly
+                        # Short positions come back as negative qty from Alpaca
+                        is_short = qty_signed < 0
                         qty_abs = abs(qty_signed)
+                        side = "short" if is_short else "long"
+                        
                         mv = float(pos.market_value) if pos.market_value is not None else 0.0
                         mark = (
                             abs(mv) / (qty_abs * 100.0)
@@ -1106,7 +1196,7 @@ class AlpacaBroker:
                             {
                                 "symbol": sym,
                                 "qty": qty_abs,
-                                "side": "short" if qty_signed < 0 else "long",
+                                "side": side,  # Use computed side variable
                                 "avg_entry_price": float(pos.avg_entry_price),
                                 "market_value": mv,
                                 "current_price": mark,
