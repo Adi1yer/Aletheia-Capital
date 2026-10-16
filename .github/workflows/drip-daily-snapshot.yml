@@ -8,7 +8,8 @@ name: Growth-Income-Drip Daily Snapshot
 # - Multiple cron slots staggered ~90–120 minutes apart (Mon–Fri)
 # - Idempotent already-ran gate: later slots skip if earlier slot succeeded same ET day
 # - Hard abort when schedule fires outside usable window (past equity close 16:00 ET)
-# - workflow_dispatch bypasses all gates (manual override)
+# - repository_dispatch (external trigger) is schedule-equivalent: all gates apply
+# - workflow_dispatch bypasses all gates (manual emergency override)
 #
 # Trading window: 09:30–16:00 ET (residual cash deploy before close). Slots target
 # coverage from morning through mid-session so even multi-hour delay lands in-window.
@@ -48,17 +49,17 @@ jobs:
       - name: Decide whether to run today (holiday gate)
         id: gate
         run: |
-          if [ "${{ github.event_name }}" != "schedule" ]; then
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "reason=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
-            echo "Non-schedule trigger (${{ github.event_name }}) — bypassing holiday gate."
+            echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
+            echo "Manual workflow_dispatch — bypassing holiday gate."
             exit 0
           fi
           python3 scripts/should_run_daily_scan.py --github-output
 
-      - name: Check market window (schedule only)
+      - name: Check market window (schedule and repository_dispatch)
         id: window
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
         run: |
           python3 scripts/check_market_window.py --workflow drip --github-output || true
           # Exit 0 so later slots can still try; actual gate is in daily-snapshot job condition
@@ -67,7 +68,7 @@ jobs:
     needs: market-gate
     if: |
       needs.market-gate.outputs.should_run == 'true' &&
-      (github.event_name != 'schedule' || needs.market-gate.outputs.in_window == 'true')
+      (github.event_name == 'workflow_dispatch' || needs.market-gate.outputs.in_window == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -111,14 +112,14 @@ jobs:
           echo "drip performance cache hit: ${{ steps.drip_cache_restore.outputs.cache-hit }}"
           echo "performance files:" && ls -la data/performance/growth_income_drip_v1/ 2>/dev/null || true
 
-      - name: Same-day skip check (schedule only)
+      - name: Same-day skip check (schedule and repository_dispatch)
         id: once
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
         run: poetry run python scripts/should_run_daily_scan.py --check-already-ran --track drip --github-output
 
       - name: Run daily snapshot (with residual cash deployment)
         id: drip
-        if: github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true'
         env:
           LOG_LEVEL: INFO
           DRIP_ALPACA_API_KEY: ${{ secrets.DRIP_ALPACA_API_KEY }}
@@ -132,15 +133,15 @@ jobs:
           poetry run python scripts/growth_income_drip_rebalance.py --execute
 
       - name: Skipped — already ran today (ET)
-        if: github.event_name == 'schedule' && steps.once.outputs.already_ran == 'true'
+        if: (github.event_name == 'schedule' || github.event_name == 'repository_dispatch') && steps.once.outputs.already_ran == 'true'
         run: |
           echo "Skipping drip daily snapshot: ${{ steps.once.outputs.reason }}"
           echo "Manual workflow_dispatch still forces a re-run."
 
-      - name: Mark successful completion (schedule or dispatch, after trading)
+      - name: Mark successful completion (schedule, repository_dispatch, or manual dispatch)
         if: |
           always() &&
-          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+          (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch') &&
           steps.once.outputs.already_ran != 'true' &&
           steps.drip.outcome == 'success'
         run: poetry run python scripts/should_run_daily_scan.py --mark-ran-today --track drip
