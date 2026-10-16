@@ -151,8 +151,14 @@ def manage_short_options(
     manage_itm_pct: float = 0.02,
     profit_take_pct: float = 0.60,
     execute: bool = True,
+    allow_put_closes: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Buy-to-close short options that are near expiry, near ITM, or profit-taken."""
+    """Buy-to-close short options that are near expiry, near ITM, or profit-taken.
+    
+    Args:
+        allow_put_closes: If False, put BTC/buyback is blocked regardless of eligibility.
+                          Caller must check AUTO_PUT_BUYBACK and puts GO/NO-GO board state.
+    """
     results: List[Dict[str, Any]] = []
     try:
         positions = broker.get_option_positions() if broker else []
@@ -220,6 +226,28 @@ def manage_short_options(
             mark = 0.0
         btc_cost_usd = mark * 100.0 * max(qty, 1)
 
+        # GATE: Block put closes when allow_put_closes=False
+        if parsed["option_type"] == "put" and not allow_put_closes:
+            logger.warning(
+                "Put BTC blocked by allow_put_closes gate",
+                symbol=symbol,
+                underlying=und,
+                reason=reason,
+            )
+            results.append(
+                {
+                    "contract_symbol": symbol,
+                    "underlying": und,
+                    "status": "blocked",
+                    "reason": f"put_closes_disabled_{reason}",
+                    "dte": dte,
+                    "qty": qty,
+                    "option_type": parsed["option_type"],
+                    "strike": float(parsed["strike"]),
+                }
+            )
+            continue
+        
         if not execute:
             results.append(
                 {
@@ -294,6 +322,7 @@ def manage_or_roll_short_calls(
     cc_score: int = 55,
     max_roll_debit_usd: float = 25.0,
     max_roll_debit_pct_of_premium: float = 0.25,
+    allow_put_closes: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     BTC threatened short calls, then attempt same-session roll (STO).
@@ -301,10 +330,14 @@ def manage_or_roll_short_calls(
     Debit policy B:
     - near-ITM / short DTE: allow debit ≤ max($25, 25% of new premium)
     - profit-take: credit-only
-    Puts are BTC-only.
+    Puts are BTC-only (and only when allow_put_closes=True).
     
     For execute=True + prefer_roll: Check roll debit cap BEFORE executing BTC (CPNG fix).
     For all other cases: Use original behavior unchanged.
+    
+    Args:
+        allow_put_closes: If False, put BTC/buyback is blocked regardless of eligibility.
+                          Caller must check AUTO_PUT_BUYBACK and puts GO/NO-GO board state.
     """
     from src.options.covered_calls import _contract_premium_usd, _finite_px, coverage_sto_qty, live_coverage_sto_qty
 
@@ -318,6 +351,7 @@ def manage_or_roll_short_calls(
             manage_itm_pct=manage_itm_pct,
             profit_take_pct=profit_take_pct,
             execute=False,
+            allow_put_closes=allow_put_closes,
         )
         
         results: List[Dict[str, Any]] = []
@@ -326,9 +360,26 @@ def manage_or_roll_short_calls(
         for row in candidates:
             # Not a call BTC candidate - just record or execute non-roll BTC
             if row.get("status") != "would_btc" or str(row.get("option_type") or "") != "call":
-                # For non-call options (puts), just execute BTC if it's a would_btc
+                # For non-call options (puts), check allow_put_closes gate before BTC
                 if row.get("status") == "would_btc":
+                    opt_type = str(row.get("option_type") or "")
                     symbol = str(row.get("contract_symbol") or "")
+                    
+                    # GATE: Block put closes when allow_put_closes=False
+                    if opt_type == "put" and not allow_put_closes:
+                        logger.warning(
+                            "Put BTC blocked by allow_put_closes gate",
+                            symbol=symbol,
+                            underlying=row.get("underlying"),
+                            reason=row.get("reason"),
+                        )
+                        results.append({
+                            **row,
+                            "status": "blocked",
+                            "reason": f"put_closes_disabled_{row.get('reason')}",
+                        })
+                        continue
+                    
                     try:
                         qty = int(row.get("qty") or 0)
                     except (TypeError, ValueError):
@@ -719,7 +770,7 @@ def manage_or_roll_short_calls(
         return results
     
     # ORIGINAL PATH: execute=False OR prefer_roll=False
-    # This preserves the original behavior completely unchanged
+    # This preserves the original behavior with allow_put_closes gate
     base = manage_short_options(
         broker,
         current_prices,
@@ -727,6 +778,7 @@ def manage_or_roll_short_calls(
         manage_itm_pct=manage_itm_pct,
         profit_take_pct=profit_take_pct,
         execute=execute,
+        allow_put_closes=allow_put_closes,
     )
     results: List[Dict[str, Any]] = []
     for row in base:

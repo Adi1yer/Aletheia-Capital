@@ -1301,6 +1301,15 @@ class TradingPipeline:
                             fv = _finite_price(v)
                             if fv is not None:
                                 px_manage[str(k).upper()] = fv
+                    
+                    # Board gate: Put closes require both AUTO_PUT_BUYBACK and puts-enabled
+                    import os
+                    auto_put_buyback = os.getenv("AUTO_PUT_BUYBACK", "0").strip() not in ("0", "false", "False")
+                    enable_puts = bool(run_config.get("enable_cash_secured_puts", False)) or (
+                        os.getenv("ENABLE_PUT_OPERATIONS", "0").strip() not in ("0", "false", "False")
+                    )
+                    allow_put_closes = auto_put_buyback and enable_puts
+                    
                     wheel_manage_results = manage_or_roll_short_calls(
                         self.broker,
                         px_manage,
@@ -1311,6 +1320,7 @@ class TradingPipeline:
                         prefer_roll=True,
                         execute=True,
                         cc_score=int(run_config.get("wheel_rules_score", 55)),
+                        allow_put_closes=allow_put_closes,
                     )
                     amb = [r for r in wheel_manage_results if r.get("status") == "ambiguous"]
                     if amb:
