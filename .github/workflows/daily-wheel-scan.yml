@@ -8,7 +8,8 @@ name: Daily Wheel Scan & Rebalance
 # - Multiple cron slots staggered ~90–120 minutes apart (Mon–Fri)
 # - Idempotent already-ran gate: later slots skip if earlier slot succeeded same ET day
 # - Hard abort when schedule fires outside usable window (past equity cutoff 15:30 ET)
-# - workflow_dispatch bypasses all gates (manual override)
+# - repository_dispatch (external trigger) is schedule-equivalent: all gates apply
+# - workflow_dispatch bypasses all gates (manual emergency override)
 #
 # Trading window: 09:30–15:30 ET (equity DAY orders). Slots target coverage from
 # early morning through mid-session so even multi-hour delay lands in-window.
@@ -38,6 +39,8 @@ on:
         description: 'Enable covered call opens (manual override only; schedule never enables by default)'
         type: boolean
         default: false
+  repository_dispatch:
+    types: [trigger-daily-wheel-scan]
 
 # Serialize with afternoon manage so both never trade the same paper book at once.
 concurrency:
@@ -59,17 +62,17 @@ jobs:
       - name: Decide whether to run today (holiday gate)
         id: gate
         run: |
-          if [ "${{ github.event_name }}" != "schedule" ]; then
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "reason=workflow_dispatch" >> "$GITHUB_OUTPUT"
-            echo "Manual dispatch — bypassing holiday gate."
+            echo "Manual workflow_dispatch — bypassing holiday gate."
             exit 0
           fi
           python3 scripts/should_run_daily_scan.py --github-output
 
-      - name: Check market window (schedule only)
+      - name: Check market window (schedule and repository_dispatch)
         id: window
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
         run: |
           python3 scripts/check_market_window.py --workflow wheel --github-output || true
           # Exit 0 so later slots can still try; actual gate is in daily-scan job condition
@@ -78,7 +81,7 @@ jobs:
     needs: market-gate
     if: |
       needs.market-gate.outputs.should_run == 'true' &&
-      (github.event_name != 'schedule' || needs.market-gate.outputs.in_window == 'true')
+      (github.event_name == 'workflow_dispatch' || needs.market-gate.outputs.in_window == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 600
 
@@ -145,13 +148,14 @@ jobs:
 
       # After cache restore: late schedule must not full-rebalance if morning already did.
       # workflow_dispatch always proceeds (manual override).
-      - name: Same-day skip check (schedule only)
+      # repository_dispatch respects same-day gate (schedule-equivalent).
+      - name: Same-day skip check (schedule and repository_dispatch)
         id: once
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'repository_dispatch'
         run: poetry run python scripts/should_run_daily_scan.py --check-already-ran --track wheel --github-output
 
       - name: Preflight checks
-        if: github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true'
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
@@ -167,7 +171,7 @@ jobs:
 
       - name: Run daily wheel scan & rebalance
         id: scan
-        if: github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true'
+        if: github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true'
         env:
           LOG_LEVEL: INFO
           SCAN_CACHE_KEEP_WEEKS: "26"
@@ -210,15 +214,15 @@ jobs:
             ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_full_rebalance == 'true' && '--force-full-rebalance' || '' }}
 
       - name: Skipped — already ran today (ET)
-        if: github.event_name == 'schedule' && steps.once.outputs.already_ran == 'true'
+        if: (github.event_name == 'schedule' || github.event_name == 'repository_dispatch') && steps.once.outputs.already_ran == 'true'
         run: |
           echo "Skipping full wheel rebalance: ${{ steps.once.outputs.reason }}"
           echo "Manual workflow_dispatch still forces a re-run."
 
-      - name: Mark successful completion (schedule or dispatch, after trading)
+      - name: Mark successful completion (schedule, repository_dispatch, or manual dispatch)
         if: |
           always() &&
-          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+          (github.event_name == 'schedule' || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch') &&
           steps.once.outputs.already_ran != 'true' &&
           steps.scan.outcome == 'success'
         run: poetry run python scripts/should_run_daily_scan.py --mark-ran-today --track wheel
@@ -234,7 +238,7 @@ jobs:
         run: poetry run python scripts/check_wheel_missed_run.py --force-missed
 
       - name: Post-run ops orchestrator
-        if: always() && (github.event_name != 'schedule' || steps.once.outputs.already_ran != 'true')
+        if: always() && (github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true')
         continue-on-error: true
         run: poetry run python scripts/ops_orchestrator.py --stage cockpit,slo,gonogo --strict
 

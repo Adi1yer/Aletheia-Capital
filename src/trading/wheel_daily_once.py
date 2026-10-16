@@ -65,10 +65,37 @@ def mark_ran_et_day(
     marker_dir: Optional[Path] = None,
     marker_name: str = MARKER_NAME,
 ) -> Path:
+    """Mark that workflow ran successfully on the given ET day.
+    
+    Uses atomic write (write to temp, then rename) to prevent partial writes
+    from concurrent processes. Rename is atomic on POSIX filesystems.
+    """
     path = marker_path(marker_dir, marker_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     et_day = _as_et_date(day)
-    path.write_text(f"{et_day.isoformat()}\n", encoding="utf-8")
+    
+    # Atomic write: temp file + rename
+    import tempfile
+    fd, temp_path = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{marker_name}.",
+        suffix=".tmp"
+    )
+    try:
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(f"{et_day.isoformat()}\n")
+            f.flush()
+            import os
+            os.fsync(f.fileno())  # Ensure data written to disk
+        Path(temp_path).rename(path)  # Atomic on POSIX
+    except:
+        # Clean up temp file on error
+        try:
+            Path(temp_path).unlink(missing_ok=True)
+        except:
+            pass
+        raise
+    
     return path
 
 

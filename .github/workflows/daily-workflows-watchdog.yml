@@ -1,0 +1,119 @@
+name: Daily Workflows Watchdog
+
+# Proactive watchdog: checks if daily workflows ran successfully today, and
+# auto-dispatches any that are overdue and still within their market windows.
+#
+# IMPORTANT: This watchdog itself uses GitHub Actions cron, so it is subject to
+# the same schedule delays as the workflows it monitors. For maximum reliability,
+# configure external triggers (repository_dispatch) as documented in
+# docs/workflow-reliability-setup.md.
+#
+# Times are optimized for both EDT (UTC-4, Mar-Nov) and EST (UTC-5, Nov-Mar):
+#   14:40 UTC = 10:40 AM EDT / 9:40 AM EST
+#   16:10 UTC = 12:10 PM EDT / 11:10 AM EST
+#   17:40 UTC = 1:40 PM EDT / 12:40 PM EST
+#   19:10 UTC = 3:10 PM EDT / 2:10 PM EST (before 3:30 PM ET wheel cutoff)
+
+on:
+  schedule:
+    # Slot 1: 14:40 UTC — mid-morning check
+    - cron: '40 14 * * 1-5'
+    # Slot 2: 16:10 UTC — midday check
+    - cron: '10 16 * * 1-5'
+    # Slot 3: 17:40 UTC — early afternoon check
+    - cron: '40 17 * * 1-5'
+    # Slot 4: 19:10 UTC — final check before cutoffs
+    - cron: '10 19 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force_check_wheel:
+        description: 'Force check wheel workflow (ignore already-ran marker)'
+        type: boolean
+        default: false
+      force_check_options:
+        description: 'Force check options workflow (ignore already-ran marker)'
+        type: boolean
+        default: false
+      force_check_drip:
+        description: 'Force check drip workflow (ignore already-ran marker)'
+        type: boolean
+        default: false
+
+jobs:
+  market-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: gate
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "reason=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 scripts/should_run_daily_scan.py --github-output
+
+  watchdog:
+    needs: market-gate
+    if: needs.market-gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: venv-${{ runner.os }}-
+
+      - run: poetry install --no-interaction --no-ansi
+
+      - name: Restore wheel performance data (for already-ran markers)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/performance
+            data/cache
+          key: perf-${{ github.repository }}-wheel-v1-${{ github.run_id }}
+          restore-keys: |
+            perf-${{ github.repository }}-wheel-v1-
+            perf-${{ github.repository }}-wheel-v1
+
+      - name: Restore drip performance data (for already-ran markers)
+        uses: actions/cache/restore@v4
+        with:
+          path: data/performance/growth_income_drip_v1
+          key: drip-perf-${{ github.repository }}-v1-${{ github.run_id }}
+          restore-keys: |
+            drip-perf-${{ github.repository }}-v1-
+            drip-perf-${{ github.repository }}-v1
+
+      - name: Check and dispatch missed workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          FORCE_CHECK_WHEEL: ${{ github.event.inputs.force_check_wheel }}
+          FORCE_CHECK_OPTIONS: ${{ github.event.inputs.force_check_options }}
+          FORCE_CHECK_DRIP: ${{ github.event.inputs.force_check_drip }}
+        run: |
+          poetry run python scripts/dispatch_missed_workflows.py \
+            --repo "${{ github.repository }}" \
+            ${{ github.event.inputs.force_check_wheel == 'true' && '--force-wheel' || '' }} \
+            ${{ github.event.inputs.force_check_options == 'true' && '--force-options' || '' }} \
+            ${{ github.event.inputs.force_check_drip == 'true' && '--force-drip' || '' }}
