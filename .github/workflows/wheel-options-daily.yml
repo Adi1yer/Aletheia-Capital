@@ -23,6 +23,12 @@ on:
     # Slot 4: 20:00 UTC (mid-afternoon: 15:00/16:00 ET) — last chance before cutoff
     - cron: '0 20 * * 1-5'
   workflow_dispatch:
+    inputs:
+      execute:
+        description: 'Allow live order submission (default: dry-run only)'
+        type: boolean
+        required: false
+        default: false
 
 # Wait if morning scan is still running (same paper book).
 concurrency:
@@ -120,6 +126,9 @@ jobs:
           AUTO_PUT_BUYBACK: '0'
           AUTO_PUT_BUYBACK_MAX_PER_CONTRACT: '500'
           AUTO_PUT_BUYBACK_MAX_TOTAL: '2000'
+          # Execute gate: schedule runs are DRY_RUN=1 by default; only workflow_dispatch
+          # with inputs.execute=true allows live execution
+          DRY_RUN: ${{ github.event_name == 'schedule' && '1' || (github.event.inputs.execute == 'true' && '0' || '1') }}
         run: poetry run python scripts/manage_wheel_options.py
 
       - name: Skipped — already ran today (ET)
