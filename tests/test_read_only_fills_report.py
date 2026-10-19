@@ -642,8 +642,8 @@ def test_read_only_report_missing_equity_price_shows_warning():
     assert "$0.00" not in stdout_output.split("mark=")[1].split()[0] if "mark=" in stdout_output else True
 
 
-def test_read_only_report_missing_option_price_shows_error():
-    """Option positions with missing current_price must show ERROR and exit non-zero."""
+def test_read_only_report_missing_option_price_shows_warning():
+    """Option positions with missing current_price must show WARNING and exit 0 (fills still print)."""
     
     mock_broker = MagicMock()
     mock_broker.get_account.return_value = {
@@ -677,11 +677,164 @@ def test_read_only_report_missing_option_price_shows_error():
                     from scripts.read_only_fills_report import main
                     exit_code = main()
     
-    # Should exit non-zero (option price errors fail)
-    assert exit_code == 1
+    # Should exit 0 (missing option mark is now a warning, not an error)
+    assert exit_code == 0
     
-    # Verify ERROR appears for missing option price
-    error_output = captured_error.getvalue()
-    assert "ERROR" in error_output
-    assert "AAPL261106C00150000" in error_output or "Option" in error_output
-    assert "missing" in error_output.lower() or "invalid" in error_output.lower()
+    # Verify WARNING appears for missing option price
+    stdout_output = captured_output.getvalue()
+    assert "WARNING" in stdout_output or "WARNINGS" in stdout_output
+    assert "AAPL261106C00150000" in stdout_output or "Option" in stdout_output
+    assert "missing" in stdout_output.lower() or "invalid" in stdout_output.lower()
+    
+    # Verify "n/a" appears for the mark and fills section still prints
+    assert "n/a" in stdout_output
+    assert "FILLS ON" in stdout_output
+
+
+def test_alpaca_broker_get_positions_includes_current_price():
+    """AlpacaBroker.get_positions must include current_price in returned dict."""
+    from src.broker.alpaca import AlpacaBroker
+    from unittest.mock import MagicMock
+    
+    broker = AlpacaBroker(api_key="test_key", secret_key="test_secret")
+    
+    # Mock a position with current_price
+    mock_pos = MagicMock()
+    mock_pos.symbol = "NOK"
+    mock_pos.qty = 100
+    mock_pos.side = "long"
+    mock_pos.avg_entry_price = 5.50
+    mock_pos.market_value = 580.0
+    mock_pos.current_price = 5.80
+    
+    broker.client.get_all_positions = MagicMock(return_value=[mock_pos])
+    
+    result = broker.get_positions()
+    
+    assert "NOK" in result
+    assert result["NOK"]["current_price"] == 5.80
+    assert result["NOK"]["qty"] == 100
+    assert result["NOK"]["avg_entry_price"] == 5.50
+
+
+def test_alpaca_broker_get_positions_fallback_to_market_value():
+    """When current_price is missing, get_positions should derive from market_value/qty."""
+    from src.broker.alpaca import AlpacaBroker
+    from unittest.mock import MagicMock
+    
+    broker = AlpacaBroker(api_key="test_key", secret_key="test_secret")
+    
+    # Mock a position without current_price
+    mock_pos = MagicMock()
+    mock_pos.symbol = "CPNG"
+    mock_pos.qty = 50
+    mock_pos.side = "long"
+    mock_pos.avg_entry_price = 18.00
+    mock_pos.market_value = 900.0
+    mock_pos.current_price = None  # Missing
+    
+    broker.client.get_all_positions = MagicMock(return_value=[mock_pos])
+    
+    result = broker.get_positions()
+    
+    assert "CPNG" in result
+    # Should fallback to market_value / qty = 900 / 50 = 18.0
+    assert result["CPNG"]["current_price"] == 18.0
+
+
+def test_read_only_report_equity_with_price_no_warning():
+    """Equity positions with valid current_price must NOT show warnings."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {
+        "NOK": {
+            "qty": 100,
+            "market_value": 580.0,
+            "avg_entry_price": 5.50,
+            "current_price": 5.80,  # Valid price
+        },
+        "CPNG": {
+            "qty": 50,
+            "market_value": 900.0,
+            "avg_entry_price": 18.00,
+            "current_price": 18.00,  # Valid price
+        }
+    }
+    mock_broker.get_option_positions.return_value = []
+    mock_broker.get_recent_orders.return_value = []
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            with patch("sys.stdout", captured_output):
+                from scripts.read_only_fills_report import main
+                exit_code = main()
+    
+    # Should exit 0
+    assert exit_code == 0
+    
+    # Verify NO warnings for these equities
+    stdout_output = captured_output.getvalue()
+    assert "NOK" in stdout_output
+    assert "CPNG" in stdout_output
+    # Should not have warnings about missing prices for NOK or CPNG
+    if "WARNING" in stdout_output:
+        assert "NOK" not in stdout_output.split("WARNING")[1].split("CURRENT POSITIONS")[0]
+        assert "CPNG" not in stdout_output.split("WARNING")[1].split("CURRENT POSITIONS")[0]
+
+
+def test_read_only_report_detects_any_nu_option():
+    """Report must detect any NU option contract (not just literal NU261106P00015000)."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {
+        "NU": {
+            "qty": 100,
+            "market_value": 1450.0,
+            "avg_entry_price": 14.50,
+            "current_price": 14.50,
+        }
+    }
+    # Different NU option: NU271215C00020000 (call expiring 12/15/27, strike 20)
+    mock_broker.get_option_positions.return_value = [
+        {
+            "symbol": "NU271215C00020000",
+            "side": "short",
+            "qty": 1,
+            "market_value": -100.0,
+            "avg_entry_price": 1.00,
+            "current_price": 1.00,
+        }
+    ]
+    mock_broker.get_recent_orders.return_value = []
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            with patch("sys.stdout", captured_output):
+                from scripts.read_only_fills_report import main
+                exit_code = main()
+    
+    # Should exit 0
+    assert exit_code == 0
+    
+    # Verify NU status shows OPEN (not FLAT) for the different option
+    stdout_output = captured_output.getvalue()
+    assert "NU: OPEN" in stdout_output
+    assert "NU271215C00020000" in stdout_output
