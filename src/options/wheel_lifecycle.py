@@ -755,23 +755,6 @@ def manage_or_roll_short_calls(
     )
     results: List[Dict[str, Any]] = []
     for row in base:
-        # Check AUTO_PUT_BUYBACK for puts before processing
-        if str(row.get("option_type") or "") == "put":
-            if row.get("status") in ("btc_executed", "would_btc") and not auto_put_buyback:
-                # AUTO_PUT_BUYBACK=0: convert to skipped status
-                results.append({
-                    **row,
-                    "status": "skipped",
-                    "reason": f"AUTO_PUT_BUYBACK=0_skipped_{row.get('reason', '')}",
-                })
-                logger.info(
-                    "Put BTC skipped (AUTO_PUT_BUYBACK=0)",
-                    contract=row.get("contract_symbol"),
-                    underlying=row.get("underlying"),
-                    original_reason=row.get("reason"),
-                )
-                continue
-        
         results.append(row)
         if not prefer_roll:
             continue
