@@ -288,3 +288,85 @@ def test_manage_or_roll_dry_run_skips_put_btc_when_flag_off():
     assert len(put_results) == 1
     assert put_results[0]["status"] == "skipped"
     assert "AUTO_PUT_BUYBACK=0" in put_results[0]["reason"]
+
+
+def test_prefer_roll_false_blocks_put_btc_when_auto_put_buyback_false():
+    """With prefer_roll=False + execute=True, put BTC must be blocked before submission."""
+    broker = MockBroker(
+        option_positions=[
+            {
+                "symbol": "NU261106P00015000",
+                "side": "short",
+                "qty": 1,
+                "avg_entry_price": 0.60,
+                "current_price": 0.20,
+            }
+        ],
+        submit_success=True,
+    )
+
+    mgr = CoveredCallManager(
+        min_premium_usd=10.0,
+        min_premium_pct=0.001,
+    )
+
+    results = manage_or_roll_short_calls(
+        broker,
+        {"NU": 14.70},
+        mgr,
+        manage_dte_threshold=7,
+        manage_itm_pct=0.02,
+        profit_take_pct=0.60,
+        prefer_roll=False,
+        execute=True,
+        auto_put_buyback=False,
+    )
+
+    assert len(broker.submitted_orders) == 0
+    put_results = [r for r in results if r.get("option_type") == "put"]
+    assert len(put_results) == 1
+    assert put_results[0]["status"] == "skipped"
+    assert "allow_put_closes=False_blocked" in put_results[0]["reason"]
+
+
+def test_prefer_roll_false_executes_put_btc_when_auto_put_buyback_true():
+    """With prefer_roll=False + execute=True, put BTC submits when auto_put_buyback=True."""
+    broker = MockBroker(
+        option_positions=[
+            {
+                "symbol": "NU261106P00015000",
+                "side": "short",
+                "qty": 1,
+                "avg_entry_price": 0.60,
+                "current_price": 0.20,
+            }
+        ],
+        submit_success=True,
+    )
+
+    mgr = CoveredCallManager(
+        min_premium_usd=10.0,
+        min_premium_pct=0.001,
+    )
+
+    results = manage_or_roll_short_calls(
+        broker,
+        {"NU": 14.70},
+        mgr,
+        manage_dte_threshold=7,
+        manage_itm_pct=0.02,
+        profit_take_pct=0.60,
+        prefer_roll=False,
+        execute=True,
+        auto_put_buyback=True,
+    )
+
+    assert len(broker.submitted_orders) == 1
+    order = broker.submitted_orders[0]
+    assert order["contract_symbol"] == "NU261106P00015000"
+    assert order["side"] == "buy"
+    assert order["qty"] == 1
+
+    put_results = [r for r in results if r.get("option_type") == "put"]
+    assert len(put_results) == 1
+    assert put_results[0]["status"] == "btc_executed"
