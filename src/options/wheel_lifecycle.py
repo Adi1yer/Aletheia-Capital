@@ -151,6 +151,7 @@ def manage_short_options(
     manage_itm_pct: float = 0.02,
     profit_take_pct: float = 0.60,
     execute: bool = True,
+    allow_put_closes: bool = True,
 ) -> List[Dict[str, Any]]:
     """Buy-to-close short options that are near expiry, near ITM, or profit-taken."""
     results: List[Dict[str, Any]] = []
@@ -220,13 +221,13 @@ def manage_short_options(
             mark = 0.0
         btc_cost_usd = mark * 100.0 * max(qty, 1)
 
-        if not execute:
+        if not execute or (parsed["option_type"] == "put" and not allow_put_closes):
             results.append(
                 {
                     "contract_symbol": symbol,
                     "underlying": und,
-                    "status": "would_btc",
-                    "reason": reason,
+                    "status": "would_btc" if not execute else "skipped",
+                    "reason": reason if not execute else f"allow_put_closes=False_blocked_{reason}",
                     "dte": dte,
                     "qty": qty,
                     "option_type": parsed["option_type"],
@@ -750,6 +751,7 @@ def manage_or_roll_short_calls(
         manage_itm_pct=manage_itm_pct,
         profit_take_pct=profit_take_pct,
         execute=execute,
+        allow_put_closes=auto_put_buyback,
     )
     results: List[Dict[str, Any]] = []
     for row in base:
