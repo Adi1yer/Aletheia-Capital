@@ -412,10 +412,24 @@ def test_prefer_roll_false_executes_put_btc_when_auto_put_buyback_true():
     assert put_results[0]["status"] == "btc_executed"
 
 
-def test_defensive_check_logs_error_when_put_btc_executed_with_flag_off():
+def test_defensive_check_logs_error_when_put_btc_executed_with_flag_off(caplog):
     """If manage_short_options returns btc_executed for a put with auto_put_buyback=False, log ERROR and keep status."""
     from unittest.mock import patch
     import logging
+    
+    # Configure structlog to emit to standard logging so caplog can capture
+    import structlog
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
     
     broker = MockBroker(
         option_positions=[],
@@ -448,20 +462,29 @@ def test_defensive_check_logs_error_when_put_btc_executed_with_flag_off():
         ]
         
         with patch("src.options.wheel_lifecycle.manage_short_options", return_value=fake_results):
-            # Capture logs by checking they're written (structlog output)
-            results = manage_or_roll_short_calls(
-                broker,
-                {"NU": 14.70},
-                mgr,
-                prefer_roll=False,
-                execute=True,
-                auto_put_buyback=False,
-            )
+            with caplog.at_level(logging.ERROR, logger="src.options.wheel_lifecycle"):
+                results = manage_or_roll_short_calls(
+                    broker,
+                    {"NU": 14.70},
+                    mgr,
+                    prefer_roll=False,
+                    execute=True,
+                    auto_put_buyback=False,
+                )
     finally:
         if old_val is None:
             os.environ.pop("ENABLE_COVERED_CALLS", None)
         else:
             os.environ["ENABLE_COVERED_CALLS"] = old_val
+    
+    # Verify ERROR log with symbol and order_id
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) > 0, "Expected ERROR log record"
+    
+    # Check log contains symbol and order_id
+    error_msg = " ".join(str(r.getMessage()) for r in error_records)
+    assert "NU261106P00015000" in error_msg, "ERROR log must include symbol"
+    assert "test-order-123" in error_msg, "ERROR log must include order_id"
     
     # Verify status is KEPT as btc_executed (not relabeled)
     put_results = [r for r in results if r.get("option_type") == "put"]

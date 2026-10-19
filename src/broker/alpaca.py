@@ -269,10 +269,45 @@ class AlpacaBroker:
                 cancelled.append({"id": o.get("id"), "symbol": o.get("symbol"), "age_h": age_h})
         return {"cancelled": cancelled, "skipped": skipped, "max_age_hours": max_age_hours}
 
-    def get_recent_orders(self, limit: int = 20) -> List[Dict]:
-        """Get recently closed/filled orders from Alpaca."""
+    def get_recent_orders(
+        self,
+        limit: int = 20,
+        *,
+        strict: bool = False,
+        after: Optional[date] = None,
+        until: Optional[date] = None,
+    ) -> List[Dict]:
+        """Get recently closed/filled orders from Alpaca.
+        
+        Args:
+            limit: Maximum number of orders to fetch per page
+            strict: If True, raises on fetch failure instead of returning []
+            after: Filter orders submitted on or after this date (inclusive)
+            until: Filter orders submitted before end of this date (inclusive)
+        
+        Raises:
+            Exception: When strict=True and the fetch fails
+        
+        Returns:
+            List of order dicts. May be incomplete if result count hits Alpaca's
+            pagination limit; caller should check if len(result) == limit and
+            handle truncation if needed.
+        """
         try:
-            req = GetOrdersRequest(status="closed", limit=limit)
+            from datetime import datetime, timezone
+            
+            # Build request with date filters
+            req_params = {"status": "closed", "limit": min(limit, 500)}
+            if after:
+                # Start of day in UTC
+                after_dt = datetime.combine(after, datetime.min.time()).replace(tzinfo=timezone.utc)
+                req_params["after"] = after_dt
+            if until:
+                # End of day in UTC (23:59:59.999999)
+                until_dt = datetime.combine(until, datetime.max.time()).replace(tzinfo=timezone.utc)
+                req_params["until"] = until_dt
+            
+            req = GetOrdersRequest(**req_params)
             orders = self.client.get_orders(req)
             return [
                 {
@@ -296,6 +331,8 @@ class AlpacaBroker:
             ]
         except Exception as e:
             logger.error("Error fetching recent orders", error=str(e))
+            if strict:
+                raise
             return []
 
     def get_account_activities(

@@ -102,6 +102,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true'
         env:
           LOG_LEVEL: INFO
+          ENABLE_COVERED_CALLS: "0"
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}

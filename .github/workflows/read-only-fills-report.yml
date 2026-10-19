@@ -18,6 +18,8 @@ jobs:
   report:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
       
@@ -36,13 +38,18 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          REPORT_DATE: ${{ github.event.inputs.date }}
         run: |
-          if [ -n "${{ github.event.inputs.date }}" ]; then
-            poetry run python scripts/read_only_fills_report.py --date "${{ github.event.inputs.date }}"
+          if [ -n "$REPORT_DATE" ]; then
+            poetry run python scripts/read_only_fills_report.py --date "$REPORT_DATE"
           else
             poetry run python scripts/read_only_fills_report.py
           fi
       
       - name: Verify read-only operation
         run: |
+          if grep -rn --include="*.py" -E "(submit_order|cancel_order|replace_order)" scripts/read_only_fills_report.py; then
+            echo "ERROR: read-only fills report contains forbidden order mutation methods"
+            exit 1
+          fi
           echo "✓ Report completed with zero orders placed (read-only verified)"

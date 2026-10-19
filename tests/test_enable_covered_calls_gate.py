@@ -221,11 +221,11 @@ def test_enable_covered_calls_off_blocks_call_btc_prefer_roll_false():
 
     # Verify call was skipped
     call_results = [r for r in results if r.get("option_type") == "call"]
-    if len(call_results) > 0:  # May be empty if no threatened calls
+    if len(call_results) > 0:
         for r in call_results:
-            assert r.get("status") in ("skipped", "hold")
-            if r.get("status") == "skipped":
-                assert "allow_call_closes=False_blocked" in r.get("reason", "")
+            assert r.get("status") == "skipped"
+            assert "allow_call_closes=False_blocked" in r.get("reason", "")
+
 
 
 def test_enable_covered_calls_on_allows_call_btc_prefer_roll_false():
@@ -335,3 +335,49 @@ def test_enable_covered_calls_off_does_not_block_puts():
     put_results = [r for r in results if r.get("option_type") == "put"]
     assert len(put_results) == 1
     assert put_results[0]["status"] == "btc_executed"
+
+
+def test_enable_covered_calls_env_unset_blocks_call_closes(monkeypatch):
+    """When ENABLE_COVERED_CALLS is unset/deleted, manage_or_roll_short_calls blocks call operations."""
+    # Delete the env var (overriding the conftest autouse fixture)
+    monkeypatch.delenv("ENABLE_COVERED_CALLS", raising=False)
+
+    broker = MockBroker(
+        option_positions=[
+            {
+                "symbol": "CPNG261121C00022000",
+                "underlying": "CPNG",
+                "side": "short",
+                "qty": 1,
+                "avg_entry_price": 0.85,
+                "current_price": 0.10,
+            }
+        ],
+        submit_success=True,
+    )
+
+    mgr = CoveredCallManager(
+        min_premium_usd=10.0,
+        min_premium_pct=0.001,
+    )
+
+    results = manage_or_roll_short_calls(
+        broker,
+        {"CPNG": 20.50},
+        mgr,
+        prefer_roll=False,
+        execute=True,
+        auto_put_buyback=False,
+    )
+
+    # Verify no call BTC orders submitted
+    assert len(broker.submitted_orders) == 0, "ENABLE_COVERED_CALLS unset must block all call orders"
+
+    # When ENABLE_COVERED_CALLS is unset and gate triggers, call operations are blocked
+    call_results = [r for r in results if r.get("option_type") == "call"]
+    # Either results are empty or call results are blocked/skipped
+    if len(call_results) > 0:
+        for r in call_results:
+            assert r["status"] == "skipped"
+            assert "allow_call_closes=False_blocked" in r.get("reason", "")
+
