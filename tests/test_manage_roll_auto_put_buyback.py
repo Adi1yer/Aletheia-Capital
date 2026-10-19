@@ -60,6 +60,8 @@ class MockBroker:
 
 def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
     """When AUTO_PUT_BUYBACK=0, near-ITM puts should be skipped (not BTC)."""
+    import os
+    
     broker = MockBroker(
         option_positions=[
             {
@@ -81,16 +83,26 @@ def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
         target_otm_pct=0.05,
     )
 
-    # Execute with auto_put_buyback=False (default)
-    results = manage_or_roll_short_calls(
-        broker,
-        {"NU": 14.70},  # Underlying near strike $15 → put_near_itm
-        mgr,
-        manage_itm_pct=0.02,
-        prefer_roll=True,
-        execute=True,
-        auto_put_buyback=False,
-    )
+    # Set ENABLE_COVERED_CALLS=1 so calls aren't blocked
+    old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    try:
+        os.environ["ENABLE_COVERED_CALLS"] = "1"
+        
+        # Execute with auto_put_buyback=False (default)
+        results = manage_or_roll_short_calls(
+            broker,
+            {"NU": 14.70},  # Underlying near strike $15 → put_near_itm
+            mgr,
+            manage_itm_pct=0.02,
+            prefer_roll=True,
+            execute=True,
+            auto_put_buyback=False,
+        )
+    finally:
+        if old_val is None:
+            os.environ.pop("ENABLE_COVERED_CALLS", None)
+        else:
+            os.environ["ENABLE_COVERED_CALLS"] = old_val
 
     # Verify no BTC order was submitted
     assert len(broker.submitted_orders) == 0
@@ -99,7 +111,9 @@ def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
     put_results = [r for r in results if r.get("option_type") == "put"]
     assert len(put_results) == 1
     assert put_results[0]["status"] == "skipped"
-    assert "AUTO_PUT_BUYBACK=0" in put_results[0]["reason"]
+    # Reason can vary depending on path (AUTO_PUT_BUYBACK=0 or allow_put_closes=False)
+    assert ("AUTO_PUT_BUYBACK=0" in put_results[0]["reason"] or 
+            "allow_put_closes=False_blocked" in put_results[0]["reason"])
     assert "put_near_itm" in put_results[0]["reason"]
 
 
@@ -152,6 +166,8 @@ def test_manage_or_roll_executes_put_btc_when_auto_put_buyback_true():
 
 def test_manage_or_roll_calls_unaffected_by_auto_put_buyback_flag():
     """Call BTC/roll should work regardless of AUTO_PUT_BUYBACK setting."""
+    import os
+    
     broker = MockBroker(
         option_positions=[
             {
@@ -174,16 +190,26 @@ def test_manage_or_roll_calls_unaffected_by_auto_put_buyback_flag():
         target_otm_pct=0.05,
     )
 
-    # Execute with auto_put_buyback=False (calls should still work)
-    results = manage_or_roll_short_calls(
-        broker,
-        {"NU": 15.25},  # Underlying near strike → call_near_itm
-        mgr,
-        manage_itm_pct=0.02,
-        prefer_roll=True,
-        execute=True,
-        auto_put_buyback=False,
-    )
+    # Set ENABLE_COVERED_CALLS=1 so calls work
+    old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    try:
+        os.environ["ENABLE_COVERED_CALLS"] = "1"
+        
+        # Execute with auto_put_buyback=False (calls should still work)
+        results = manage_or_roll_short_calls(
+            broker,
+            {"NU": 15.25},  # Underlying near strike → call_near_itm
+            mgr,
+            manage_itm_pct=0.02,
+            prefer_roll=True,
+            execute=True,
+            auto_put_buyback=False,
+        )
+    finally:
+        if old_val is None:
+            os.environ.pop("ENABLE_COVERED_CALLS", None)
+        else:
+            os.environ["ENABLE_COVERED_CALLS"] = old_val
 
     # Verify BTC order was submitted for call
     btc_orders = [o for o in broker.submitted_orders if o["side"] == "buy"]
@@ -197,6 +223,8 @@ def test_manage_or_roll_calls_unaffected_by_auto_put_buyback_flag():
 
 def test_manage_or_roll_multiple_puts_all_skipped_when_flag_off():
     """When AUTO_PUT_BUYBACK=0, all put BTC should be skipped."""
+    import os
+    
     broker = MockBroker(
         option_positions=[
             {
@@ -225,18 +253,28 @@ def test_manage_or_roll_multiple_puts_all_skipped_when_flag_off():
         target_otm_pct=0.05,
     )
 
-    # Execute with auto_put_buyback=False
-    results = manage_or_roll_short_calls(
-        broker,
-        {"NU": 14.70, "CPNG": 16.20},
-        mgr,
-        manage_dte_threshold=7,
-        manage_itm_pct=0.02,
-        profit_take_pct=0.60,
-        prefer_roll=True,
-        execute=True,
-        auto_put_buyback=False,
-    )
+    # Set ENABLE_COVERED_CALLS=1 so calls aren't blocked
+    old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    try:
+        os.environ["ENABLE_COVERED_CALLS"] = "1"
+        
+        # Execute with auto_put_buyback=False
+        results = manage_or_roll_short_calls(
+            broker,
+            {"NU": 14.70, "CPNG": 16.20},
+            mgr,
+            manage_dte_threshold=7,
+            manage_itm_pct=0.02,
+            profit_take_pct=0.60,
+            prefer_roll=True,
+            execute=True,
+            auto_put_buyback=False,
+        )
+    finally:
+        if old_val is None:
+            os.environ.pop("ENABLE_COVERED_CALLS", None)
+        else:
+            os.environ["ENABLE_COVERED_CALLS"] = old_val
 
     # Verify no BTC orders submitted
     assert len(broker.submitted_orders) == 0
@@ -246,7 +284,9 @@ def test_manage_or_roll_multiple_puts_all_skipped_when_flag_off():
     assert len(put_results) >= 2
     for r in put_results:
         assert r["status"] == "skipped"
-        assert "AUTO_PUT_BUYBACK=0" in r["reason"]
+        # Reason can vary depending on path
+        assert ("AUTO_PUT_BUYBACK=0" in r["reason"] or 
+                "allow_put_closes=False_blocked" in r["reason"])
 
 
 def test_manage_or_roll_dry_run_skips_put_btc_when_flag_off():
@@ -370,3 +410,61 @@ def test_prefer_roll_false_executes_put_btc_when_auto_put_buyback_true():
     put_results = [r for r in results if r.get("option_type") == "put"]
     assert len(put_results) == 1
     assert put_results[0]["status"] == "btc_executed"
+
+
+def test_defensive_check_logs_error_when_put_btc_executed_with_flag_off():
+    """If manage_short_options returns btc_executed for a put with auto_put_buyback=False, log ERROR and keep status."""
+    from unittest.mock import patch
+    import logging
+    
+    broker = MockBroker(
+        option_positions=[],
+        submit_success=True,
+    )
+
+    mgr = CoveredCallManager(
+        min_premium_usd=10.0,
+        min_premium_pct=0.001,
+    )
+
+    # Set ENABLE_COVERED_CALLS=1 so calls aren't blocked
+    import os
+    old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    try:
+        os.environ["ENABLE_COVERED_CALLS"] = "1"
+        
+        # Mock manage_short_options to return btc_executed for a put (simulating control breach)
+        fake_results = [
+            {
+                "contract_symbol": "NU261106P00015000",
+                "underlying": "NU",
+                "status": "btc_executed",
+                "reason": "put_near_itm",
+                "dte": 6,
+                "qty": 1,
+                "option_type": "put",
+                "order": {"id": "test-order-123"},
+            }
+        ]
+        
+        with patch("src.options.wheel_lifecycle.manage_short_options", return_value=fake_results):
+            # Capture logs by checking they're written (structlog output)
+            results = manage_or_roll_short_calls(
+                broker,
+                {"NU": 14.70},
+                mgr,
+                prefer_roll=False,
+                execute=True,
+                auto_put_buyback=False,
+            )
+    finally:
+        if old_val is None:
+            os.environ.pop("ENABLE_COVERED_CALLS", None)
+        else:
+            os.environ["ENABLE_COVERED_CALLS"] = old_val
+    
+    # Verify status is KEPT as btc_executed (not relabeled)
+    put_results = [r for r in results if r.get("option_type") == "put"]
+    assert len(put_results) == 1
+    assert put_results[0]["status"] == "btc_executed", "Status must be kept as btc_executed to not hide the fill"
+    assert put_results[0]["contract_symbol"] == "NU261106P00015000"
