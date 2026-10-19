@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 CC_LOT_SIZE = 100
+CC_HOLD_OPENS_BLOCKED = "cc_hold_opens_blocked"
 
 
 def _long_qty(portfolio: "Portfolio", ticker: str) -> int:
@@ -491,7 +492,7 @@ class CoveredCallManager:
                 results.append({
                     "underlying": und,
                     "status": "skipped",
-                    "reason": "cc_hold_opens_blocked",
+                    "reason": CC_HOLD_OPENS_BLOCKED,
                 })
             return results
         
@@ -709,8 +710,11 @@ def tickers_needing_atomic_unwind(
             continue
         if reason == "already_has_short_call":
             continue
+        # Gate/flag-driven skips must never trigger a sale.
+        if reason == CC_HOLD_OPENS_BLOCKED:
+            continue
         # Transient data / premium miss — leave lot for afternoon or next session.
-        if reason in ("invalid_price", "no suitable contract", "no_contract_met_premium"):
+        if reason in ("invalid_price", "no_contract_met_premium"):
             continue
         if reason.startswith("cc_score_below_threshold"):
             continue
@@ -741,6 +745,7 @@ def cc_write_attempted_tickers(cc_results: Optional[List[Dict]] = None) -> Set[s
     skip_reasons = (
         "insufficient_shares_for_lot",
         "already_has_short_call",
+        CC_HOLD_OPENS_BLOCKED,
         "coverage_slots",
         "cc_score_below_threshold",
         "option_positions_unavailable",
