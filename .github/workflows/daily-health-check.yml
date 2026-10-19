@@ -21,8 +21,11 @@ jobs:
     # READ-ONLY report job: runs ONLY when report_only is true
     # Makes zero order/cancel/replace calls - GET-only operations
     if: github.event.inputs.report_only == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v5
@@ -45,22 +48,43 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          REPORT_DATE: ${{ github.event.inputs.report_date }}
         run: |
-          if [ -n "${{ github.event.inputs.report_date }}" ]; then
-            poetry run python scripts/read_only_fills_report.py --date "${{ github.event.inputs.report_date }}"
+          if [ -n "$REPORT_DATE" ]; then
+            poetry run python scripts/read_only_fills_report.py --date "$REPORT_DATE"
           else
             poetry run python scripts/read_only_fills_report.py
           fi
 
       - name: Verify read-only operation
         run: |
-          echo "✓ Report completed with zero orders placed (read-only verified)"
+          # Verify script and broker contain NO order submission calls
+          set -e
+          
+          echo "Checking script for order submission calls..."
+          if grep -E '\.(submit_order|submit_option_order|execute_order|cancel_order|replace_order)\(' scripts/read_only_fills_report.py; then
+            echo "ERROR: Script contains order submission calls!" >&2
+            exit 1
+          fi
+          
+          echo "Checking broker read path for order submission calls..."
+          # Only check the methods called by the script (read path)
+          if grep -A 30 'def get_account\|def get_positions\|def get_option_positions\|def get_recent_orders' src/broker/alpaca.py | \
+             grep -E 'submit_order|cancel_order|replace_order'; then
+            echo "ERROR: Broker read methods contain order submission calls!" >&2
+            exit 1
+          fi
+          
+          echo "✓ Read-only verified: no order/cancel/replace calls found"
 
   health:
     # Normal health check job: runs on schedule or when report_only is false/absent
     if: github.event.inputs.report_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
+    
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v5

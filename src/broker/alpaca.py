@@ -269,8 +269,16 @@ class AlpacaBroker:
                 cancelled.append({"id": o.get("id"), "symbol": o.get("symbol"), "age_h": age_h})
         return {"cancelled": cancelled, "skipped": skipped, "max_age_hours": max_age_hours}
 
-    def get_recent_orders(self, limit: int = 20) -> List[Dict]:
-        """Get recently closed/filled orders from Alpaca."""
+    def get_recent_orders(self, limit: int = 20, *, strict: bool = False) -> List[Dict]:
+        """Get recently closed/filled orders from Alpaca.
+        
+        Args:
+            limit: Maximum number of orders to fetch
+            strict: If True, raises on fetch failure instead of returning []
+        
+        Raises:
+            Exception: When strict=True and the fetch fails
+        """
         try:
             req = GetOrdersRequest(status="closed", limit=limit)
             orders = self.client.get_orders(req)
@@ -296,6 +304,8 @@ class AlpacaBroker:
             ]
         except Exception as e:
             logger.error("Error fetching recent orders", error=str(e))
+            if strict:
+                raise
             return []
 
     def get_account_activities(
