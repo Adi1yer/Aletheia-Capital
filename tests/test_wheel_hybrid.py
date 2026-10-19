@@ -2379,3 +2379,122 @@ def test_screen_ignores_nan_price_and_uses_dossier():
         allow_missing_adv=False,
     )
     assert [c.ticker for c in cands] == ["F"]
+
+
+def test_cc_hold_gate_skip_does_not_trigger_atomic_unwind():
+    """Bug fix: cc_hold_opens_blocked must never trigger a lot sale."""
+    from src.options.covered_calls import tickers_needing_atomic_unwind
+
+    results = [
+        {"underlying": "F", "status": "skipped", "reason": "cc_hold_opens_blocked"},
+        {"underlying": "SOFI", "status": "skipped", "reason": "cc_hold_opens_blocked"},
+    ]
+    unwind = tickers_needing_atomic_unwind(
+        results,
+        held_lot_tickers=["F", "SOFI"],
+        short_call_underlyings=set(),
+    )
+    # Gate-driven skip must not unwind the lot.
+    assert unwind == set()
+
+
+def test_real_write_failure_still_triggers_unwind():
+    """Regression: confirm that real write failures (not gate skips) still unwind lots."""
+    from src.options.covered_calls import tickers_needing_atomic_unwind
+
+    results = [
+        {"underlying": "F", "status": "failed", "reason": "order submission failed"},
+        {"underlying": "SOFI", "status": "skipped", "reason": "cc_hold_opens_blocked"},
+    ]
+    unwind = tickers_needing_atomic_unwind(
+        results,
+        held_lot_tickers=["F", "SOFI"],
+        short_call_underlyings=set(),
+    )
+    # Real failure unwinds F, but gate skip on SOFI does not.
+    assert unwind == {"F"}
+
+
+def test_cc_hold_no_sale_in_manage_path(monkeypatch):
+    """Manage path: CC HOLD gate must not trigger lot sales."""
+    from src.options.covered_calls import CoveredCallManager
+    from src.portfolio.models import Portfolio, Position
+
+    monkeypatch.delenv("ENABLE_COVERED_CALLS", raising=False)
+
+    class _Broker:
+        def __init__(self):
+            self.sold = []
+
+        def sync_portfolio(self):
+            return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
+
+        def get_option_positions(self):
+            return []
+
+        def execute_order(self, ticker, decision, current_price=None):
+            self.sold.append((ticker, decision.action, decision.quantity))
+            raise AssertionError(f"CC HOLD gate must not trigger sale of {ticker}")
+
+    broker = _Broker()
+    mgr = CoveredCallManager()
+    cc_results = mgr.execute_covered_calls(
+        broker=broker,
+        portfolio=Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)}),
+        cc_lot_tickers=["F"],
+        cc_scores={"F": 60},
+        current_prices={"F": 12.0},
+    )
+
+    # Verify CC was skipped due to gate
+    assert len(cc_results) == 1
+    assert cc_results[0]["status"] == "skipped"
+    assert cc_results[0]["reason"] == "cc_hold_opens_blocked"
+
+    # Verify no sales were attempted
+    assert broker.sold == []
+
+
+def test_cc_hold_no_sale_in_scan_path(monkeypatch):
+    """Scan/pipeline path: CC HOLD gate must not trigger atomic unwind sales."""
+    from src.options.covered_calls import CoveredCallManager, tickers_needing_atomic_unwind
+    from src.portfolio.models import Portfolio, Position
+
+    monkeypatch.delenv("ENABLE_COVERED_CALLS", raising=False)
+
+    class _Broker:
+        def __init__(self):
+            self.sold = []
+
+        def sync_portfolio(self):
+            return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
+
+        def get_option_positions(self):
+            return []
+
+        def execute_order(self, ticker, decision, current_price=None):
+            self.sold.append((ticker, decision.action, decision.quantity))
+            raise AssertionError(f"CC HOLD gate must not trigger atomic unwind sale of {ticker}")
+
+    broker = _Broker()
+    mgr = CoveredCallManager()
+
+    # Execute CC writes (will be blocked by gate)
+    cc_results = mgr.execute_covered_calls(
+        broker=broker,
+        portfolio=Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)}),
+        cc_lot_tickers=["F"],
+        cc_scores={"F": 60},
+        current_prices={"F": 12.0},
+    )
+
+    # Simulate Scan path: check if atomic unwind would trigger
+    unwind_tickers = tickers_needing_atomic_unwind(
+        cc_results,
+        held_lot_tickers=["F"],
+        short_option_underlyings=set(),
+    )
+
+    # Verify gate-driven skip does not trigger unwind
+    assert unwind_tickers == set()
+    assert broker.sold == []

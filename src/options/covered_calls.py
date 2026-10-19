@@ -709,6 +709,9 @@ def tickers_needing_atomic_unwind(
             continue
         if reason == "already_has_short_call":
             continue
+        # Gate/flag-driven skips must never trigger a sale.
+        if reason == "cc_hold_opens_blocked":
+            continue
         # Transient data / premium miss — leave lot for afternoon or next session.
         if reason in ("invalid_price", "no suitable contract", "no_contract_met_premium"):
             continue
