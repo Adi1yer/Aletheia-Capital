@@ -360,4 +360,4 @@ class TestEnableCCRollsNoStandaloneBTC:
             btc_executed = [r for r in results if r.get("status") == "btc_executed"]
             assert len(btc_executed) == 0
             
-            broker.submit_option_order.assert_not_called()
+            mock_broker.submit_option_order.assert_not_called()

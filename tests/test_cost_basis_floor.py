@@ -81,6 +81,7 @@ class TestCostBasisFloorOnWrites:
     def test_write_skipped_when_cost_basis_unavailable(self, mock_broker):
         """Should skip write and fail closed when cost basis is unavailable."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         portfolio = Portfolio(
             cash=10000,
@@ -111,14 +112,14 @@ class TestCostBasisFloorOnWrites:
         portfolio = Portfolio(
             cash=10000,
             positions={
-                "AAPL": Position(long=200, long_cost_basis=150.0),
+                "AAPL": Position(long=200, long_cost_basis=155.0),
             },
         )
         mock_broker.sync_portfolio.return_value = portfolio
 
         contract = {
-            "symbol": "AAPL250117C00148000",
-            "strike": 148.0,
+            "symbol": "AAPL250117C00154000",
+            "strike": 154.0,
             "expiry": "2025-01-17",
             "mid_price": 2.50,
             "tradable": True,
@@ -131,7 +132,7 @@ class TestCostBasisFloorOnWrites:
             portfolio=portfolio,
             cc_lot_tickers=["AAPL"],
             cc_scores={"AAPL": 60},
-            current_prices={"AAPL": 145.0},
+            current_prices={"AAPL": 150.0},
         )
 
         assert len(results) == 1
@@ -142,6 +143,7 @@ class TestCostBasisFloorOnWrites:
     def test_write_succeeds_when_strike_above_cost_basis(self, mock_broker):
         """Should succeed when strike is above cost basis."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         portfolio = Portfolio(
             cash=10000,
@@ -152,13 +154,14 @@ class TestCostBasisFloorOnWrites:
         mock_broker.sync_portfolio.return_value = portfolio
 
         contract = {
-            "symbol": "AAPL250117C00155000",
-            "strike": 155.0,
+            "symbol": "AAPL250117C00157000",
+            "strike": 157.0,
             "expiry": "2025-01-17",
             "mid_price": 2.50,
             "tradable": True,
         }
         mock_broker.get_option_contracts.return_value = [contract]
+        mock_broker.get_open_orders.return_value = []
         
         order = {
             "submitted": True,
@@ -179,11 +182,12 @@ class TestCostBasisFloorOnWrites:
         assert len(results) == 1
         assert results[0]["underlying"] == "AAPL"
         assert results[0]["status"] == "executed"
-        assert results[0]["strike"] == 155.0
+        assert results[0]["strike"] == 157.0
 
     def test_cost_basis_floor_combines_with_existing_strike_floor(self, mock_broker):
         """Should use max of cost basis floor and existing short strike floor."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         portfolio = Portfolio(
             cash=10000,
@@ -202,7 +206,7 @@ class TestCostBasisFloorOnWrites:
         }
         from src.options.wheel_lifecycle import parse_occ_symbol
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -210,6 +214,7 @@ class TestCostBasisFloorOnWrites:
                 "expiry": "2025-01-17",
             }
             mock_broker.get_option_positions.return_value = [existing_short]
+            mock_broker.get_open_orders.return_value = []
 
             contract = {
                 "symbol": "AAPL250117C00162000",
@@ -256,6 +261,7 @@ class TestCostBasisFloorFailClosed:
     def test_fails_closed_with_missing_cost_basis(self, mock_broker):
         """Should fail closed (skip) when cost basis is missing."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         portfolio = Portfolio(
             cash=10000,
@@ -281,6 +287,7 @@ class TestCostBasisFloorFailClosed:
     def test_fails_closed_with_zero_cost_basis(self, mock_broker):
         """Should fail closed when cost basis is zero."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         portfolio = Portfolio(
             cash=10000,

@@ -251,6 +251,7 @@ class TestPendingOrdersPreventNakedWrites:
     def test_cannot_write_second_call_with_pending_order(self, mock_broker):
         """Should prevent second write when pending order + shares = capacity."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         from src.options.wheel_lifecycle import parse_occ_symbol
         from unittest.mock import patch
@@ -294,6 +295,7 @@ class TestPendingOrdersPreventNakedWrites:
     def test_can_write_when_pending_fills_and_capacity_increases(self, mock_broker):
         """Should allow write after pending fills and capacity increases."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         portfolio = Portfolio(
             cash=10000,
