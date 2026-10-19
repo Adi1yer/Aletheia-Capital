@@ -153,3 +153,153 @@ def test_read_only_script_has_no_submit_calls():
         # Check for method calls: broker.method( or client.method(
         assert f".{method}(" not in script_source, f"Script calls {method}!"
         assert f" {method}(" not in script_source, f"Script calls {method}!"
+
+
+def test_read_only_report_account_fetch_failure_exits_nonzero():
+    """When account fetch fails, script must print ERROR and exit non-zero."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.side_effect = Exception("API timeout")
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            captured_error = StringIO()
+            with patch("sys.stdout", captured_output):
+                with patch("sys.stderr", captured_error):
+                    from scripts.read_only_fills_report import main
+                    exit_code = main()
+    
+    # Verify non-zero exit
+    assert exit_code == 1
+    
+    # Verify ERROR message
+    error_output = captured_error.getvalue()
+    assert "ERROR" in error_output
+    assert "account" in error_output.lower()
+    
+    # Verify no fake $0.00 in stdout
+    stdout_output = captured_output.getvalue()
+    assert "Cash:" not in stdout_output or "$0.00" not in stdout_output
+
+
+def test_read_only_report_positions_fetch_failure_exits_nonzero():
+    """When positions fetch fails, script must print ERROR and exit non-zero."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.side_effect = Exception("Connection error")
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            captured_error = StringIO()
+            with patch("sys.stdout", captured_output):
+                with patch("sys.stderr", captured_error):
+                    from scripts.read_only_fills_report import main
+                    exit_code = main()
+    
+    # Verify non-zero exit
+    assert exit_code == 1
+    
+    # Verify ERROR message
+    error_output = captured_error.getvalue()
+    assert "ERROR" in error_output
+    assert "positions" in error_output.lower()
+    
+    # Verify no empty position table printed as real data
+    stdout_output = captured_output.getvalue()
+    if "CURRENT POSITIONS" in stdout_output:
+        # Should not have gotten past the error
+        assert False, "Script printed positions section after fetch failure"
+
+
+def test_read_only_report_fills_fetch_failure_exits_nonzero():
+    """When fills/orders fetch fails, script must print ERROR and exit non-zero."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {}
+    mock_broker.get_option_positions.return_value = []
+    mock_broker.get_recent_orders.side_effect = Exception("Rate limited")
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            captured_error = StringIO()
+            with patch("sys.stdout", captured_output):
+                with patch("sys.stderr", captured_error):
+                    from scripts.read_only_fills_report import main
+                    exit_code = main()
+    
+    # Verify non-zero exit
+    assert exit_code == 1
+    
+    # Verify ERROR message
+    error_output = captured_error.getvalue()
+    assert "ERROR" in error_output
+    assert "fills" in error_output.lower()
+    
+    # Verify no fills section with fake empty data
+    stdout_output = captured_output.getvalue()
+    if "FILLS ON" in stdout_output and "END OF REPORT" in stdout_output:
+        # Should not have completed the report after fetch failure
+        assert False, "Script completed report after fills fetch failure"
+
+
+def test_read_only_report_all_fetches_succeed():
+    """When all fetches succeed, script exits 0 with complete report."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {}
+    mock_broker.get_option_positions.return_value = []
+    mock_broker.get_recent_orders.return_value = []
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            captured_error = StringIO()
+            with patch("sys.stdout", captured_output):
+                with patch("sys.stderr", captured_error):
+                    from scripts.read_only_fills_report import main
+                    exit_code = main()
+    
+    # Verify successful exit
+    assert exit_code == 0
+    
+    # Verify no errors
+    error_output = captured_error.getvalue()
+    assert "ERROR" not in error_output
+    
+    # Verify complete report sections
+    stdout_output = captured_output.getvalue()
+    assert "ACCOUNT INFO" in stdout_output
+    assert "CURRENT POSITIONS" in stdout_output
+    assert "FILLS ON" in stdout_output
+    assert "END OF REPORT" in stdout_output
+    assert "zero orders placed" in stdout_output
