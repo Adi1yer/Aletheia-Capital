@@ -2403,7 +2403,7 @@ def test_real_write_failure_still_triggers_unwind():
     from src.options.covered_calls import tickers_needing_atomic_unwind
 
     results = [
-        {"underlying": "F", "status": "failed", "reason": "order submission failed"},
+        {"underlying": "F", "status": "failed", "reason": "sto_not_filled_canceled"},
         {"underlying": "SOFI", "status": "skipped", "reason": "cc_hold_opens_blocked"},
     ]
     unwind = tickers_needing_atomic_unwind(
@@ -2416,9 +2416,19 @@ def test_real_write_failure_still_triggers_unwind():
 
 
 def test_cc_hold_no_sale_in_manage_path(monkeypatch):
-    """Manage path: CC HOLD gate must not trigger lot sales."""
-    from src.options.covered_calls import CoveredCallManager
+    """Manage path: CC HOLD gate must not trigger atomic unwind OR underhedge trim sales.
+    
+    Tests the real path through execute_covered_calls + tickers_needing_atomic_unwind + apply_underhedge_trims.
+    Scenario: 200 shares, 1 short call. Under CC HOLD, should NOT sell the uncovered 100 shares.
+    """
+    from src.options.covered_calls import (
+        CoveredCallManager,
+        apply_underhedge_trims,
+        tickers_needing_atomic_unwind,
+    )
+    from src.options.wheel_lifecycle import short_option_underlyings as get_short_option_underlyings
     from src.portfolio.models import Portfolio, Position
+    from src.portfolio.manager import PortfolioDecision
 
     monkeypatch.delenv("ENABLE_COVERED_CALLS", raising=False)
 
@@ -2427,9 +2437,21 @@ def test_cc_hold_no_sale_in_manage_path(monkeypatch):
             self.sold = []
 
         def sync_portfolio(self):
-            return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
+            return Portfolio(cash=1000.0, positions={"F": Position(long=200, long_cost_basis=12.0)})
 
         def get_option_positions(self):
+            # 1 short call covering 100 shares; 100 shares uncovered
+            return [
+                {
+                    "symbol": "F261115C00013000",
+                    "side": "short",
+                    "qty": 1,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def get_open_orders(self, limit=100):
             return []
 
         def execute_order(self, ticker, decision, current_price=None):
@@ -2438,9 +2460,12 @@ def test_cc_hold_no_sale_in_manage_path(monkeypatch):
 
     broker = _Broker()
     mgr = CoveredCallManager()
+    portfolio = broker.sync_portfolio()
+    
+    # Execute CC writes (will be blocked by gate)
     cc_results = mgr.execute_covered_calls(
         broker=broker,
-        portfolio=Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)}),
+        portfolio=portfolio,
         cc_lot_tickers=["F"],
         cc_scores={"F": 60},
         current_prices={"F": 12.0},
@@ -2451,14 +2476,37 @@ def test_cc_hold_no_sale_in_manage_path(monkeypatch):
     assert cc_results[0]["status"] == "skipped"
     assert cc_results[0]["reason"] == "cc_hold_opens_blocked"
 
-    # Verify no sales were attempted
-    assert broker.sold == []
+    # Test atomic unwind path (manage_wheel_options.py ~L246-305)
+    short_now = get_short_option_underlyings(broker.get_option_positions())
+    unwind_tickers = tickers_needing_atomic_unwind(
+        cc_results,
+        held_lot_tickers=["F"],
+        short_option_underlyings=short_now,
+    )
+    assert unwind_tickers == set(), "CC HOLD skip must not trigger atomic unwind"
+
+    # Test underhedge trim path (manage_wheel_options.py ~L308-310)
+    apply_underhedge_trims(broker, {"F": 12.0}, cc_results)
+
+    # Verify no sales were attempted on either path
+    assert broker.sold == [], f"Expected no sales, but got: {broker.sold}"
 
 
 def test_cc_hold_no_sale_in_scan_path(monkeypatch):
-    """Scan/pipeline path: CC HOLD gate must not trigger atomic unwind sales."""
-    from src.options.covered_calls import CoveredCallManager, tickers_needing_atomic_unwind
+    """Scan/pipeline path: CC HOLD gate must not trigger atomic unwind OR underhedge trim sales.
+    
+    Tests the real path through pipeline covered_calls step + atomic unwind + underhedge trim.
+    Scenario: 200 shares, 1 short call. Under CC HOLD, should NOT sell the uncovered 100 shares.
+    This test covers pipeline.py lines ~1419-1560.
+    """
+    from src.options.covered_calls import (
+        CoveredCallManager,
+        apply_underhedge_trims,
+        tickers_needing_atomic_unwind,
+    )
+    from src.options.wheel_lifecycle import short_option_underlyings as get_short_option_underlyings
     from src.portfolio.models import Portfolio, Position
+    from src.portfolio.manager import PortfolioDecision
 
     monkeypatch.delenv("ENABLE_COVERED_CALLS", raising=False)
 
@@ -2467,34 +2515,68 @@ def test_cc_hold_no_sale_in_scan_path(monkeypatch):
             self.sold = []
 
         def sync_portfolio(self):
-            return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
+            return Portfolio(cash=1000.0, positions={"F": Position(long=200, long_cost_basis=12.0)})
 
         def get_option_positions(self):
+            # 1 short call covering 100 shares; 100 shares uncovered
+            return [
+                {
+                    "symbol": "F261115C00013000",
+                    "side": "short",
+                    "qty": 1,
+                    "option_type": "call",
+                    "underlying": "F",
+                }
+            ]
+
+        def get_open_orders(self, limit=100):
             return []
 
         def execute_order(self, ticker, decision, current_price=None):
             self.sold.append((ticker, decision.action, decision.quantity))
-            raise AssertionError(f"CC HOLD gate must not trigger atomic unwind sale of {ticker}")
+            raise AssertionError(f"CC HOLD gate must not trigger sale of {ticker}")
+
+        def wait_for_order_fill(self, order_id, timeout_s=60.0, min_filled_qty=0):
+            return {"ok": False}
 
     broker = _Broker()
     mgr = CoveredCallManager()
-
-    # Execute CC writes (will be blocked by gate)
+    portfolio = broker.sync_portfolio()
+    
+    # Execute CC writes (will be blocked by gate) - mimics pipeline.py ~L1419-1425
     cc_results = mgr.execute_covered_calls(
         broker=broker,
-        portfolio=Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)}),
+        portfolio=portfolio,
         cc_lot_tickers=["F"],
         cc_scores={"F": 60},
         current_prices={"F": 12.0},
     )
 
-    # Simulate Scan path: check if atomic unwind would trigger
+    # Verify CC was skipped due to gate
+    assert len(cc_results) == 1
+    assert cc_results[0]["status"] == "skipped"
+    assert cc_results[0]["reason"] == "cc_hold_opens_blocked"
+
+    # Test atomic unwind path (pipeline.py ~L1426-1521)
+    opt_now = broker.get_option_positions()
+    short_now = get_short_option_underlyings(opt_now)
+    unwind_port = broker.sync_portfolio()
+    held_lots = [t for t, pos in (unwind_port.positions or {}).items() if int(getattr(pos, "long", 0) or 0) >= 100]
+    
     unwind_tickers = tickers_needing_atomic_unwind(
         cc_results,
-        held_lot_tickers=["F"],
-        short_option_underlyings=set(),
+        held_lot_tickers=held_lots,
+        short_option_underlyings=short_now,
     )
+    assert unwind_tickers == set(), "CC HOLD skip must not trigger atomic unwind in Scan"
+    
+    # Simulate the unwind loop would execute (but with empty unwind set, no orders)
+    for t in unwind_tickers:
+        # This should never execute since unwind_tickers is empty
+        raise AssertionError(f"Should not unwind {t} under CC HOLD")
 
-    # Verify gate-driven skip does not trigger unwind
-    assert unwind_tickers == set()
-    assert broker.sold == []
+    # Test underhedge trim path (pipeline.py ~L1558-1560)
+    apply_underhedge_trims(broker, {"F": 12.0}, cc_results)
+
+    # Verify no sales were attempted on either path
+    assert broker.sold == [], f"Expected no sales, but got: {broker.sold}"
