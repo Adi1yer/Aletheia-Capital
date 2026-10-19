@@ -149,11 +149,33 @@ class AlpacaBroker:
                 )
                 if side not in ("long", "short"):
                     side = "long"
+                
+                # Extract current_price, fall back to market_value/qty if unavailable
+                current_price = None
+                try:
+                    cp_raw = getattr(pos, "current_price", None)
+                    if cp_raw is not None:
+                        current_price = float(cp_raw)
+                        if current_price <= 0:
+                            current_price = None
+                except (TypeError, ValueError):
+                    current_price = None
+                
+                # Fallback: derive from market_value / qty
+                if current_price is None and qty > 0:
+                    try:
+                        mv = float(pos.market_value)
+                        if mv != 0:
+                            current_price = abs(mv) / qty
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+                
                 position_dict[sym] = {
                     "qty": qty,
                     "avg_entry_price": float(pos.avg_entry_price),
                     "market_value": float(pos.market_value),
                     "side": side,
+                    "current_price": current_price,
                 }
 
             return position_dict
