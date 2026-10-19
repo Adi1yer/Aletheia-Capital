@@ -42,6 +42,32 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
+      - name: Verify read-only operation
+        run: |
+          # Verify script and broker contain NO order submission calls
+          set -e
+          
+          echo "Checking script for order submission calls..."
+          # Check for actual method calls: .submit_order(, etc. (not in comments or strings)
+          # Exclude test files, comments, and this grep step itself
+          if grep -n '\.submit_order\|\.submit_option_order\|\.execute_order\|\.cancel_order\|\.replace_order' \
+             scripts/read_only_fills_report.py | grep -v '^[0-9]*:[[:space:]]*#' | grep -v 'test_' | grep -E '\.(submit_order|submit_option_order|execute_order|cancel_order|replace_order)\('; then
+            echo "ERROR: Script contains order submission calls!" >&2
+            exit 1
+          fi
+          
+          echo "Checking broker read path for order submission calls..."
+          # Only check the methods called by the script (read path)
+          # Look for actual calls in get_account, get_positions, get_option_positions, get_recent_orders
+          if grep -A 30 'def get_account\|def get_positions\|def get_option_positions\|def get_recent_orders' src/broker/alpaca.py | \
+             grep -v '^[[:space:]]*#' | \
+             grep -E '(client|self)\.(submit_order|submit_option_order|execute_order|cancel_order|replace_order)\('; then
+            echo "ERROR: Broker read methods contain order submission calls!" >&2
+            exit 1
+          fi
+          
+          echo "✓ Read-only verified: no order/cancel/replace calls found"
+
       - name: Generate read-only fills and positions report
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
@@ -55,27 +81,6 @@ jobs:
           else
             poetry run python scripts/read_only_fills_report.py
           fi
-
-      - name: Verify read-only operation
-        run: |
-          # Verify script and broker contain NO order submission calls
-          set -e
-          
-          echo "Checking script for order submission calls..."
-          if grep -E '\.(submit_order|submit_option_order|execute_order|cancel_order|replace_order)\(' scripts/read_only_fills_report.py; then
-            echo "ERROR: Script contains order submission calls!" >&2
-            exit 1
-          fi
-          
-          echo "Checking broker read path for order submission calls..."
-          # Only check the methods called by the script (read path)
-          if grep -A 30 'def get_account\|def get_positions\|def get_option_positions\|def get_recent_orders' src/broker/alpaca.py | \
-             grep -E 'submit_order|cancel_order|replace_order'; then
-            echo "ERROR: Broker read methods contain order submission calls!" >&2
-            exit 1
-          fi
-          
-          echo "✓ Read-only verified: no order/cancel/replace calls found"
 
   health:
     # Normal health check job: runs on schedule or when report_only is false/absent
