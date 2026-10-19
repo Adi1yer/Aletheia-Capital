@@ -5,11 +5,91 @@ on:
     # 16:00 UTC = ~9:00 AM Pacific during PDT
     - cron: "0 16 * * 1-5"
   workflow_dispatch:
+    inputs:
+      report_only:
+        description: 'Run ONLY read-only fills/positions report (skips normal health check)'
+        required: false
+        type: boolean
+        default: false
+      report_date:
+        description: 'Date for fills report (YYYY-MM-DD), leave empty for today ET'
+        required: false
+        type: string
 
 jobs:
+  read-only-report:
+    # READ-ONLY report job: runs ONLY when report_only is true
+    # Makes zero order/cancel/replace calls - GET-only operations
+    if: github.event.inputs.report_only == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          pip install poetry
+          poetry config virtualenvs.in-project true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi
+
+      - name: Verify read-only operation
+        run: |
+          # Verify script and broker contain NO order submission calls
+          set -e
+          
+          echo "Checking script for order submission calls..."
+          # Check for actual method calls: .submit_order(, etc. (not in comments or strings)
+          # Exclude test files, comments, and this grep step itself
+          if grep -n '\.submit_order\|\.submit_option_order\|\.execute_order\|\.cancel_order\|\.replace_order' \
+             scripts/read_only_fills_report.py | grep -v '^[0-9]*:[[:space:]]*#' | grep -v 'test_' | grep -E '\.(submit_order|submit_option_order|execute_order|cancel_order|replace_order)\('; then
+            echo "ERROR: Script contains order submission calls!" >&2
+            exit 1
+          fi
+          
+          echo "Checking broker read path for order submission calls..."
+          # Only check the methods called by the script (read path)
+          # Look for actual calls in get_account, get_positions, get_option_positions, get_recent_orders
+          if grep -A 30 'def get_account\|def get_positions\|def get_option_positions\|def get_recent_orders' src/broker/alpaca.py | \
+             grep -v '^[[:space:]]*#' | \
+             grep -E '(client|self)\.(submit_order|submit_option_order|execute_order|cancel_order|replace_order)\('; then
+            echo "ERROR: Broker read methods contain order submission calls!" >&2
+            exit 1
+          fi
+          
+          echo "✓ Read-only verified: no order/cancel/replace calls found"
+
+      - name: Generate read-only fills and positions report
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+          REPORT_DATE: ${{ github.event.inputs.report_date }}
+        run: |
+          if [ -n "$REPORT_DATE" ]; then
+            poetry run python scripts/read_only_fills_report.py --date "$REPORT_DATE"
+          else
+            poetry run python scripts/read_only_fills_report.py
+          fi
+
   health:
-    runs-on: ubuntu-latest
+    # Normal health check job: runs on schedule or when report_only is false/absent
+    if: github.event.inputs.report_only != 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
+    
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v5
