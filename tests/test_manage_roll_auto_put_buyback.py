@@ -87,6 +87,7 @@ def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
     old_val = os.environ.get("ENABLE_COVERED_CALLS")
     try:
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         # Execute with auto_put_buyback=False (default)
         results = manage_or_roll_short_calls(
@@ -101,6 +102,7 @@ def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
     finally:
         if old_val is None:
             os.environ.pop("ENABLE_COVERED_CALLS", None)
+            os.environ.pop("ENABLE_CC_ROLLS", None)
         else:
             os.environ["ENABLE_COVERED_CALLS"] = old_val
 
@@ -194,6 +196,7 @@ def test_manage_or_roll_calls_unaffected_by_auto_put_buyback_flag():
     old_val = os.environ.get("ENABLE_COVERED_CALLS")
     try:
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         # Execute with auto_put_buyback=False (calls should still work)
         results = manage_or_roll_short_calls(
@@ -208,6 +211,7 @@ def test_manage_or_roll_calls_unaffected_by_auto_put_buyback_flag():
     finally:
         if old_val is None:
             os.environ.pop("ENABLE_COVERED_CALLS", None)
+            os.environ.pop("ENABLE_CC_ROLLS", None)
         else:
             os.environ["ENABLE_COVERED_CALLS"] = old_val
 
@@ -257,6 +261,7 @@ def test_manage_or_roll_multiple_puts_all_skipped_when_flag_off():
     old_val = os.environ.get("ENABLE_COVERED_CALLS")
     try:
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         # Execute with auto_put_buyback=False
         results = manage_or_roll_short_calls(
@@ -273,6 +278,7 @@ def test_manage_or_roll_multiple_puts_all_skipped_when_flag_off():
     finally:
         if old_val is None:
             os.environ.pop("ENABLE_COVERED_CALLS", None)
+            os.environ.pop("ENABLE_CC_ROLLS", None)
         else:
             os.environ["ENABLE_COVERED_CALLS"] = old_val
 
@@ -451,6 +457,7 @@ def test_defensive_check_logs_error_when_put_btc_executed_with_flag_off(caplog):
         old_val = os.environ.get("ENABLE_COVERED_CALLS")
         try:
             os.environ["ENABLE_COVERED_CALLS"] = "1"
+            os.environ["ENABLE_CC_ROLLS"] = "1"
             
             # Mock manage_short_options to return btc_executed for a put (simulating control breach)
             fake_results = [
@@ -479,6 +486,7 @@ def test_defensive_check_logs_error_when_put_btc_executed_with_flag_off(caplog):
         finally:
             if old_val is None:
                 os.environ.pop("ENABLE_COVERED_CALLS", None)
+                os.environ.pop("ENABLE_CC_ROLLS", None)
             else:
                 os.environ["ENABLE_COVERED_CALLS"] = old_val
         

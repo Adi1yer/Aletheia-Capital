@@ -108,23 +108,25 @@ class TestCostBasisFloorOnWrites:
     def test_write_skipped_when_strike_below_cost_basis(self, mock_broker):
         """Should skip write when strike would be below cost basis."""
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         portfolio = Portfolio(
             cash=10000,
             positions={
-                "AAPL": Position(long=200, long_cost_basis=155.0),
+                "AAPL": Position(long=200, long_cost_basis=160.0),
             },
         )
         mock_broker.sync_portfolio.return_value = portfolio
 
         contract = {
-            "symbol": "AAPL250117C00154000",
-            "strike": 154.0,
+            "symbol": "AAPL250117C00156000",
+            "strike": 156.0,
             "expiry": "2025-01-17",
             "mid_price": 2.50,
             "tradable": True,
         }
         mock_broker.get_option_contracts.return_value = [contract]
+        mock_broker.get_open_orders.return_value = []
 
         manager = CoveredCallManager()
         results = manager.execute_covered_calls(

@@ -28,7 +28,7 @@ class TestWorkingShortCalls:
             }
         ]
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -54,7 +54,7 @@ class TestWorkingShortCalls:
             }
         ]
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -80,7 +80,7 @@ class TestWorkingShortCalls:
             }
         ]
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -112,7 +112,7 @@ class TestWorkingShortCalls:
             }
         ]
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -165,7 +165,7 @@ class TestLiveCoverageSTOQtyCountsPendingOrders:
         from src.options.wheel_lifecycle import parse_occ_symbol
         from unittest.mock import patch
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -207,7 +207,7 @@ class TestLiveCoverageSTOQtyCountsPendingOrders:
         from src.options.wheel_lifecycle import parse_occ_symbol
         from unittest.mock import patch
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -256,7 +256,7 @@ class TestPendingOrdersPreventNakedWrites:
         from src.options.wheel_lifecycle import parse_occ_symbol
         from unittest.mock import patch
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
@@ -319,7 +319,7 @@ class TestPendingOrdersPreventNakedWrites:
         from src.options.wheel_lifecycle import parse_occ_symbol
         from unittest.mock import patch
         
-        with patch("src.options.covered_calls.parse_occ_symbol") as mock_parse:
+        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
             mock_parse.return_value = {
                 "underlying": "AAPL",
                 "option_type": "call",
