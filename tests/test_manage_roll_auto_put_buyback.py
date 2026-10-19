@@ -55,7 +55,7 @@ class MockBroker:
                 cash=5000.0,
                 positions={"NU": Position(long=100, long_cost_basis=14.50)},
             )
-    return Portfolio(cash=5000.0, positions={})
+        return Portfolio(cash=5000.0, positions={})
 
 
 def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
