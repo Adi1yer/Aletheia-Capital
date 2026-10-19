@@ -16,7 +16,7 @@ import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -50,26 +50,50 @@ def get_positions(broker) -> List[Dict[str, Any]]:
         Exception: If positions fetch fails.
     """
     positions = []
+    errors = []
+    warnings = []
     
     equity_positions = broker.get_positions() or {}
     for ticker, pos_dict in equity_positions.items():
         qty = float(pos_dict.get("qty") or 0)
         if qty != 0:
+            # Extract current price, keep None if missing
+            current_price_raw = pos_dict.get("current_price") or pos_dict.get("mark_price")
+            try:
+                current_price = float(current_price_raw) if current_price_raw is not None else None
+                if current_price is not None and current_price <= 0:
+                    current_price = None
+            except (TypeError, ValueError):
+                current_price = None
+            
+            if current_price is None:
+                warnings.append(f"Equity {ticker}: missing or invalid current_price/mark_price")
+            
             positions.append({
                 "type": "equity",
                 "symbol": ticker,
                 "qty": qty,
                 "market_value": float(pos_dict.get("market_value") or 0.0),
                 "avg_entry_price": float(pos_dict.get("avg_entry_price") or 0.0),
-                "current_price": float(
-                    pos_dict.get("current_price") or pos_dict.get("mark_price") or 0.0
-                ),
+                "current_price": current_price,
             })
 
     option_positions = broker.get_option_positions() or []
     for opt in option_positions:
         qty = float(opt.get("qty") or 0)
         if qty != 0:
+            # Extract current price, keep None if missing
+            current_price_raw = opt.get("current_price") or opt.get("mark_price")
+            try:
+                current_price = float(current_price_raw) if current_price_raw is not None else None
+                if current_price is not None and current_price <= 0:
+                    current_price = None
+            except (TypeError, ValueError):
+                current_price = None
+            
+            if current_price is None:
+                errors.append(f"Option {opt.get('symbol')}: missing or invalid current_price/mark_price")
+            
             positions.append({
                 "type": "option",
                 "symbol": opt.get("symbol"),
@@ -79,15 +103,13 @@ def get_positions(broker) -> List[Dict[str, Any]]:
                 "avg_entry_price": float(
                     opt.get("avg_entry_price") or opt.get("avg_entry") or 0.0
                 ),
-                "current_price": float(
-                    opt.get("current_price") or opt.get("mark_price") or 0.0
-                ),
+                "current_price": current_price,
             })
 
-    return positions
+    return positions, errors, warnings
 
 
-def get_fills_for_date(broker, target_date: date) -> List[Dict[str, Any]]:
+def get_fills_for_date(broker, target_date: date) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Get fills for a specific date (read-only).
     
     Returns fills with: symbol, side, qty, filled_avg_price, filled_at, order_id
@@ -99,8 +121,21 @@ def get_fills_for_date(broker, target_date: date) -> List[Dict[str, Any]]:
     fills = []
     warnings = []
     
-    # Fetch recent orders with strict=True so failures raise
-    recent_orders = broker.get_recent_orders(limit=500, strict=True) or []
+    # Fetch orders for the target date with strict=True so failures raise
+    # Use after/until to filter by date at the API level
+    recent_orders = broker.get_recent_orders(
+        limit=500, strict=True, after=target_date, until=target_date
+    ) or []
+    
+    # Warn if results may be truncated
+    if len(recent_orders) >= 500:
+        warnings.append({
+            "symbol": None,
+            "side": None,
+            "order_id": None,
+            "filled_at": None,
+            "reason": f"Fetched 500+ orders for {target_date}; results may be truncated. Consider pagination if fills are missing.",
+        })
     
     for order in recent_orders:
         # Check if order was filled
@@ -200,23 +235,38 @@ def main() -> int:
 
     # Current positions
     try:
-        positions = get_positions(broker)
+        positions, pos_errors, pos_warnings = get_positions(broker)
     except Exception as e:
         print(f"ERROR: Failed to fetch positions: {e}", file=sys.stderr)
         return 1
     
+    # Report position price errors/warnings
+    if pos_errors:
+        for err in pos_errors:
+            print(f"ERROR: {err}", file=sys.stderr)
+        return 1
+    
     print("CURRENT POSITIONS")
     print("-" * 80)
+    
+    if pos_warnings:
+        print("  WARNINGS:")
+        for warn in pos_warnings:
+            print(f"    {warn}")
+        print()
+    
     if not positions:
         print("  (No open positions)")
     else:
         for pos in sorted(positions, key=lambda p: (p["type"], p["symbol"])):
             side = f" ({pos['side']})" if pos.get("side") else ""
+            current_price = pos.get("current_price")
+            mark_str = "n/a" if current_price is None else format_currency(current_price)
             print(
                 f"  {pos['type'].upper():8s} {pos['symbol']:25s}{side:10s} "
                 f"qty={pos['qty']:8.2f}  mv={format_currency(pos['market_value']):>12s}  "
                 f"entry={format_currency(pos['avg_entry_price']):>10s}  "
-                f"mark={format_currency(pos['current_price']):>10s}"
+                f"mark={mark_str:>10s}"
             )
         
         # Add explicit position status lines for specific tickers requested in #46
@@ -254,10 +304,16 @@ def main() -> int:
     if warnings:
         print("  WARNINGS:")
         for warn in warnings:
-            print(
-                f"    Order {warn.get('order_id', 'unknown')[:8]} ({warn.get('symbol')}) "
-                f"{warn.get('side', '').upper()}: {warn.get('reason')}"
-            )
+            order_id = warn.get('order_id') or 'unknown'
+            order_id_display = order_id[:8] if order_id != 'unknown' else order_id
+            symbol = warn.get('symbol') or ''
+            side = warn.get('side', '').upper() if warn.get('side') else ''
+            
+            # Format based on whether this is an order-specific or general warning
+            if symbol and side:
+                print(f"    Order {order_id_display} ({symbol}) {side}: {warn.get('reason')}")
+            else:
+                print(f"    {warn.get('reason')}")
         print()
     
     if not fills:
