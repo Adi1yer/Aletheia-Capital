@@ -16,7 +16,7 @@ on:
 
 jobs:
   report:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -33,6 +33,14 @@ jobs:
           poetry config virtualenvs.in-project true
           poetry install --no-interaction --no-ansi
       
+      - name: Verify read-only operation (static analysis)
+        run: |
+          if grep -rn --include="*.py" -E "(submit_order|cancel_order|replace_order|submit_option_order|execute_order)" scripts/read_only_fills_report.py; then
+            echo "ERROR: read-only fills report contains forbidden order mutation methods"
+            exit 1
+          fi
+          echo "✓ Static analysis passed: no order mutation methods found"
+      
       - name: Generate read-only fills report
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
@@ -44,12 +52,5 @@ jobs:
             poetry run python scripts/read_only_fills_report.py --date "$REPORT_DATE"
           else
             poetry run python scripts/read_only_fills_report.py
-          fi
-      
-      - name: Verify read-only operation
-        run: |
-          if grep -rn --include="*.py" -E "(submit_order|cancel_order|replace_order)" scripts/read_only_fills_report.py; then
-            echo "ERROR: read-only fills report contains forbidden order mutation methods"
-            exit 1
           fi
           echo "✓ Report completed with zero orders placed (read-only verified)"

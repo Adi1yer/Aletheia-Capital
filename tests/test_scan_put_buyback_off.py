@@ -41,13 +41,11 @@ from src.options.covered_calls import CoveredCallManager
 from src.options.wheel_lifecycle import manage_or_roll_short_calls
 
 
-def test_scan_put_buyback_never_submitted():
+def test_scan_put_buyback_never_submitted(monkeypatch):
     """Scan path behavior: put BTC is never submitted because auto_put_buyback is not passed (defaults to False)."""
-    import os
-
     # Even with AUTO_PUT_BUYBACK env set to "1", the Scan path doesn't pass it to manage_or_roll_short_calls
-    os.environ["AUTO_PUT_BUYBACK"] = "1"
-    os.environ["ENABLE_COVERED_CALLS"] = "1"
+    monkeypatch.setenv("AUTO_PUT_BUYBACK", "1")
+    monkeypatch.setenv("ENABLE_COVERED_CALLS", "1")
 
     broker = MockBroker(
         option_positions=[
@@ -92,7 +90,3 @@ def test_scan_put_buyback_never_submitted():
     # Either "allow_put_closes=False_blocked" or "AUTO_PUT_BUYBACK=0_skipped" format
     assert ("allow_put_closes=False_blocked" in put_results[0]["reason"] 
             or "AUTO_PUT_BUYBACK=0_skipped" in put_results[0]["reason"])
-
-    # Cleanup
-    os.environ.pop("AUTO_PUT_BUYBACK", None)
-    os.environ.pop("ENABLE_COVERED_CALLS", None)
