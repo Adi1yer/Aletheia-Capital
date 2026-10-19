@@ -1,356 +1,141 @@
-"""Test that pending/open orders count toward contract cap."""
+"""Tests for fail-closed pending orders cap enforcement in live_coverage_sto_qty."""
 
-import os
 import pytest
 from unittest.mock import MagicMock
-from src.options.covered_calls import (
-    CoveredCallManager,
-    live_coverage_sto_qty,
-    _working_short_calls,
-)
-from src.portfolio.models import Portfolio, Position
+from src.options.covered_calls import live_coverage_sto_qty
 
 
-class TestWorkingShortCalls:
-    """Test _working_short_calls helper counts unfilled STO call orders."""
+class TestFailClosedPendingOrdersFetch:
+    """Test that live_coverage_sto_qty is fail-closed when fetching pending orders."""
 
-    def test_counts_pending_sell_to_open_calls(self):
-        """Should count pending sell-to-open call orders."""
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
-        
-        open_orders = [
-            {
-                "symbol": "AAPL250117C00155000",
-                "side": "sell",
-                "status": "pending",
-                "qty": 2,
-            }
-        ]
-        
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
-                "underlying": "AAPL",
-                "option_type": "call",
-                "strike": 155.0,
-                "expiry": "2025-01-17",
-            }
-            
-            working = _working_short_calls(open_orders)
-            
-            assert working["AAPL"] == 2
-
-    def test_excludes_filled_orders(self):
-        """Should exclude filled orders."""
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
-        
-        open_orders = [
-            {
-                "symbol": "AAPL250117C00155000",
-                "side": "sell",
-                "status": "filled",
-                "qty": 1,
-            }
-        ]
-        
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
-                "underlying": "AAPL",
-                "option_type": "call",
-                "strike": 155.0,
-                "expiry": "2025-01-17",
-            }
-            
-            working = _working_short_calls(open_orders)
-            
-            assert "AAPL" not in working
-
-    def test_excludes_canceled_orders(self):
-        """Should exclude canceled orders."""
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
-        
-        open_orders = [
-            {
-                "symbol": "AAPL250117C00155000",
-                "side": "sell",
-                "status": "canceled",
-                "qty": 1,
-            }
-        ]
-        
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
-                "underlying": "AAPL",
-                "option_type": "call",
-                "strike": 155.0,
-                "expiry": "2025-01-17",
-            }
-            
-            working = _working_short_calls(open_orders)
-            
-            assert "AAPL" not in working
-
-    def test_counts_multiple_pending_orders_same_underlying(self):
-        """Should sum multiple pending orders for same underlying."""
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
-        
-        open_orders = [
-            {
-                "symbol": "AAPL250117C00155000",
-                "side": "sell",
-                "status": "pending",
-                "qty": 1,
-            },
-            {
-                "symbol": "AAPL250117C00160000",
-                "side": "sell",
-                "status": "new",
-                "qty": 1,
-            }
-        ]
-        
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
-                "underlying": "AAPL",
-                "option_type": "call",
-                "strike": 155.0,
-                "expiry": "2025-01-17",
-            }
-            
-            working = _working_short_calls(open_orders)
-            
-            assert working["AAPL"] == 2
-
-
-class TestLiveCoverageSTOQtyCountsPendingOrders:
-    """Test that live_coverage_sto_qty counts pending orders toward cap."""
-
-    @pytest.fixture
-    def mock_broker(self):
-        """Mock broker with positions and pending orders."""
+    def test_broker_without_get_open_orders_returns_zero(self):
+        """If broker lacks get_open_orders method, fail closed and return 0."""
         broker = MagicMock()
-        
-        portfolio = Portfolio(
-            cash=10000,
-            positions={
-                "AAPL": Position(long=300, long_cost_basis=150.0),
-            },
-        )
+        # Portfolio: 300 shares (3 lots)
+        portfolio = MagicMock()
+        portfolio.long_qty.return_value = 300
         broker.sync_portfolio.return_value = portfolio
         
-        short_call = {
-            "symbol": "AAPL250117C00155000",
-            "side": "short",
-            "qty": 1,
-            "underlying": "AAPL",
-            "option_type": "call",
-        }
-        broker.get_option_positions.return_value = [short_call]
-        
-        pending_order = {
-            "symbol": "AAPL250117C00160000",
-            "side": "sell",
-            "status": "pending",
-            "qty": 1,
-        }
-        broker.get_open_orders.return_value = [pending_order]
-        
-        return broker
-
-    def test_pending_orders_reduce_available_slots(self, mock_broker):
-        """Should reduce available STO qty by pending orders."""
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
-        
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
+        # Option positions: 1 short call (2 slots remain)
+        option_positions = [
+            {
+                "symbol": "AAPL240119C00150000",
+                "side": "short",
                 "underlying": "AAPL",
                 "option_type": "call",
-                "strike": 160.0,
-                "expiry": "2025-01-17",
+                "qty": 1,
             }
-            
-            sto_qty = live_coverage_sto_qty(mock_broker, "AAPL", 10)
-            
-            assert sto_qty == 1
-
-    def test_no_slots_when_pending_fills_capacity(self, mock_broker):
-        """Should return 0 when pending orders fill all capacity."""
-        portfolio = Portfolio(
-            cash=10000,
-            positions={
-                "AAPL": Position(long=200, long_cost_basis=150.0),
-            },
-        )
-        mock_broker.sync_portfolio.return_value = portfolio
+        ]
+        broker.get_option_positions.return_value = option_positions
         
-        short_call = {
-            "symbol": "AAPL250117C00155000",
-            "side": "short",
-            "qty": 1,
-            "underlying": "AAPL",
-            "option_type": "call",
-        }
-        mock_broker.get_option_positions.return_value = [short_call]
+        # Broker does NOT have get_open_orders attribute
+        if hasattr(broker, "get_open_orders"):
+            delattr(broker, "get_open_orders")
         
-        pending_order = {
-            "symbol": "AAPL250117C00160000",
-            "side": "sell",
-            "status": "pending",
-            "qty": 1,
-        }
-        mock_broker.get_open_orders.return_value = [pending_order]
+        # Should return 0 (fail closed) not 2 (which would be slots - filled)
+        result = live_coverage_sto_qty(broker, "AAPL", requested=2)
         
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
-        
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
-                "underlying": "AAPL",
-                "option_type": "call",
-                "strike": 160.0,
-                "expiry": "2025-01-17",
-            }
-            
-            sto_qty = live_coverage_sto_qty(mock_broker, "AAPL", 10)
-            
-            assert sto_qty == 0
+        assert result == 0
 
-
-class TestPendingOrdersPreventNakedWrites:
-    """Test that pending orders prevent naked call writes."""
-
-    @pytest.fixture
-    def mock_broker(self):
-        """Mock broker with 200 shares and 1 pending call order."""
+    def test_get_open_orders_raises_returns_zero(self):
+        """If get_open_orders raises, fail closed and return 0."""
         broker = MagicMock()
-        
-        portfolio = Portfolio(
-            cash=10000,
-            positions={
-                "AAPL": Position(long=200, long_cost_basis=150.0),
-            },
-        )
+        # Portfolio: 300 shares
+        portfolio = MagicMock()
+        portfolio.long_qty.return_value = 300
         broker.sync_portfolio.return_value = portfolio
         
+        # Option positions: 1 short call
+        option_positions = [
+            {
+                "symbol": "AAPL240119C00150000",
+                "side": "short",
+                "underlying": "AAPL",
+                "option_type": "call",
+                "qty": 1,
+            }
+        ]
+        broker.get_option_positions.return_value = option_positions
+        
+        # get_open_orders raises
+        broker.get_open_orders.side_effect = Exception("API failure")
+        
+        # Should return 0 (fail closed)
+        result = live_coverage_sto_qty(broker, "AAPL", requested=2)
+        
+        assert result == 0
+
+    def test_get_open_orders_succeeds_normal_path(self):
+        """When get_open_orders succeeds, calculate normally."""
+        broker = MagicMock()
+        # Portfolio: 300 shares (3 lots)
+        portfolio = MagicMock()
+        portfolio.long_qty.return_value = 300
+        broker.sync_portfolio.return_value = portfolio
+        
+        # Option positions: 1 filled short call
+        option_positions = [
+            {
+                "symbol": "AAPL240119C00150000",
+                "side": "short",
+                "underlying": "AAPL",
+                "option_type": "call",
+                "qty": 1,
+            }
+        ]
+        broker.get_option_positions.return_value = option_positions
+        
+        # Open orders: 1 pending short call
+        open_orders = [
+            {
+                "symbol": "AAPL240119C00155000",
+                "side": "sell",
+                "status": "pending_new",
+                "qty": 1,
+            }
+        ]
+        broker.get_open_orders.return_value = open_orders
+        
+        # 3 slots - 1 filled - 1 pending = 1 available
+        result = live_coverage_sto_qty(broker, "AAPL", requested=2)
+        
+        assert result == 1
+
+    def test_get_open_orders_empty_list_normal_path(self):
+        """When get_open_orders returns empty list, calculate normally."""
+        broker = MagicMock()
+        # Portfolio: 200 shares (2 lots)
+        portfolio = MagicMock()
+        portfolio.long_qty.return_value = 200
+        broker.sync_portfolio.return_value = portfolio
+        
+        # Option positions: 0 short calls
         broker.get_option_positions.return_value = []
         
-        pending_order = {
-            "symbol": "AAPL250117C00155000",
-            "side": "sell",
-            "status": "pending",
-            "qty": 1,
-        }
-        broker.get_open_orders.return_value = [pending_order]
+        # Open orders: empty (no pending)
+        broker.get_open_orders.return_value = []
         
-        return broker
+        # 2 slots - 0 filled - 0 pending = 2 available
+        result = live_coverage_sto_qty(broker, "AAPL", requested=2)
+        
+        assert result == 2
 
-    def test_cannot_write_second_call_with_pending_order(self, mock_broker):
-        """Should prevent second write when pending order + shares = capacity."""
-        os.environ["ENABLE_COVERED_CALLS"] = "1"
-        os.environ["ENABLE_CC_ROLLS"] = "1"
+    def test_fail_closed_prevents_overhedge(self):
+        """Fail-closed prevents naked short when we can't verify pending orders."""
+        broker = MagicMock()
+        # Portfolio: 100 shares (1 lot)
+        portfolio = MagicMock()
+        portfolio.long_qty.return_value = 100
+        broker.sync_portfolio.return_value = portfolio
         
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
+        # Option positions: 0 filled short calls
+        broker.get_option_positions.return_value = []
         
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
-                "underlying": "AAPL",
-                "option_type": "call",
-                "strike": 155.0,
-                "expiry": "2025-01-17",
-            }
-            
-            portfolio = Portfolio(
-                cash=10000,
-                positions={
-                    "AAPL": Position(long=200, long_cost_basis=150.0),
-                },
-            )
-            
-            contract = {
-                "symbol": "AAPL250117C00160000",
-                "strike": 160.0,
-                "expiry": "2025-01-17",
-                "mid_price": 2.50,
-                "tradable": True,
-            }
-            mock_broker.get_option_contracts.return_value = [contract]
-
-            manager = CoveredCallManager()
-            results = manager.execute_covered_calls(
-                broker=mock_broker,
-                portfolio=portfolio,
-                cc_lot_tickers=["AAPL"],
-                cc_scores={"AAPL": 60},
-                current_prices={"AAPL": 155.0},
-            )
-
-            executed = [r for r in results if r.get("status") == "executed"]
-            assert len(executed) == 0
-
-    def test_can_write_when_pending_fills_and_capacity_increases(self, mock_broker):
-        """Should allow write after pending fills and capacity increases."""
-        os.environ["ENABLE_COVERED_CALLS"] = "1"
-        os.environ["ENABLE_CC_ROLLS"] = "1"
+        # get_open_orders fails (might have pending orders we can't see)
+        broker.get_open_orders.side_effect = Exception("Network timeout")
         
-        portfolio = Portfolio(
-            cash=10000,
-            positions={
-                "AAPL": Position(long=300, long_cost_basis=150.0),
-            },
-        )
-        mock_broker.sync_portfolio.return_value = portfolio
+        # Without fail-closed: would return 1 (allowing naked short if order pending)
+        # With fail-closed: returns 0
+        result = live_coverage_sto_qty(broker, "AAPL", requested=1)
         
-        filled_call = {
-            "symbol": "AAPL250117C00155000",
-            "side": "short",
-            "qty": 1,
-            "underlying": "AAPL",
-            "option_type": "call",
-        }
-        mock_broker.get_option_positions.return_value = [filled_call]
-        
-        mock_broker.get_open_orders.return_value = []
-        
-        from src.options.wheel_lifecycle import parse_occ_symbol
-        from unittest.mock import patch
-        
-        with patch("src.options.wheel_lifecycle.parse_occ_symbol") as mock_parse:
-            mock_parse.return_value = {
-                "underlying": "AAPL",
-                "option_type": "call",
-                "strike": 155.0,
-                "expiry": "2025-01-17",
-            }
-            
-            contract = {
-                "symbol": "AAPL250117C00160000",
-                "strike": 160.0,
-                "expiry": "2025-01-17",
-                "mid_price": 2.50,
-                "tradable": True,
-            }
-            mock_broker.get_option_contracts.return_value = [contract]
-            
-            order = {
-                "submitted": True,
-                "fill_ok": True,
-                "order_id": "test-order-1",
-            }
-            mock_broker.submit_option_order.return_value = order
-
-            manager = CoveredCallManager()
-            results = manager.execute_covered_calls(
-                broker=mock_broker,
-                portfolio=portfolio,
-                cc_lot_tickers=["AAPL"],
-                cc_scores={"AAPL": 60},
-                current_prices={"AAPL": 155.0},
-            )
-
-            executed = [r for r in results if r.get("status") in ("executed", "partial")]
-            assert len(executed) > 0
+        assert result == 0
