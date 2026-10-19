@@ -158,6 +158,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true'
         env:
           ENABLE_COVERED_CALLS: "0"
+          ENABLE_CC_ROLLS: "0"
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
@@ -176,6 +177,7 @@ jobs:
         env:
           LOG_LEVEL: INFO
           ENABLE_COVERED_CALLS: "0"
+          ENABLE_CC_ROLLS: "0"
           SCAN_CACHE_KEEP_WEEKS: "26"
           CACHE_HIT_PERFORMANCE: ${{ steps.perf_cache_restore.outputs.cache-hit }}
           CACHE_HIT_SCAN: ${{ steps.scan_cache_restore.outputs.cache-hit }}
