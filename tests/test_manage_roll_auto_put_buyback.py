@@ -287,7 +287,7 @@ def test_manage_or_roll_dry_run_skips_put_btc_when_flag_off():
     put_results = [r for r in results if r.get("option_type") == "put"]
     assert len(put_results) == 1
     assert put_results[0]["status"] == "skipped"
-    assert "AUTO_PUT_BUYBACK=0" in put_results[0]["reason"]
+    assert "allow_put_closes=False_blocked" in put_results[0]["reason"]
 
 
 def test_prefer_roll_false_blocks_put_btc_when_auto_put_buyback_false():
