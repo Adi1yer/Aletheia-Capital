@@ -373,6 +373,17 @@ class TestMoneyPathInertGates:
                 assert not is_inert
                 assert reason == "ok"
 
+    def test_wheel_blocked_when_only_cc_on(self) -> None:
+        """Wheel Scan should be inert when ENABLE_COVERED_CALLS=1 but ENABLE_PUT_OPERATIONS=0."""
+        wheel = next(w for w in WORKFLOWS if w.track == "wheel")
+        
+        with patch.dict("os.environ", {"ENABLE_PUT_OPERATIONS": "0", "ENABLE_COVERED_CALLS": "1"}):
+            with patch("scripts.dispatch_missed_workflows.get_workflow") as mock_get:
+                mock_get.return_value = MagicMock(enabled=True)
+                is_inert, reason = is_workflow_money_path_inert(wheel)
+                assert is_inert
+                assert "puts_nogo" in reason.lower()
+
     def test_options_blocked_when_puts_nogo(self) -> None:
         """Options Manage should be inert when ENABLE_PUT_OPERATIONS is not set."""
         options = next(w for w in WORKFLOWS if w.track == "options")

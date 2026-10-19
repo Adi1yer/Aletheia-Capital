@@ -401,3 +401,40 @@ def test_csp_puts_go_gate_allows_opens(monkeypatch):
         executed = [r for r in results if r.get("status") == "executed"]
         assert len(executed) == 1, f"Failed for env_value={env_value!r}"
         assert executed[0]["underlying"] == "TEST", f"Failed for env_value={env_value!r}"
+
+
+def test_csp_blocked_even_with_cc_on(monkeypatch):
+    """CSP opens remain blocked when ENABLE_COVERED_CALLS=1 but ENABLE_PUT_OPERATIONS=0.
+    
+    This test proves that the covered-calls flip (PR #XX) keeps puts off.
+    """
+    # Set CC on, puts off — the production config after the flip
+    monkeypatch.setenv("ENABLE_COVERED_CALLS", "1")
+    monkeypatch.setenv("ENABLE_PUT_OPERATIONS", "0")
+    
+    broker = MockBroker(free_cash=10000.0)
+    broker.option_contracts = [
+        {
+            "symbol": "TEST241115P00020000",
+            "underlying": "TEST",
+            "strike": 20.0,
+            "expiry": "2024-11-15",
+            "tradable": True,
+            "mid_price": 0.75,
+        }
+    ]
+    
+    manager = CashSecuredPutManager()
+    results = manager.execute_cash_secured_puts(
+        broker=broker,
+        csp_tickers=["TEST1", "TEST2"],
+        csp_scores={"TEST1": 60, "TEST2": 55},
+        current_prices={"TEST1": 25.0, "TEST2": 30.0},
+        wait_fill=False,
+    )
+    
+    # Should skip all puts with puts_nogo reason, regardless of ENABLE_COVERED_CALLS=1
+    assert len(results) == 2
+    assert all(r["status"] == "skipped" for r in results)
+    assert all(r["reason"] == "puts_nogo_csp_opens_blocked" for r in results)
+

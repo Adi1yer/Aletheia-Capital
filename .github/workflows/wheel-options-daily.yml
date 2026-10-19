@@ -102,7 +102,9 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true'
         env:
           LOG_LEVEL: INFO
-          ENABLE_COVERED_CALLS: "0"
+          ENABLE_COVERED_CALLS: "1"
+          ENABLE_PUT_OPERATIONS: "0"
+          AUTO_PUT_BUYBACK: "0"
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
@@ -121,8 +123,6 @@ jobs:
           EMAIL_ON_CHANGES_ONLY: '0'
           # Options can still trade after equity DAY cutoff (15:30); early-close still wins.
           EXECUTE_CUTOFF_ET: '15:55'
-          # Auto put buyback: disabled by default (dry-run testing only)
-          AUTO_PUT_BUYBACK: '0'
           AUTO_PUT_BUYBACK_MAX_PER_CONTRACT: '500'
           AUTO_PUT_BUYBACK_MAX_TOTAL: '2000'
         run: poetry run python scripts/manage_wheel_options.py

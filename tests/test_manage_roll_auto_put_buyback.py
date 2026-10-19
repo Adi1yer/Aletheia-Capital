@@ -55,7 +55,7 @@ class MockBroker:
                 cash=5000.0,
                 positions={"NU": Position(long=100, long_cost_basis=14.50)},
             )
-        return Portfolio(cash=5000.0, positions={})
+    return Portfolio(cash=5000.0, positions={})
 
 
 def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
@@ -115,6 +115,62 @@ def test_manage_or_roll_skips_put_btc_when_auto_put_buyback_false():
     assert ("AUTO_PUT_BUYBACK=0" in put_results[0]["reason"] or 
             "allow_put_closes=False_blocked" in put_results[0]["reason"])
     assert "put_near_itm" in put_results[0]["reason"]
+
+
+def test_put_btc_blocked_with_cc_on_but_auto_put_buyback_false():
+    """Put BTC remains blocked when ENABLE_COVERED_CALLS=1 but auto_put_buyback=False.
+    
+    This test proves that the covered-calls flip keeps put BTC off.
+    """
+    import os
+    
+    broker = MockBroker(
+        option_positions=[
+            {
+                "symbol": "TEST261106P00020000",
+                "side": "short",
+                "qty": 1,
+                "avg_entry_price": 0.80,
+                "current_price": 1.20,
+            }
+        ],
+        submit_success=True,
+    )
+
+    mgr = CoveredCallManager(
+        min_premium_usd=10.0,
+        min_premium_pct=0.001,
+        otm_pct_low=0.03,
+        otm_pct_high=0.10,
+        target_otm_pct=0.05,
+    )
+
+    # Set CC on, auto_put_buyback off — the production config after the flip
+    old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    try:
+        os.environ["ENABLE_COVERED_CALLS"] = "1"
+        
+        results = manage_or_roll_short_calls(
+            broker,
+            {"TEST": 19.50},  # Underlying below strike $20 → put is ITM
+            mgr,
+            manage_itm_pct=0.02,
+            prefer_roll=True,
+            execute=True,
+            auto_put_buyback=False,  # Explicitly off
+        )
+        
+        # Should skip the put (no BTC), regardless of ENABLE_COVERED_CALLS=1
+        put_results = [r for r in results if r.get("option_type") == "put"]
+        assert len(put_results) == 1
+        assert put_results[0]["status"] == "skipped"
+        assert put_results[0]["contract_symbol"] == "TEST261106P00020000"
+        assert len(broker.submitted_orders) == 0  # No BTC order submitted
+    finally:
+        if old_val is not None:
+            os.environ["ENABLE_COVERED_CALLS"] = old_val
+        else:
+            os.environ.pop("ENABLE_COVERED_CALLS", None)
 
 
 def test_manage_or_roll_executes_put_btc_when_auto_put_buyback_true():
