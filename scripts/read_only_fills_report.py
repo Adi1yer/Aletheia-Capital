@@ -30,60 +30,59 @@ def format_currency(value: float) -> str:
 
 
 def get_account_info(broker) -> Dict[str, Any]:
-    """Get account cash and equity (read-only)."""
-    try:
-        account = broker.get_account()
-        return {
-            "cash": float(account.get("cash") or 0.0),
-            "equity": float(account.get("equity") or 0.0),
-            "buying_power": float(account.get("buying_power") or 0.0),
-        }
-    except Exception as e:
-        print(f"ERROR: Could not fetch account info: {e}", file=sys.stderr)
-        return {"cash": 0.0, "equity": 0.0, "buying_power": 0.0}
+    """Get account cash and equity (read-only).
+    
+    Raises:
+        Exception: If account fetch fails.
+    """
+    account = broker.get_account()
+    return {
+        "cash": float(account.get("cash") or 0.0),
+        "equity": float(account.get("equity") or 0.0),
+        "buying_power": float(account.get("buying_power") or 0.0),
+    }
 
 
 def get_positions(broker) -> List[Dict[str, Any]]:
-    """Get current positions (read-only)."""
+    """Get current positions (read-only).
+    
+    Raises:
+        Exception: If positions fetch fails.
+    """
     positions = []
-    try:
-        equity_positions = broker.get_positions() or {}
-        for ticker, pos_dict in equity_positions.items():
-            qty = float(pos_dict.get("qty") or 0)
-            if qty != 0:
-                positions.append({
-                    "type": "equity",
-                    "symbol": ticker,
-                    "qty": qty,
-                    "market_value": float(pos_dict.get("market_value") or 0.0),
-                    "avg_entry_price": float(pos_dict.get("avg_entry_price") or 0.0),
-                    "current_price": float(
-                        pos_dict.get("current_price") or pos_dict.get("mark_price") or 0.0
-                    ),
-                })
-    except Exception as e:
-        print(f"WARNING: Could not fetch equity positions: {e}", file=sys.stderr)
+    
+    equity_positions = broker.get_positions() or {}
+    for ticker, pos_dict in equity_positions.items():
+        qty = float(pos_dict.get("qty") or 0)
+        if qty != 0:
+            positions.append({
+                "type": "equity",
+                "symbol": ticker,
+                "qty": qty,
+                "market_value": float(pos_dict.get("market_value") or 0.0),
+                "avg_entry_price": float(pos_dict.get("avg_entry_price") or 0.0),
+                "current_price": float(
+                    pos_dict.get("current_price") or pos_dict.get("mark_price") or 0.0
+                ),
+            })
 
-    try:
-        option_positions = broker.get_option_positions() or []
-        for opt in option_positions:
-            qty = float(opt.get("qty") or 0)
-            if qty != 0:
-                positions.append({
-                    "type": "option",
-                    "symbol": opt.get("symbol"),
-                    "side": opt.get("side"),
-                    "qty": qty,
-                    "market_value": float(opt.get("market_value") or 0.0),
-                    "avg_entry_price": float(
-                        opt.get("avg_entry_price") or opt.get("avg_entry") or 0.0
-                    ),
-                    "current_price": float(
-                        opt.get("current_price") or opt.get("mark_price") or 0.0
-                    ),
-                })
-    except Exception as e:
-        print(f"WARNING: Could not fetch option positions: {e}", file=sys.stderr)
+    option_positions = broker.get_option_positions() or []
+    for opt in option_positions:
+        qty = float(opt.get("qty") or 0)
+        if qty != 0:
+            positions.append({
+                "type": "option",
+                "symbol": opt.get("symbol"),
+                "side": opt.get("side"),
+                "qty": qty,
+                "market_value": float(opt.get("market_value") or 0.0),
+                "avg_entry_price": float(
+                    opt.get("avg_entry_price") or opt.get("avg_entry") or 0.0
+                ),
+                "current_price": float(
+                    opt.get("current_price") or opt.get("mark_price") or 0.0
+                ),
+            })
 
     return positions
 
@@ -92,51 +91,52 @@ def get_fills_for_date(broker, target_date: date) -> List[Dict[str, Any]]:
     """Get fills for a specific date (read-only).
     
     Returns fills with: symbol, side, qty, filled_avg_price, filled_at, order_id
+    
+    Raises:
+        Exception: If orders fetch fails.
     """
     fills = []
-    try:
-        # Fetch recent orders (extends back ~60 days typically)
-        # Filter for filled orders on the target date
-        recent_orders = broker.get_recent_orders(limit=500) or []
+    
+    # Fetch recent orders (extends back ~60 days typically)
+    # Filter for filled orders on the target date
+    recent_orders = broker.get_recent_orders(limit=500) or []
+    
+    for order in recent_orders:
+        # Check if order was filled
+        status = order.get("status", "").lower()
+        if status not in ("filled", "partially_filled"):
+            continue
         
-        for order in recent_orders:
-            # Check if order was filled
-            status = order.get("status", "").lower()
-            if status not in ("filled", "partially_filled"):
-                continue
-            
-            # Parse filled_at timestamp
-            filled_at_str = order.get("filled_at")
-            if not filled_at_str:
-                continue
-            
-            try:
-                filled_dt = datetime.fromisoformat(
-                    filled_at_str.replace("Z", "+00:00")
-                )
-                filled_date = filled_dt.astimezone(ZoneInfo("America/New_York")).date()
-            except (ValueError, AttributeError):
-                continue
-            
-            # Filter by target date
-            if filled_date != target_date:
-                continue
-            
-            filled_qty = float(order.get("filled_qty") or 0)
-            if filled_qty <= 0:
-                continue
-            
-            fills.append({
-                "symbol": order.get("symbol"),
-                "side": order.get("side"),
-                "qty": filled_qty,
-                "filled_avg_price": float(order.get("filled_avg_price") or 0.0),
-                "filled_at": filled_at_str,
-                "order_id": order.get("id"),
-                "order_type": order.get("type"),
-            })
-    except Exception as e:
-        print(f"WARNING: Could not fetch orders: {e}", file=sys.stderr)
+        # Parse filled_at timestamp
+        filled_at_str = order.get("filled_at")
+        if not filled_at_str:
+            continue
+        
+        try:
+            filled_dt = datetime.fromisoformat(
+                filled_at_str.replace("Z", "+00:00")
+            )
+            filled_date = filled_dt.astimezone(ZoneInfo("America/New_York")).date()
+        except (ValueError, AttributeError):
+            continue
+        
+        # Filter by target date
+        if filled_date != target_date:
+            continue
+        
+        filled_qty = float(order.get("filled_qty") or 0)
+        if filled_qty <= 0:
+            continue
+        
+        fills.append({
+            "symbol": order.get("symbol"),
+            "side": order.get("side"),
+            "qty": filled_qty,
+            "filled_avg_price": float(order.get("filled_avg_price") or 0.0),
+            "filled_at": filled_at_str,
+            "order_id": order.get("id"),
+            "order_type": order.get("type"),
+        })
     
     return fills
 
@@ -176,7 +176,12 @@ def main() -> int:
     print()
 
     # Account info
-    account = get_account_info(broker)
+    try:
+        account = get_account_info(broker)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch account info: {e}", file=sys.stderr)
+        return 1
+    
     print("ACCOUNT INFO")
     print("-" * 80)
     print(f"  Cash:          {format_currency(account['cash'])}")
@@ -185,7 +190,12 @@ def main() -> int:
     print()
 
     # Current positions
-    positions = get_positions(broker)
+    try:
+        positions = get_positions(broker)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch positions: {e}", file=sys.stderr)
+        return 1
+    
     print("CURRENT POSITIONS")
     print("-" * 80)
     if not positions:
@@ -202,7 +212,12 @@ def main() -> int:
     print()
 
     # Fills for date
-    fills = get_fills_for_date(broker, target_date)
+    try:
+        fills = get_fills_for_date(broker, target_date)
+    except Exception as e:
+        print(f"ERROR: Failed to fetch fills: {e}", file=sys.stderr)
+        return 1
+    
     print(f"FILLS ON {target_date.isoformat()}")
     print("-" * 80)
     if not fills:
