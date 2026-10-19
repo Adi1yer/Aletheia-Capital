@@ -50,7 +50,6 @@ def get_positions(broker) -> List[Dict[str, Any]]:
         Exception: If positions fetch fails.
     """
     positions = []
-    errors = []
     warnings = []
     
     equity_positions = broker.get_positions() or {}
@@ -92,7 +91,7 @@ def get_positions(broker) -> List[Dict[str, Any]]:
                 current_price = None
             
             if current_price is None:
-                errors.append(f"Option {opt.get('symbol')}: missing or invalid current_price/mark_price")
+                warnings.append(f"Option {opt.get('symbol')}: missing or invalid current_price/mark_price (excluded from NAV)")
             
             positions.append({
                 "type": "option",
@@ -106,7 +105,7 @@ def get_positions(broker) -> List[Dict[str, Any]]:
                 "current_price": current_price,
             })
 
-    return positions, errors, warnings
+    return positions, warnings
 
 
 def get_fills_for_date(broker, target_date: date) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -235,15 +234,9 @@ def main() -> int:
 
     # Current positions
     try:
-        positions, pos_errors, pos_warnings = get_positions(broker)
+        positions, pos_warnings = get_positions(broker)
     except Exception as e:
         print(f"ERROR: Failed to fetch positions: {e}", file=sys.stderr)
-        return 1
-    
-    # Report position price errors/warnings
-    if pos_errors:
-        for err in pos_errors:
-            print(f"ERROR: {err}", file=sys.stderr)
         return 1
     
     print("CURRENT POSITIONS")
@@ -270,8 +263,10 @@ def main() -> int:
             )
         
         # Add explicit position status lines for specific tickers requested in #46
+        import re
         nu_equity = next((p for p in positions if p.get("symbol") == "NU" and p.get("type") == "equity"), None)
-        nu_option = next((p for p in positions if p.get("symbol") and "NU261106P00015000" in p.get("symbol", "") and p.get("type") == "option"), None)
+        # Match any NU option: OCC format NU + 6 digits + C/P + 8 digits
+        nu_option = next((p for p in positions if p.get("type") == "option" and re.match(r'^NU\d{6}[CP]', p.get("symbol", ""))), None)
         cpng_equity = next((p for p in positions if p.get("symbol") == "CPNG" and p.get("type") == "equity"), None)
         
         print()
