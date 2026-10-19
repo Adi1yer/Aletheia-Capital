@@ -270,12 +270,16 @@ def live_coverage_sto_qty(broker: "AlpacaBroker", underlying: str, requested: in
         return 0
     short_q = int(short_call_qty_by_underlying(opts or []).get(und) or 0)
     
+    # Fail closed: if broker lacks get_open_orders or fetch fails, return 0
+    # (never assume pending_q=0 and allow overhedge)
+    if not hasattr(broker, "get_open_orders"):
+        return 0
     try:
-        open_orders = broker.get_open_orders(limit=100) if hasattr(broker, "get_open_orders") else []
+        open_orders = broker.get_open_orders(limit=100)
         working_q = int(_working_short_calls(open_orders).get(und) or 0)
         short_q += working_q
     except Exception:
-        pass
+        return 0
     
     return coverage_sto_qty(shares, short_q, req)
 
