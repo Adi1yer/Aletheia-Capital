@@ -153,3 +153,18 @@ def mock_llm():
         )
     )
     return llm
+
+
+@pytest.fixture(autouse=True)
+def enable_covered_calls_for_tests():
+    """Auto-enable ENABLE_COVERED_CALLS=1 for all tests unless explicitly overridden."""
+    old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    if old_val is None:
+        # Only set if not already set (allows tests to override)
+        os.environ["ENABLE_COVERED_CALLS"] = "1"
+    yield
+    # Restore original value
+    if old_val is None:
+        os.environ.pop("ENABLE_COVERED_CALLS", None)
+    else:
+        os.environ["ENABLE_COVERED_CALLS"] = old_val
