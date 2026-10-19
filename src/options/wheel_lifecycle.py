@@ -221,13 +221,31 @@ def manage_short_options(
             mark = 0.0
         btc_cost_usd = mark * 100.0 * max(qty, 1)
 
-        if not execute or (parsed["option_type"] == "put" and not allow_put_closes):
+        # Block put closes when not allowed, even in dry-run mode
+        if parsed["option_type"] == "put" and not allow_put_closes:
             results.append(
                 {
                     "contract_symbol": symbol,
                     "underlying": und,
-                    "status": "would_btc" if not execute else "skipped",
-                    "reason": reason if not execute else f"allow_put_closes=False_blocked_{reason}",
+                    "status": "skipped",
+                    "reason": f"allow_put_closes=False_blocked_{reason}",
+                    "dte": dte,
+                    "qty": qty,
+                    "option_type": parsed["option_type"],
+                    "btc_cost_usd": round(btc_cost_usd, 2),
+                    "strike": float(parsed["strike"]),
+                    "profit_pct": profit_pct,
+                }
+            )
+            continue
+
+        if not execute:
+            results.append(
+                {
+                    "contract_symbol": symbol,
+                    "underlying": und,
+                    "status": "would_btc",
+                    "reason": reason,
                     "dte": dte,
                     "qty": qty,
                     "option_type": parsed["option_type"],
