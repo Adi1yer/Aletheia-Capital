@@ -221,10 +221,10 @@ def test_enable_covered_calls_off_blocks_call_btc_prefer_roll_false():
 
     # Verify call was skipped
     call_results = [r for r in results if r.get("option_type") == "call"]
-    if len(call_results) > 0:
-        for r in call_results:
-            assert r.get("status") == "skipped"
-            assert "allow_call_closes=False_blocked" in r.get("reason", "")
+    assert len(call_results) >= 1, "Expected at least one call result"
+    for r in call_results:
+        assert r.get("status") == "skipped"
+        assert "allow_call_closes=False_blocked" in r.get("reason", "")
 
 
 
@@ -375,9 +375,8 @@ def test_enable_covered_calls_env_unset_blocks_call_closes(monkeypatch):
 
     # When ENABLE_COVERED_CALLS is unset and gate triggers, call operations are blocked
     call_results = [r for r in results if r.get("option_type") == "call"]
-    # Either results are empty or call results are blocked/skipped
-    if len(call_results) > 0:
-        for r in call_results:
-            assert r["status"] == "skipped"
-            assert "allow_call_closes=False_blocked" in r.get("reason", "")
+    assert len(call_results) >= 1, "Expected at least one call result"
+    for r in call_results:
+        assert r["status"] == "skipped"
+        assert "allow_call_closes=False_blocked" in r.get("reason", "")
 

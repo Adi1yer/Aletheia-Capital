@@ -419,75 +419,83 @@ def test_defensive_check_logs_error_when_put_btc_executed_with_flag_off(caplog):
     
     # Configure structlog to emit to standard logging so caplog can capture
     import structlog
-    structlog.configure(
-        processors=[
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-        ],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
-    )
     
-    broker = MockBroker(
-        option_positions=[],
-        submit_success=True,
-    )
-
-    mgr = CoveredCallManager(
-        min_premium_usd=10.0,
-        min_premium_pct=0.001,
-    )
-
-    # Set ENABLE_COVERED_CALLS=1 so calls aren't blocked
-    import os
-    old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    # Save original config
+    original_config = structlog.get_config()
+    
     try:
-        os.environ["ENABLE_COVERED_CALLS"] = "1"
+        structlog.configure(
+            processors=[
+                structlog.stdlib.add_log_level,
+                structlog.stdlib.PositionalArgumentsFormatter(),
+                structlog.processors.StackInfoRenderer(),
+                structlog.processors.format_exc_info,
+                structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+            ],
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
         
-        # Mock manage_short_options to return btc_executed for a put (simulating control breach)
-        fake_results = [
-            {
-                "contract_symbol": "NU261106P00015000",
-                "underlying": "NU",
-                "status": "btc_executed",
-                "reason": "put_near_itm",
-                "dte": 6,
-                "qty": 1,
-                "option_type": "put",
-                "order": {"id": "test-order-123"},
-            }
-        ]
+        broker = MockBroker(
+            option_positions=[],
+            submit_success=True,
+        )
+
+        mgr = CoveredCallManager(
+            min_premium_usd=10.0,
+            min_premium_pct=0.001,
+        )
+
+        # Set ENABLE_COVERED_CALLS=1 so calls aren't blocked
+        import os
+        old_val = os.environ.get("ENABLE_COVERED_CALLS")
+        try:
+            os.environ["ENABLE_COVERED_CALLS"] = "1"
+            
+            # Mock manage_short_options to return btc_executed for a put (simulating control breach)
+            fake_results = [
+                {
+                    "contract_symbol": "NU261106P00015000",
+                    "underlying": "NU",
+                    "status": "btc_executed",
+                    "reason": "put_near_itm",
+                    "dte": 6,
+                    "qty": 1,
+                    "option_type": "put",
+                    "order": {"id": "test-order-123"},
+                }
+            ]
+            
+            with patch("src.options.wheel_lifecycle.manage_short_options", return_value=fake_results):
+                with caplog.at_level(logging.ERROR, logger="src.options.wheel_lifecycle"):
+                    results = manage_or_roll_short_calls(
+                        broker,
+                        {"NU": 14.70},
+                        mgr,
+                        prefer_roll=False,
+                        execute=True,
+                        auto_put_buyback=False,
+                    )
+        finally:
+            if old_val is None:
+                os.environ.pop("ENABLE_COVERED_CALLS", None)
+            else:
+                os.environ["ENABLE_COVERED_CALLS"] = old_val
         
-        with patch("src.options.wheel_lifecycle.manage_short_options", return_value=fake_results):
-            with caplog.at_level(logging.ERROR, logger="src.options.wheel_lifecycle"):
-                results = manage_or_roll_short_calls(
-                    broker,
-                    {"NU": 14.70},
-                    mgr,
-                    prefer_roll=False,
-                    execute=True,
-                    auto_put_buyback=False,
-                )
+        # Verify ERROR log with symbol and order_id
+        error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(error_records) > 0, "Expected ERROR log record"
+        
+        # Check log contains symbol and order_id
+        error_msg = " ".join(str(r.getMessage()) for r in error_records)
+        assert "NU261106P00015000" in error_msg, "ERROR log must include symbol"
+        assert "test-order-123" in error_msg, "ERROR log must include order_id"
+        
+        # Verify status is KEPT as btc_executed (not relabeled)
+        put_results = [r for r in results if r.get("option_type") == "put"]
+        assert len(put_results) == 1
+        assert put_results[0]["status"] == "btc_executed", "Status must be kept as btc_executed to not hide the fill"
+        assert put_results[0]["contract_symbol"] == "NU261106P00015000"
     finally:
-        if old_val is None:
-            os.environ.pop("ENABLE_COVERED_CALLS", None)
-        else:
-            os.environ["ENABLE_COVERED_CALLS"] = old_val
-    
-    # Verify ERROR log with symbol and order_id
-    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
-    assert len(error_records) > 0, "Expected ERROR log record"
-    
-    # Check log contains symbol and order_id
-    error_msg = " ".join(str(r.getMessage()) for r in error_records)
-    assert "NU261106P00015000" in error_msg, "ERROR log must include symbol"
-    assert "test-order-123" in error_msg, "ERROR log must include order_id"
-    
-    # Verify status is KEPT as btc_executed (not relabeled)
-    put_results = [r for r in results if r.get("option_type") == "put"]
-    assert len(put_results) == 1
-    assert put_results[0]["status"] == "btc_executed", "Status must be kept as btc_executed to not hide the fill"
-    assert put_results[0]["contract_symbol"] == "NU261106P00015000"
+        # Reset structlog to original config
+        structlog.configure(**original_config)
