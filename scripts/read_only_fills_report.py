@@ -91,14 +91,14 @@ def get_positions(broker) -> List[Dict[str, Any]]:
                 current_price = None
             
             if current_price is None:
-                warnings.append(f"Option {opt.get('symbol')}: missing or invalid current_price/mark_price (excluded from NAV)")
+                warnings.append(f"Option {opt.get('symbol')}: missing or invalid mark price")
             
             positions.append({
                 "type": "option",
                 "symbol": opt.get("symbol"),
                 "side": opt.get("side"),
                 "qty": qty,
-                "market_value": float(opt.get("market_value") or 0.0),
+                "market_value": opt.get("market_value"),  # Keep None if mark missing
                 "avg_entry_price": float(
                     opt.get("avg_entry_price") or opt.get("avg_entry") or 0.0
                 ),
@@ -255,34 +255,76 @@ def main() -> int:
             side = f" ({pos['side']})" if pos.get("side") else ""
             current_price = pos.get("current_price")
             mark_str = "n/a" if current_price is None else format_currency(current_price)
+            
+            # Market value: show n/a if None (missing mark), otherwise format
+            market_value = pos.get("market_value")
+            mv_str = "n/a" if market_value is None else format_currency(float(market_value))
+            
             print(
                 f"  {pos['type'].upper():8s} {pos['symbol']:25s}{side:10s} "
-                f"qty={pos['qty']:8.2f}  mv={format_currency(pos['market_value']):>12s}  "
+                f"qty={pos['qty']:8.2f}  mv={mv_str:>12s}  "
                 f"entry={format_currency(pos['avg_entry_price']):>10s}  "
                 f"mark={mark_str:>10s}"
             )
-        
-        # Add explicit position status lines for specific tickers requested in #46
-        import re
-        nu_equity = next((p for p in positions if p.get("symbol") == "NU" and p.get("type") == "equity"), None)
-        # Match any NU option: OCC format NU + 6 digits + C/P + 8 digits
-        nu_option = next((p for p in positions if p.get("type") == "option" and re.match(r'^NU\d{6}[CP]', p.get("symbol", ""))), None)
-        cpng_equity = next((p for p in positions if p.get("symbol") == "CPNG" and p.get("type") == "equity"), None)
-        
-        print()
-        if nu_equity and nu_option:
-            print(f"  NU: OPEN (equity qty={nu_equity['qty']:.0f}, short put qty={nu_option['qty']:.0f})")
-        elif nu_equity:
-            print(f"  NU: OPEN (equity qty={nu_equity['qty']:.0f}, no short put)")
-        elif nu_option:
-            print(f"  NU: OPEN (no equity, short put qty={nu_option['qty']:.0f})")
+    
+    # Compute NAV: cash + sum of position market values (excluding n/a marks)
+    nav = account['cash']
+    excluded_contracts = []
+    for pos in positions:
+        mv = pos.get("market_value")
+        if mv is not None:
+            try:
+                nav += float(mv)
+            except (TypeError, ValueError):
+                excluded_contracts.append(pos.get("symbol"))
         else:
-            print("  NU: FLAT")
-        
-        if cpng_equity:
-            print(f"  CPNG cost basis: {format_currency(cpng_equity['avg_entry_price'])} (qty={cpng_equity['qty']:.0f})")
-        else:
-            print("  CPNG cost basis: (No position)")
+            excluded_contracts.append(pos.get("symbol"))
+    
+    print()
+    if excluded_contracts:
+        excluded_str = ", ".join(excluded_contracts)
+        print(f"  NAV (PROVISIONAL, excludes: {excluded_str}): {format_currency(nav)}")
+    else:
+        print(f"  NAV: {format_currency(nav)}")
+    
+    # Add explicit position status lines for specific tickers requested in #46
+    import re
+    nu_equity = next((p for p in positions if p.get("symbol") == "NU" and p.get("type") == "equity"), None)
+    # Match any NU option: OCC format NU + 6 digits + C/P + 8 digits
+    nu_options = [p for p in positions if p.get("type") == "option" and re.match(r'^NU\d{6}[CP]', p.get("symbol", ""))]
+    cpng_equity = next((p for p in positions if p.get("symbol") == "CPNG" and p.get("type") == "equity"), None)
+    
+    print()
+    if nu_equity and nu_options:
+        option_desc = []
+        for opt in nu_options:
+            symbol = opt.get("symbol", "")
+            # Parse OCC format: NU261106P00015000 -> 'P' is put, 'C' is call
+            opt_type = "call" if 'C' in symbol[8:9] else "put"
+            side = opt.get("side", "unknown")
+            qty = opt.get("qty", 0)
+            option_desc.append(f"{symbol} ({side} {opt_type}, qty={qty:.0f})")
+        opts_str = "; ".join(option_desc)
+        print(f"  NU: OPEN (equity qty={nu_equity['qty']:.0f}, options: {opts_str})")
+    elif nu_equity:
+        print(f"  NU: OPEN (equity qty={nu_equity['qty']:.0f}, no options)")
+    elif nu_options:
+        option_desc = []
+        for opt in nu_options:
+            symbol = opt.get("symbol", "")
+            opt_type = "call" if 'C' in symbol[8:9] else "put"
+            side = opt.get("side", "unknown")
+            qty = opt.get("qty", 0)
+            option_desc.append(f"{symbol} ({side} {opt_type}, qty={qty:.0f})")
+        opts_str = "; ".join(option_desc)
+        print(f"  NU: OPEN (no equity, options: {opts_str})")
+    else:
+        print("  NU: FLAT")
+    
+    if cpng_equity:
+        print(f"  CPNG cost basis: {format_currency(cpng_equity['avg_entry_price'])} (qty={cpng_equity['qty']:.0f})")
+    else:
+        print("  CPNG cost basis: (No position)")
     print()
 
     # Fills for date
@@ -314,8 +356,10 @@ def main() -> int:
     if not fills:
         print("  (No fills on this date)")
     else:
-        # Validate all fills have filled_avg_price
+        # Check for missing prices
         missing_price_fills = [f for f in fills if f.get("filled_avg_price") is None]
+        has_errors = False
+        
         if missing_price_fills:
             print("ERROR: The following fills are missing filled_avg_price:", file=sys.stderr)
             for f in missing_price_fills:
@@ -325,38 +369,49 @@ def main() -> int:
                     file=sys.stderr
                 )
             print("ERROR: Cannot compute cash impact without fill prices.", file=sys.stderr)
-            return 1
+            has_errors = True
         
+        # Always print fills, even if some are missing prices
         total_cash_impact = 0.0
         for fill in sorted(fills, key=lambda f: f.get("filled_at") or ""):
             symbol = fill["symbol"]
             side = fill["side"]
             qty = fill["qty"]
-            price = fill["filled_avg_price"]
+            price = fill.get("filled_avg_price")
             filled_at = fill.get("filled_at") or "unknown"
             order_id = fill.get("order_id") or "unknown"
             
-            # Calculate cash impact (buy = negative, sell = positive)
-            # For options: price is per-share, multiply by 100 * qty
-            if "symbol" in fill and len(symbol or "") > 10:  # Heuristic for option symbol
-                cash_impact = price * 100.0 * qty * (1 if side == "sell" else -1)
+            # Format price and cash impact
+            if price is not None:
+                price_str = format_currency(price)
+                # Calculate cash impact (buy = negative, sell = positive)
+                # For options: price is per-share, multiply by 100 * qty
+                if "symbol" in fill and len(symbol or "") > 10:  # Heuristic for option symbol
+                    cash_impact = price * 100.0 * qty * (1 if side == "sell" else -1)
+                else:
+                    cash_impact = price * qty * (1 if side == "sell" else -1)
+                total_cash_impact += cash_impact
+                impact_str = format_currency(cash_impact)
             else:
-                cash_impact = price * qty * (1 if side == "sell" else -1)
-            
-            total_cash_impact += cash_impact
+                price_str = "n/a"
+                impact_str = "n/a"
             
             print(
                 f"  {filled_at[:19]:19s}  {side.upper():4s}  {symbol:25s}  "
-                f"qty={qty:8.2f}  price={format_currency(price):>10s}  "
-                f"cash_impact={format_currency(cash_impact):>12s}  "
+                f"qty={qty:8.2f}  price={price_str:>10s}  "
+                f"cash_impact={impact_str:>12s}  "
                 f"order_id={order_id[:8]}"
             )
         
         print()
-        print(f"Total cash impact for {target_date}: {format_currency(total_cash_impact)}")
-        print()
-        print("NOTE: Fees are not included in cash impact calculations, so total may")
-        print("      not reconcile exactly to account cash changes.")
+        if not has_errors:
+            print(f"Total cash impact for {target_date}: {format_currency(total_cash_impact)}")
+            print()
+            print("NOTE: Fees are not included in cash impact calculations, so total may")
+            print("      not reconcile exactly to account cash changes.")
+        
+        if has_errors:
+            return 1
     
     print()
     print("=" * 80)

@@ -242,6 +242,7 @@ def test_read_only_report_fills_fetch_failure_exits_nonzero():
     
     import sys
     from io import StringIO
+    from datetime import date
     
     with patch("sys.argv", ["script", "--date", "2026-10-14"]):
         with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
@@ -254,6 +255,11 @@ def test_read_only_report_fills_fetch_failure_exits_nonzero():
     
     # Verify non-zero exit
     assert exit_code == 1
+    
+    # Verify get_recent_orders was called with strict=True
+    assert mock_broker.get_recent_orders.called
+    call_kwargs = mock_broker.get_recent_orders.call_args[1]
+    assert call_kwargs.get("strict") is True, "get_recent_orders must be called with strict=True"
     
     # Verify ERROR message
     error_output = captured_error.getvalue()
@@ -838,3 +844,217 @@ def test_read_only_report_detects_any_nu_option():
     stdout_output = captured_output.getvalue()
     assert "NU: OPEN" in stdout_output
     assert "NU271215C00020000" in stdout_output
+
+
+def test_read_only_report_empty_book_shows_nu_cpng_lines():
+    """Report with empty book must still show NU: FLAT and CPNG: none lines."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {}
+    mock_broker.get_option_positions.return_value = []
+    mock_broker.get_recent_orders.return_value = []
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            with patch("sys.stdout", captured_output):
+                from scripts.read_only_fills_report import main
+                exit_code = main()
+    
+    # Should exit 0
+    assert exit_code == 0
+    
+    # Verify NU and CPNG lines appear even with empty book
+    stdout_output = captured_output.getvalue()
+    assert "NU: FLAT" in stdout_output
+    assert "CPNG cost basis: (No position)" in stdout_output or "CPNG" in stdout_output
+
+
+def test_read_only_report_option_no_mark_with_fills_shows_provisional_nav():
+    """Option with no mark plus real fills: fills print, exit 0, PROVISIONAL NAV."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {}
+    mock_broker.get_option_positions.return_value = [
+        {
+            "symbol": "AAPL261106C00150000",
+            "side": "short",
+            "qty": 1,
+            "market_value": None,  # No mark available
+            "avg_entry_price": 5.0,
+            "current_price": None,
+            "mark_price": None,
+        }
+    ]
+    mock_broker.get_recent_orders.return_value = [
+        {
+            "id": "test-fill-1",
+            "symbol": "MSFT",
+            "side": "buy",
+            "filled_qty": 10,
+            "filled_avg_price": 400.0,
+            "filled_at": "2026-10-14T18:00:00Z",
+            "status": "filled",
+        }
+    ]
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            captured_error = StringIO()
+            with patch("sys.stdout", captured_output):
+                with patch("sys.stderr", captured_error):
+                    from scripts.read_only_fills_report import main
+                    exit_code = main()
+    
+    # Should exit 0 (option missing mark is WARNING, not ERROR)
+    assert exit_code == 0
+    
+    stdout_output = captured_output.getvalue()
+    
+    # Verify fills printed
+    assert "FILLS ON" in stdout_output
+    assert "MSFT" in stdout_output
+    assert "test-fill-1" in stdout_output[:8] or "test-fil" in stdout_output
+    
+    # Verify PROVISIONAL NAV with excluded contract
+    assert "NAV (PROVISIONAL" in stdout_output
+    assert "AAPL261106C00150000" in stdout_output
+    
+    # Verify option position shows mv=n/a
+    assert "mv=         n/a" in stdout_output or "mv=n/a" in stdout_output
+
+
+def test_read_only_report_fill_missing_price_prints_row_with_na():
+    """Fill missing price: row printed with price=n/a, exit 1."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {}
+    mock_broker.get_option_positions.return_value = []
+    mock_broker.get_recent_orders.return_value = [
+        {
+            "id": "missing-price-fill",
+            "symbol": "TSLA",
+            "side": "sell",
+            "filled_qty": 5,
+            "filled_avg_price": None,  # Missing price
+            "filled_at": "2026-10-14T19:00:00Z",
+            "status": "filled",
+        },
+        {
+            "id": "good-fill",
+            "symbol": "AAPL",
+            "side": "buy",
+            "filled_qty": 10,
+            "filled_avg_price": 150.0,
+            "filled_at": "2026-10-14T18:00:00Z",
+            "status": "filled",
+        }
+    ]
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            captured_error = StringIO()
+            with patch("sys.stdout", captured_output):
+                with patch("sys.stderr", captured_error):
+                    from scripts.read_only_fills_report import main
+                    exit_code = main()
+    
+    # Should exit 1 (missing price is ERROR)
+    assert exit_code == 1
+    
+    stdout_output = captured_output.getvalue()
+    error_output = captured_error.getvalue()
+    
+    # Verify ERROR in stderr
+    assert "ERROR" in error_output
+    assert "missing filled_avg_price" in error_output
+    
+    # Verify both fills printed (including the one with missing price)
+    assert "TSLA" in stdout_output
+    assert "AAPL" in stdout_output
+    
+    # Verify TSLA fill shows price=n/a
+    tsla_line = [line for line in stdout_output.split('\n') if 'TSLA' in line and 'SELL' in line][0]
+    assert "price=       n/a" in tsla_line or "price=n/a" in tsla_line
+    
+    # Verify AAPL fill shows actual price
+    aapl_line = [line for line in stdout_output.split('\n') if 'AAPL' in line and 'BUY' in line][0]
+    assert "$150.00" in aapl_line
+
+
+def test_read_only_report_nu_call_labeled_correctly():
+    """NU call option must be labeled as 'call', not 'put'."""
+    
+    mock_broker = MagicMock()
+    mock_broker.get_account.return_value = {
+        "cash": 10000.0,
+        "equity": 15000.0,
+        "buying_power": 20000.0,
+    }
+    mock_broker.get_positions.return_value = {
+        "NU": {
+            "qty": 100,
+            "market_value": 1450.0,
+            "avg_entry_price": 14.50,
+            "current_price": 14.50,
+        }
+    }
+    # NU call option (note the 'C' in position 8)
+    mock_broker.get_option_positions.return_value = [
+        {
+            "symbol": "NU271215C00020000",  # Call, not put
+            "side": "long",
+            "qty": 1,
+            "market_value": 100.0,
+            "avg_entry_price": 1.00,
+            "current_price": 1.00,
+        }
+    ]
+    mock_broker.get_recent_orders.return_value = []
+    
+    import sys
+    from io import StringIO
+    
+    with patch("sys.argv", ["script", "--date", "2026-10-14"]):
+        with patch("src.broker.alpaca.AlpacaBroker", return_value=mock_broker):
+            captured_output = StringIO()
+            with patch("sys.stdout", captured_output):
+                from scripts.read_only_fills_report import main
+                exit_code = main()
+    
+    # Should exit 0
+    assert exit_code == 0
+    
+    stdout_output = captured_output.getvalue()
+    
+    # Verify NU line shows "call" (not "put") and "long" side
+    assert "NU: OPEN" in stdout_output
+    assert "NU271215C00020000" in stdout_output
+    assert "long call" in stdout_output
+    assert "short put" not in stdout_output  # Must not hardcode "short put"
