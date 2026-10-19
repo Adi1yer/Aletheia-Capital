@@ -1519,27 +1519,30 @@ def test_cc_go_gate_allows_opens(monkeypatch):
     for env_value in ["1", "true", "True", "TRUE", "yes", "YES"]:
         monkeypatch.setenv("ENABLE_COVERED_CALLS", env_value)
         
-        class _Broker:
-            def sync_portfolio(self):
-                return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
-            
-            def get_option_positions(self):
-                return []
-            
-            def get_option_contracts(self, **kwargs):
-                return [
-                    {
-                        "symbol": "F261115C00012600",
-                        "underlying": "F",
-                        "strike": 12.60,
-                        "expiry": "2026-11-15",
-                        "tradable": True,
-                        "mid_price": 0.25,
-                    }
-                ]
-            
-            def submit_option_order(self, **kwargs):
-                return {"submitted": True, "fill_ok": True, "order_id": "test-order"}
+            class _Broker:
+                def sync_portfolio(self):
+                    return Portfolio(cash=1000.0, positions={"F": Position(long=100, long_cost_basis=12.0)})
+
+                def get_option_positions(self):
+                    return []
+
+                def get_open_orders(self, **kwargs):
+                    return []
+
+                def get_option_contracts(self, **kwargs):
+                    return [
+                        {
+                            "symbol": "F261115C00012600",
+                            "underlying": "F",
+                            "strike": 12.60,
+                            "expiry": "2026-11-15",
+                            "tradable": True,
+                            "mid_price": 0.25,
+                        }
+                    ]
+
+                def submit_option_order(self, **kwargs):
+                    return {"submitted": True, "fill_ok": True, "order_id": "test-order"}
         
         mgr = CoveredCallManager(min_premium_usd=10.0)
         results = mgr.execute_covered_calls(
