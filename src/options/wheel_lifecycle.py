@@ -152,6 +152,7 @@ def manage_short_options(
     profit_take_pct: float = 0.60,
     execute: bool = True,
     allow_put_closes: bool = True,
+    allow_call_closes: bool = True,
 ) -> List[Dict[str, Any]]:
     """Buy-to-close short options that are near expiry, near ITM, or profit-taken."""
     results: List[Dict[str, Any]] = []
@@ -229,6 +230,24 @@ def manage_short_options(
                     "underlying": und,
                     "status": "skipped",
                     "reason": f"allow_put_closes=False_blocked_{reason}",
+                    "dte": dte,
+                    "qty": qty,
+                    "option_type": parsed["option_type"],
+                    "btc_cost_usd": round(btc_cost_usd, 2),
+                    "strike": float(parsed["strike"]),
+                    "profit_pct": profit_pct,
+                }
+            )
+            continue
+
+        # Block call closes when not allowed, even in dry-run mode
+        if parsed["option_type"] == "call" and not allow_call_closes:
+            results.append(
+                {
+                    "contract_symbol": symbol,
+                    "underlying": und,
+                    "status": "skipped",
+                    "reason": f"allow_call_closes=False_blocked_{reason}",
                     "dte": dte,
                     "qty": qty,
                     "option_type": parsed["option_type"],
@@ -330,6 +349,48 @@ def manage_or_roll_short_calls(
         auto_put_buyback: If False, skip all put BTC (log SKIPPED status). Default False.
     """
     from src.options.covered_calls import _contract_premium_usd, _finite_px, coverage_sto_qty, live_coverage_sto_qty
+    import os
+
+    # Hard gate: ENABLE_COVERED_CALLS enforcement for call rolls
+    # When off, no call BTC or STO orders may be submitted
+    enable_cc_ops = os.environ.get("ENABLE_COVERED_CALLS", "").strip().lower()
+    enable_call_closes = enable_cc_ops in ("1", "true", "yes")
+    
+    if not enable_call_closes and execute:
+        logger.warning(
+            "CC rolls blocked by ENABLE_COVERED_CALLS gate",
+            enable_covered_calls=enable_cc_ops or "(unset)",
+        )
+        # Still process puts, but skip all call operations
+        base = manage_short_options(
+            broker,
+            current_prices,
+            manage_dte_threshold=manage_dte_threshold,
+            manage_itm_pct=manage_itm_pct,
+            profit_take_pct=profit_take_pct,
+            execute=execute,
+            allow_put_closes=auto_put_buyback,
+            allow_call_closes=False,  # Block all call closes
+        )
+        results: List[Dict[str, Any]] = []
+        for row in base:
+            # Defensive check for puts
+            if str(row.get("option_type") or "") == "put":
+                if row.get("status") == "btc_executed" and not auto_put_buyback:
+                    logger.error(
+                        "Put BTC executed with auto_put_buyback=False (control breach)",
+                        contract=row.get("contract_symbol"),
+                        order_id=row.get("order", {}).get("id") if isinstance(row.get("order"), dict) else None,
+                        auto_put_buyback=auto_put_buyback,
+                    )
+            
+            results.append(row)
+        
+        logger.info(
+            "Wheel manage_or_roll complete (CC rolls blocked)",
+            n=len(results),
+        )
+        return results
 
     # SPECIAL PATH: execute=True + prefer_roll — check debit cap BEFORE BTC
     if execute and prefer_roll:
@@ -341,6 +402,7 @@ def manage_or_roll_short_calls(
             manage_itm_pct=manage_itm_pct,
             profit_take_pct=profit_take_pct,
             execute=False,
+            allow_call_closes=True,  # Don't block in dry-run phase
         )
         
         results: List[Dict[str, Any]] = []
@@ -770,9 +832,21 @@ def manage_or_roll_short_calls(
         profit_take_pct=profit_take_pct,
         execute=execute,
         allow_put_closes=auto_put_buyback,
+        allow_call_closes=enable_call_closes,  # Respect ENABLE_COVERED_CALLS gate
     )
     results: List[Dict[str, Any]] = []
     for row in base:
+        # Defensive check: if put BTC executed while auto_put_buyback=False, log ERROR but keep status
+        if str(row.get("option_type") or "") == "put":
+            if row.get("status") == "btc_executed" and not auto_put_buyback:
+                logger.error(
+                    "Put BTC executed with auto_put_buyback=False (control breach)",
+                    contract=row.get("contract_symbol"),
+                    order_id=row.get("order", {}).get("id") if isinstance(row.get("order"), dict) else None,
+                    auto_put_buyback=auto_put_buyback,
+                )
+                # KEEP status as btc_executed - never hide a real fill
+        
         results.append(row)
         if not prefer_roll:
             continue
