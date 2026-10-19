@@ -369,8 +369,13 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
         action_n += 1
 
     manage = results.get("wheel_manage_results") or []
+    cc_hold_count = 0
     for r in manage:
         st = str(r.get("status") or "")
+        reason = str(r.get("reason") or "")
+        if st == "skipped" and "allow_call_closes=False_blocked_" in reason:
+            cc_hold_count += 1
+            continue
         if st in ("hold", "within_band", ""):
             continue
         if st == "hold" or r.get("reason") == "within_band":
@@ -415,6 +420,10 @@ def build_wheel_daily_email(results: dict) -> Tuple[str, str, str]:
                 f"→ {r.get('agent_action') or 'pending'}"
             )
             action_n += 1
+    
+    if cc_hold_count > 0:
+        lines.append(f"  CC HOLD: skipped {cc_hold_count} call close/roll (ENABLE_COVERED_CALLS=0)")
+        action_n += 1
 
     cc_results = results.get("covered_call_results") or []
     for r in cc_results:
