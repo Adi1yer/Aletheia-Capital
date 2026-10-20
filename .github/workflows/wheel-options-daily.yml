@@ -126,7 +126,33 @@ jobs:
           AUTO_PUT_BUYBACK: '0'
           AUTO_PUT_BUYBACK_MAX_PER_CONTRACT: '500'
           AUTO_PUT_BUYBACK_MAX_TOTAL: '2000'
+          # Concentration auto-trim: disabled by default (CRO must configure and enable)
+          ENABLE_CONCENTRATION_TRIM: '0'
+          CONCENTRATION_TRIM_THRESHOLD_PCT: '0.25'
+          CONCENTRATION_TRIM_TARGET_PCT: '0.20'
+          CONCENTRATION_TRIM_MIN_SHARES: '10'
+          CONCENTRATION_TRIM_ORDER_TYPE: 'market'
+          CONCENTRATION_TRIM_MAX_PER_DAY: '2'
+          CONCENTRATION_TRIM_CADENCE_HOURS: '24'
         run: poetry run python scripts/manage_wheel_options.py
+
+      - name: Concentration auto-trim check (disabled by default)
+        if: github.event_name == 'workflow_dispatch' || steps.once.outputs.already_ran != 'true'
+        continue-on-error: true
+        env:
+          LOG_LEVEL: INFO
+          ENABLE_CONCENTRATION_TRIM: '0'
+          CONCENTRATION_TRIM_THRESHOLD_PCT: '0.25'
+          CONCENTRATION_TRIM_TARGET_PCT: '0.20'
+          CONCENTRATION_TRIM_MIN_SHARES: '10'
+          CONCENTRATION_TRIM_ORDER_TYPE: 'market'
+          CONCENTRATION_TRIM_MAX_PER_DAY: '2'
+          CONCENTRATION_TRIM_CADENCE_HOURS: '24'
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+        run: poetry run python scripts/concentration_auto_trim.py --execute
 
       - name: Skipped — already ran today (ET)
         if: (github.event_name == 'schedule' || github.event_name == 'repository_dispatch') && steps.once.outputs.already_ran == 'true'
