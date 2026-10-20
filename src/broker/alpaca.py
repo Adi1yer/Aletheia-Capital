@@ -204,33 +204,69 @@ class AlpacaBroker:
             logger.warning("Equity quote backfill failed", error=str(e))
         return out
 
-    def get_open_orders(self, limit: int = 50) -> List[Dict]:
-        """Get open (pending) orders from Alpaca."""
+    def get_open_orders(self, limit: int = 500) -> List[Dict]:
+        """
+        Get open (pending) orders from Alpaca (paginated, fail-closed).
+        
+        Raises BrokerDataError on fetch failure so callers can distinguish
+        unavailable data from an empty book. Paginates past 100 orders.
+        """
+        all_orders: List[Dict] = []
+        max_per_page = 100  # Alpaca API limit per request
+        
         try:
-            req = GetOrdersRequest(status="open", limit=limit)
-            orders = self.client.get_orders(req)
-            return [
-                {
-                    "id": str(o.id),
-                    "symbol": o.symbol,
-                    "side": getattr(o.side, "value", str(o.side)).lower(),
-                    "qty": int(float(o.qty)) if o.qty else 0,
-                    "filled_qty": int(float(o.filled_qty))
-                    if getattr(o, "filled_qty", None) is not None
-                    else 0,
-                    "status": getattr(o.status, "value", str(o.status)).lower(),
-                    "submitted_at": str(o.submitted_at)
-                    if hasattr(o, "submitted_at") and o.submitted_at
-                    else None,
-                    "type": getattr(o.type, "value", str(o.type)).lower()
-                    if hasattr(o, "type")
-                    else "market",
-                }
-                for o in (orders or [])
-            ]
+            pages_fetched = 0
+            while len(all_orders) < limit:
+                page_limit = min(max_per_page, limit - len(all_orders))
+                req = GetOrdersRequest(status="open", limit=page_limit)
+                
+                orders = alpaca_call_with_retry(
+                    lambda: self.client.get_orders(req),
+                    op="get_open_orders",
+                )
+                
+                if not orders:
+                    break
+                
+                for o in orders:
+                    all_orders.append({
+                        "id": str(o.id),
+                        "symbol": o.symbol,
+                        "side": getattr(o.side, "value", str(o.side)).lower(),
+                        "qty": int(float(o.qty)) if o.qty else 0,
+                        "filled_qty": int(float(o.filled_qty))
+                        if getattr(o, "filled_qty", None) is not None
+                        else 0,
+                        "status": getattr(o.status, "value", str(o.status)).lower(),
+                        "submitted_at": str(o.submitted_at)
+                        if hasattr(o, "submitted_at") and o.submitted_at
+                        else None,
+                        "type": getattr(o.type, "value", str(o.type)).lower()
+                        if hasattr(o, "type")
+                        else "market",
+                    })
+                
+                pages_fetched += 1
+                
+                # Stop if we got fewer than requested (last page)
+                if len(orders) < page_limit:
+                    break
+                
+                # Safety: stop after reasonable page count
+                if pages_fetched >= 10:
+                    logger.warning(
+                        "Open orders pagination stopped at safety limit",
+                        pages=pages_fetched,
+                        fetched=len(all_orders),
+                    )
+                    break
+            
+            logger.info("Fetched open orders", count=len(all_orders), pages=pages_fetched)
+            return all_orders
+            
         except Exception as e:
-            logger.error("Error fetching open orders", error=str(e))
-            return []
+            logger.error("Error fetching open orders (fail-closed)", error=str(e))
+            raise BrokerDataError(f"open orders unavailable: {e}") from e
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a single order by id. Returns True on success."""
@@ -242,11 +278,15 @@ class AlpacaBroker:
             logger.warning("Cancel order failed", order_id=str(order_id), error=str(e))
             return False
 
-    def cancel_stale_orders(self, *, max_age_hours: float = 48.0, limit: int = 50) -> Dict[str, Any]:
-        """Cancel open orders older than max_age_hours (pending hygiene)."""
+    def cancel_stale_orders(self, *, max_age_hours: float = 48.0, limit: int = 500) -> Dict[str, Any]:
+        """
+        Cancel open orders older than max_age_hours (pending hygiene).
+        
+        Raises BrokerDataError if orders cannot be fetched (fail-closed).
+        """
         from datetime import datetime, timezone
 
-        open_orders = self.get_open_orders(limit=limit)
+        open_orders = self.get_open_orders(limit=limit)  # May raise BrokerDataError
         cancelled = []
         skipped = []
         now = datetime.now(timezone.utc)

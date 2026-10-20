@@ -55,7 +55,17 @@ class CashSecuredPutManager:
         current_price: float,
         csp_score: int,
         broker: "AlpacaBroker",
+        *,
+        equity: Optional[float] = None,
+        positions: Optional[Dict[str, Dict]] = None,
+        current_prices: Optional[Dict[str, float]] = None,
+        max_position_pct: float = 25.0,
     ) -> Optional[Dict]:
+        """
+        Select a put contract for cash-secured put.
+        
+        Rejects puts whose assignment would breach max_position_pct concentration.
+        """
         try:
             current_price = float(current_price)
         except (TypeError, ValueError):
@@ -117,6 +127,30 @@ class CashSecuredPutManager:
                 continue
             if collateral > 0 and est_prem / collateral < self.min_premium_pct:
                 continue
+            
+            # Concentration gate: reject if assignment would breach max_position_pct
+            if equity and positions is not None and current_prices is not None:
+                from src.risk.concentration import check_put_assignment_gate
+                strike = float(best.get("strike") or 0)
+                allowed, reason = check_put_assignment_gate(
+                    ticker=underlying,
+                    strike=strike,
+                    put_qty=1,  # Standard 1-contract selection
+                    current_price=current_price,
+                    positions=positions,
+                    current_prices=current_prices,
+                    equity=equity,
+                    threshold_pct=max_position_pct,
+                )
+                if not allowed:
+                    logger.info(
+                        "Put rejected by concentration gate",
+                        underlying=underlying,
+                        strike=strike,
+                        reason=reason,
+                    )
+                    continue
+            
             return best
 
         logger.info(
@@ -137,6 +171,9 @@ class CashSecuredPutManager:
         wait_fill: bool = True,
         collateral_already_used_usd: float = 0.0,
         option_positions: Optional[List[Dict]] = None,
+        equity: Optional[float] = None,
+        positions: Optional[Dict[str, Dict]] = None,
+        max_position_pct: float = 25.0,
     ) -> List[Dict]:
         results: List[Dict] = []
         
@@ -299,7 +336,13 @@ class CashSecuredPutManager:
                     }
                 )
                 continue
-            contract = self.select_put_contract(und, price, score, broker)
+            contract = self.select_put_contract(
+                und, price, score, broker,
+                equity=equity,
+                positions=positions,
+                current_prices=current_prices,
+                max_position_pct=max_position_pct,
+            )
             if not contract:
                 results.append({"underlying": und, "status": "skipped", "reason": "no contract"})
                 continue
