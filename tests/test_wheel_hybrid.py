@@ -1526,6 +1526,9 @@ def test_cc_go_gate_allows_opens(monkeypatch):
             def get_option_positions(self):
                 return []
             
+            def get_open_orders(self, **kwargs):
+                return []
+            
             def get_option_contracts(self, **kwargs):
                 return [
                     {

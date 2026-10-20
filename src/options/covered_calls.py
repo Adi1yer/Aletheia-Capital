@@ -16,6 +16,8 @@ logger = structlog.get_logger()
 
 CC_LOT_SIZE = 100
 CC_HOLD_OPENS_BLOCKED = "cc_hold_opens_blocked"
+STRIKE_BELOW_COST_BASIS = "strike_below_cost_basis"
+COST_BASIS_UNAVAILABLE = "cost_basis_unavailable"
 
 
 def _long_qty(portfolio: "Portfolio", ticker: str) -> int:
@@ -39,6 +41,28 @@ def _finite_px(value) -> float:
     if not math.isfinite(px) or px <= 0:
         return 0.0
     return px
+
+
+def _stock_cost_basis(portfolio: "Portfolio", ticker: str) -> Optional[float]:
+    """Return the cost basis (avg entry price) for a stock position, or None if unavailable."""
+    ticker = str(ticker or "").upper()
+    if not ticker:
+        return None
+    
+    positions = getattr(portfolio, "positions", None) or {}
+    pos = positions.get(ticker)
+    
+    if pos is None:
+        return None
+    
+    try:
+        basis = float(getattr(pos, "long_cost_basis", 0) or 0)
+        if basis > 0 and math.isfinite(basis):
+            return basis
+    except (TypeError, ValueError, AttributeError):
+        pass
+    
+    return None
 
 
 def _option_qty(op: Optional[Dict]) -> int:
@@ -223,10 +247,13 @@ def coverage_sto_qty(
 
 
 def live_coverage_sto_qty(broker: "AlpacaBroker", underlying: str, requested: int) -> int:
-    """Coverage-capped STO qty from live broker portfolio + short calls.
+    """Coverage-capped STO qty from live broker portfolio + short calls + pending orders.
 
     Fail closed: if option positions cannot be fetched, return 0 (never assume
     short_q=0 and open a naked / overhedged short).
+    
+    Counts both filled short calls AND unfilled sell-to-open call orders toward the cap
+    so nothing can be naked.
     """
     und = str(underlying or "").upper()
     req = max(0, int(requested or 0))
@@ -242,6 +269,18 @@ def live_coverage_sto_qty(broker: "AlpacaBroker", underlying: str, requested: in
     except Exception:
         return 0
     short_q = int(short_call_qty_by_underlying(opts or []).get(und) or 0)
+    
+    # Fail closed: if broker lacks get_open_orders or fetch fails, return 0
+    # (never assume pending_q=0 and allow overhedge)
+    if not hasattr(broker, "get_open_orders"):
+        return 0
+    try:
+        open_orders = broker.get_open_orders(limit=100)
+        working_q = int(_working_short_calls(open_orders).get(und) or 0)
+        short_q += working_q
+    except Exception:
+        return 0
+    
     return coverage_sto_qty(shares, short_q, req)
 
 
@@ -570,6 +609,22 @@ class CoveredCallManager:
                     }
                 )
                 continue
+            
+            cost_basis = _stock_cost_basis(portfolio, ticker)
+            if cost_basis is None or cost_basis <= 0:
+                logger.warning(
+                    "CC write skipped — cost basis unavailable (fail closed)",
+                    ticker=ticker,
+                    cost_basis=cost_basis,
+                )
+                results.append(
+                    {
+                        "underlying": ticker,
+                        "status": "skipped",
+                        "reason": COST_BASIS_UNAVAILABLE,
+                    }
+                )
+                continue
 
             lots = int(cand["callable_lots"])
             have0 = int(cand.get("short_calls_have") or 0)
@@ -593,16 +648,42 @@ class CoveredCallManager:
                     if not last_reason:
                         last_reason = "coverage_slots_unavailable"
                     break
+                
                 floor = None
                 if existing_strikes:
                     mx = max(existing_strikes)
                     floor = max(0.0, (mx / price) - 1.0 + 0.005)
+                
+                basis_floor_otm = None
+                if cost_basis > 0 and price > 0:
+                    basis_floor_otm = max(0.0, (cost_basis / price) - 1.0)
+                    if floor is None:
+                        floor = basis_floor_otm
+                    else:
+                        floor = max(floor, basis_floor_otm)
+                
                 contract, reason = self.select_contract(
                     ticker, price, score, broker, strike_floor_otm=floor
                 )
                 last_reason = reason or last_reason
                 if contract is None:
                     break
+                
+                if cost_basis > 0:
+                    try:
+                        strike = float(contract.get("strike") or 0)
+                        if strike < cost_basis - 1e-6:
+                            logger.warning(
+                                "CC write skipped — strike below cost basis",
+                                ticker=ticker,
+                                strike=strike,
+                                cost_basis=cost_basis,
+                            )
+                            last_reason = STRIKE_BELOW_COST_BASIS
+                            break
+                    except (TypeError, ValueError):
+                        pass
+                
                 last_contract = contract
                 order = broker.submit_option_order(
                     contract_symbol=contract["symbol"],
@@ -713,6 +794,9 @@ def tickers_needing_atomic_unwind(
         # Gate/flag-driven skips must never trigger a sale.
         if reason == CC_HOLD_OPENS_BLOCKED:
             continue
+        # Cost basis floor skips must never trigger a sale (fail-closed safeguards).
+        if reason in (STRIKE_BELOW_COST_BASIS, COST_BASIS_UNAVAILABLE):
+            continue
         # Transient data / premium miss — leave lot for afternoon or next session.
         if reason in ("invalid_price", "no_contract_met_premium"):
             continue
@@ -746,6 +830,8 @@ def cc_write_attempted_tickers(cc_results: Optional[List[Dict]] = None) -> Set[s
         "insufficient_shares_for_lot",
         "already_has_short_call",
         CC_HOLD_OPENS_BLOCKED,
+        STRIKE_BELOW_COST_BASIS,
+        COST_BASIS_UNAVAILABLE,
         "coverage_slots",
         "cc_score_below_threshold",
         "option_positions_unavailable",

@@ -351,15 +351,24 @@ def manage_or_roll_short_calls(
     from src.options.covered_calls import _contract_premium_usd, _finite_px, coverage_sto_qty, live_coverage_sto_qty
     import os
 
-    # Hard gate: ENABLE_COVERED_CALLS enforcement for call rolls
+    # Hard gate: ENABLE_COVERED_CALLS enforcement for call rolls and BTC
     # When off, no call BTC or STO orders may be submitted
     enable_cc_ops = os.environ.get("ENABLE_COVERED_CALLS", "").strip().lower()
     enable_call_closes = enable_cc_ops in ("1", "true", "yes")
     
+    # Second gate: ENABLE_CC_ROLLS for call rolls and defensive closes
+    # When off, no call roll or call BTC orders may be submitted, even if ENABLE_COVERED_CALLS=1
+    enable_cc_rolls = os.environ.get("ENABLE_CC_ROLLS", "").strip().lower()
+    enable_rolls = enable_cc_rolls in ("1", "true", "yes")
+    
+    # Both flags must be on for call closes to proceed
+    enable_call_closes = enable_call_closes and enable_rolls
+    
     if not enable_call_closes and execute:
         logger.warning(
-            "CC rolls blocked by ENABLE_COVERED_CALLS gate",
+            "CC rolls and call BTC blocked by ENABLE_COVERED_CALLS or ENABLE_CC_ROLLS gate",
             enable_covered_calls=enable_cc_ops or "(unset)",
+            enable_cc_rolls=enable_cc_rolls or "(unset)",
         )
         # Still process puts, but skip all call operations
         base = manage_short_options(
@@ -387,8 +396,10 @@ def manage_or_roll_short_calls(
             results.append(row)
         
         logger.info(
-            "Wheel manage_or_roll complete (CC rolls blocked)",
+            "Wheel manage_or_roll complete (CC rolls blocked by gate)",
             n=len(results),
+            enable_covered_calls=enable_cc_ops or "(unset)",
+            enable_cc_rolls=enable_cc_rolls or "(unset)",
         )
         return results
 

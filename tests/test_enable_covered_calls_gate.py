@@ -140,10 +140,12 @@ def test_enable_covered_calls_on_allows_call_btc_prefer_roll_true():
         target_otm_pct=0.05,
     )
 
-    # Set ENABLE_COVERED_CALLS=1
+    # Set ENABLE_COVERED_CALLS=1 and ENABLE_CC_ROLLS=1 (both required)
     old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    old_rolls_val = os.environ.get("ENABLE_CC_ROLLS")
     try:
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         results = manage_or_roll_short_calls(
             broker,
@@ -159,6 +161,10 @@ def test_enable_covered_calls_on_allows_call_btc_prefer_roll_true():
             os.environ.pop("ENABLE_COVERED_CALLS", None)
         else:
             os.environ["ENABLE_COVERED_CALLS"] = old_val
+        if old_rolls_val is None:
+            os.environ.pop("ENABLE_CC_ROLLS", None)
+        else:
+            os.environ["ENABLE_CC_ROLLS"] = old_rolls_val
 
     # Verify BTC order WAS submitted
     btc_orders = [o for o in broker.submitted_orders if o.get("side") == "buy"]
@@ -249,10 +255,12 @@ def test_enable_covered_calls_on_allows_call_btc_prefer_roll_false():
         min_premium_pct=0.001,
     )
 
-    # Set ENABLE_COVERED_CALLS=1
+    # Set ENABLE_COVERED_CALLS=1 and ENABLE_CC_ROLLS=1 (both required)
     old_val = os.environ.get("ENABLE_COVERED_CALLS")
+    old_rolls_val = os.environ.get("ENABLE_CC_ROLLS")
     try:
         os.environ["ENABLE_COVERED_CALLS"] = "1"
+        os.environ["ENABLE_CC_ROLLS"] = "1"
         
         results = manage_or_roll_short_calls(
             broker,
@@ -270,6 +278,10 @@ def test_enable_covered_calls_on_allows_call_btc_prefer_roll_false():
             os.environ.pop("ENABLE_COVERED_CALLS", None)
         else:
             os.environ["ENABLE_COVERED_CALLS"] = old_val
+        if old_rolls_val is None:
+            os.environ.pop("ENABLE_CC_ROLLS", None)
+        else:
+            os.environ["ENABLE_CC_ROLLS"] = old_rolls_val
 
     # Verify BTC order WAS submitted
     btc_orders = [o for o in broker.submitted_orders if o.get("side") == "buy"]
