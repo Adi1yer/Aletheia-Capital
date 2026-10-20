@@ -137,6 +137,7 @@ class CashSecuredPutManager:
         wait_fill: bool = True,
         collateral_already_used_usd: float = 0.0,
         option_positions: Optional[List[Dict]] = None,
+        concentration_threshold_pct: float = 0.25,
     ) -> List[Dict]:
         results: List[Dict] = []
         
@@ -299,6 +300,50 @@ class CashSecuredPutManager:
                     }
                 )
                 continue
+            
+            # Concentration check: would assignment breach 25% threshold?
+            # Assignment adds 100 shares per contract
+            try:
+                from src.risk.concentration import would_new_buy_breach_concentration
+                portfolio = broker.sync_portfolio()
+                would_breach, details = would_new_buy_breach_concentration(
+                    ticker=und,
+                    buy_qty=100,  # Assignment = 100 shares per contract
+                    price=price,
+                    portfolio=portfolio,
+                    current_prices=current_prices,
+                    equity=None,  # Will be computed
+                    threshold_pct=float(concentration_threshold_pct),
+                    fail_closed_on_missing_data=True,
+                )
+                if would_breach:
+                    results.append({
+                        "underlying": und,
+                        "status": "skipped",
+                        "reason": f"concentration_would_breach_{details.get('post_buy_weight_pct', 0):.1f}%",
+                        "concentration_details": details,
+                    })
+                    logger.info(
+                        "CSP skipped: post-assignment concentration would breach threshold",
+                        ticker=und,
+                        post_assignment_weight_pct=details.get("post_buy_weight_pct"),
+                        threshold_pct=concentration_threshold_pct * 100,
+                    )
+                    continue
+            except Exception as e:
+                # Fail-closed: if concentration check fails, skip the put
+                logger.error(
+                    "CSP concentration check failed; skipping put (fail-closed)",
+                    ticker=und,
+                    error=str(e),
+                )
+                results.append({
+                    "underlying": und,
+                    "status": "skipped",
+                    "reason": f"concentration_check_error_{str(e)[:50]}",
+                })
+                continue
+            
             contract = self.select_put_contract(und, price, score, broker)
             if not contract:
                 results.append({"underlying": und, "status": "skipped", "reason": "no contract"})

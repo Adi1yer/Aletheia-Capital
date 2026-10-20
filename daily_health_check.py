@@ -142,9 +142,9 @@ def main(argv: list[str] | None = None) -> int:
                 broker.disconnect()
 
     if alert_msgs:
-        logger.warning("Concentration alerts", alerts=alert_msgs)
+        logger.error("Concentration BREACH detected: one or more names >= 25%", alerts=alert_msgs)
         for line in alert_msgs:
-            print(f"ALERT: {line}", file=sys.stderr)
+            print(f"ERROR: {line}", file=sys.stderr)
 
     if errors:
         logger.warning("Daily health check account errors", count=len(errors), errors=errors)

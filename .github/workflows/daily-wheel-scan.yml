@@ -209,7 +209,7 @@ jobs:
             --execute \
             ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_covered_calls == 'true' && '--enable-covered-calls' || '' }} \
             ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_cash_secured_puts == 'true' && '--enable-cash-secured-puts' || '' }} \
-            --max-position-pct 0.35 --max-sector-pct 0.40 \
+            --max-position-pct 0.25 --max-sector-pct 0.40 \
             --min-buy-confidence 55 --min-sell-confidence 55 \
             --cash-buffer-pct 0.06 --max-buy-tickers 8 \
             --max-csp-tickers 3 --max-csp-collateral-pct 0.45 \

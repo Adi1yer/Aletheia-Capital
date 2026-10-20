@@ -40,7 +40,7 @@ def allocate_wheel_hybrid_book(
     max_directional_names: int = 5,
     max_underlying_price: float = 35.0,
     max_lots_per_name: int = 3,
-    max_position_pct: float = 0.35,
+    max_position_pct: float = 0.25,
     add_lot_min_score: float = 0.55,
     pending_orders_by_symbol: Optional[Dict[str, Dict[str, Any]]] = None,
     short_option_underlyings: Optional[Set[str]] = None,

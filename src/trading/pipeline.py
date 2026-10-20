@@ -875,7 +875,7 @@ class TradingPipeline:
                             cash_buffer_pct=float(run_config.get("cash_buffer_pct", 0.06)),
                             max_wheel_names=int(run_config.get("max_wheel_names", 4)),
                             max_lots_per_name=int(run_config.get("max_lots_per_name", 3)),
-                            max_position_pct=float(run_config.get("max_position_pct", 0.35)),
+                            max_position_pct=float(run_config.get("max_position_pct", 0.25)),
                             add_lot_min_score=float(run_config.get("add_lot_min_score", 0.55)),
                             max_directional_names=int(run_config.get("max_directional_names", 5)),
                             max_underlying_price=float(run_config.get("max_underlying_price", 35.0)),
