@@ -329,6 +329,28 @@ def main() -> None:
         try:
             broker = AlpacaBroker()
             acct = broker.get_account()
+            
+            # Run concentration trim workflow (guarded by ENABLE_CONCENTRATION_TRIM=1)
+            try:
+                from src.risk.concentration import run_concentration_trim_workflow
+                
+                trim_result = run_concentration_trim_workflow(broker, dry_run=False)
+                if trim_result.get("trimmed"):
+                    logger.info(
+                        "Concentration trim executed",
+                        equity=trim_result.get("equity"),
+                        orders_submitted=trim_result.get("trim_orders_submitted"),
+                    )
+                else:
+                    logger.debug(
+                        "Concentration trim skipped",
+                        reason=trim_result.get("reason"),
+                    )
+            except Exception as trim_err:
+                logger.warning(
+                    "Concentration trim failed (non-fatal)",
+                    error=str(trim_err),
+                )
         except Exception as e:
             logger.error(
                 "Alpaca rejected the API key or connection failed. "
