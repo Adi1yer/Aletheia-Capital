@@ -370,8 +370,8 @@ def test_generate_trim_orders_dry_run():
     equity = 100000.0  # AAPL is 30%, over 25%
     open_orders = []
     
-    with patch("src.risk.concentration.StockHistoricalDataClient", return_value=mock_client):
-        with patch("src.risk.concentration.alpaca_call_with_retry", return_value={"AAPL": mock_quote}):
+    with patch("alpaca.data.historical.StockHistoricalDataClient", return_value=mock_client):
+        with patch("src.broker.alpaca.alpaca_call_with_retry", return_value={"AAPL": mock_quote}):
             results = generate_trim_orders(
                 broker, positions, current_prices, equity, open_orders,
                 breach_threshold_pct=25.0,
