@@ -178,6 +178,7 @@ jobs:
           LOG_LEVEL: INFO
           ENABLE_COVERED_CALLS: "0"
           ENABLE_CC_ROLLS: "0"
+          ENABLE_CONCENTRATION_TRIM: "1"
           SCAN_CACHE_KEEP_WEEKS: "26"
           CACHE_HIT_PERFORMANCE: ${{ steps.perf_cache_restore.outputs.cache-hit }}
           CACHE_HIT_SCAN: ${{ steps.scan_cache_restore.outputs.cache-hit }}
@@ -209,7 +210,7 @@ jobs:
             --execute \
             ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_covered_calls == 'true' && '--enable-covered-calls' || '' }} \
             ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_cash_secured_puts == 'true' && '--enable-cash-secured-puts' || '' }} \
-            --max-position-pct 0.35 --max-sector-pct 0.40 \
+            --max-position-pct 0.25 --max-sector-pct 0.40 \
             --min-buy-confidence 55 --min-sell-confidence 55 \
             --cash-buffer-pct 0.06 --max-buy-tickers 8 \
             --max-csp-tickers 3 --max-csp-collateral-pct 0.45 \

@@ -104,6 +104,7 @@ jobs:
           LOG_LEVEL: INFO
           ENABLE_COVERED_CALLS: "0"
           ENABLE_CC_ROLLS: "0"
+          ENABLE_CONCENTRATION_TRIM: "1"
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
